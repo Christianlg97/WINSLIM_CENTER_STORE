@@ -1,0 +1,15 @@
+{
+  "name": "winslimcenter",
+  "private": true,
+  "version": "0.1.3",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "audit:catalog": "node scratch/audit_catalog_links.cjs",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}
