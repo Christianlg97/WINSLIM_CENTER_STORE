@@ -484,6 +484,29 @@
     "featured": false
   },
   {
+    "id": "qbittorrent",
+    "name": "qBittorrent",
+    "description": "Cliente BitTorrent libre, ligero y sin publicidad, con buscador integrado y control remoto web.",
+    "version": "latest",
+    "author": "The qBittorrent Project",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "qBittorrent.qBittorrent",
+    "download_url": "https://github.com/qbittorrent/qBittorrent/releases",
+    "installer_args": [
+      "/S"
+    ],
+    "accent_color": "#2b5b84",
+    "detect_names": [
+      "qBittorrent",
+      "qbittorrent"
+    ],
+    "launch_executable": "qbittorrent.exe",
+    "icon_url": "https://cdn.simpleicons.org/qbittorrent/white",
+    "featured": false
+  },
+  {
     "id": "thunderbird",
     "name": "Mozilla Thunderbird",
     "description": "Cliente de correo, calendario y RSS libre. Soporta IMAP, POP3 y múltiples cuentas.",
@@ -3521,7 +3544,7 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "web",
-    "web_url": "https://www.amd.com/en/products/software/ryzen-master.html",
+    "web_url": "https://www.amd.com/en/products/software/ryzen-master.html#download",
     "icon_url": "https://cdn.simpleicons.org/amd/ED1C24",
     "icon_background": "#ffffff",
     "icon_padding": 7,

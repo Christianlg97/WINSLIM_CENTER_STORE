@@ -601,14 +601,13 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
     Ok(())
 }
 
-#[tauri::command]
-fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
+fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {
     logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
     let preferred_executable = state
         .catalog
         .lock()
         .iter()
-        .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id.as_str()))
+        .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id))
         .and_then(|entry| entry.get("launch_executable"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
@@ -616,7 +615,7 @@ fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, Stri
     let cached_launch_path = state
         .installed
         .lock()
-        .get(&app_id)
+        .get(app_id)
         .and_then(|info| info.launch_path.clone())
         .filter(|path| PathBuf::from(path).is_file());
     if let Some(path) = cached_launch_path {
@@ -624,7 +623,7 @@ fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, Stri
         return installer::launch_path_with_preferred(&PathBuf::from(path), None);
     }
 
-    if let Some(st) = state.statuses.lock().get(&app_id).cloned() {
+    if let Some(st) = state.statuses.lock().get(app_id).cloned() {
         if st.installed && st.install_path.starts_with("shell:") {
             return installer::launch_shell_target(&st.install_path);
         }
@@ -642,7 +641,12 @@ fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, Stri
         }
     }
     let installed = state.installed.lock();
-    installer::launch_app(&app_id, &installed)
+    installer::launch_app(app_id, &installed)
+}
+
+#[tauri::command]
+fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
+    launch_app_internal(&state, &app_id)
 }
 
 #[tauri::command]
@@ -1098,6 +1102,31 @@ async fn install_app(
                 );
                 *app_state.installed.lock() = installed;
                 rebuild_statuses(&app_state);
+
+                let is_winget = app_entry_for_task
+                    .get("source_type")
+                    .and_then(|v| v.as_str())
+                    == Some("winget");
+                if is_winget {
+                    logger::info(
+                        "install",
+                        format!("Ejecutando automáticamente tras instalación WinGet: app_id={app_id_for_task}"),
+                    );
+                    match launch_app_internal(&app_state, &app_id_for_task) {
+                        Ok(msg) => {
+                            logger::info(
+                                "install",
+                                format!("Aplicación {app_id_for_task} iniciada correctamente tras WinGet: {msg}"),
+                            );
+                        }
+                        Err(err) => {
+                            logger::warn(
+                                "install",
+                                format!("No se pudo iniciar automáticamente {app_id_for_task} tras WinGet: {err}"),
+                            );
+                        }
+                    }
+                }
                 let completion = if force_for_task {
                     if changed {
                         format!("{name_for_task} actualizado correctamente")

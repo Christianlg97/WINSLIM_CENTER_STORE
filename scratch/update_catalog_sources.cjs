@@ -431,7 +431,7 @@ requestedApps.push(
     id: "amd_ryzen_master", name: "AMD Ryzen Master",
     description: "Utilidad oficial de monitorización y ajuste para procesadores AMD Ryzen compatibles. AMD ofrece instaladores distintos según la generación del procesador.",
     version: "latest", author: "AMD", category: "Hardware y monitorización", section: "Utilidades",
-    source_type: "web", web_url: "https://www.amd.com/en/products/software/ryzen-master.html",
+    source_type: "web", web_url: "https://www.amd.com/en/products/software/ryzen-master.html#download",
     icon_url: "https://cdn.simpleicons.org/amd/ED1C24", icon_background: "#ffffff", icon_padding: 7,
     accent_color: "#ed1c24", detect_names: ["AMD Ryzen Master", "Ryzen Master"], featured: false,
   },

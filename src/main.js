@@ -367,7 +367,7 @@ function idleStatusSummary() {
     : `Todo al día · ${state.catalog.length} aplicaciones`;
 }
 
-function setTransientStatus(text, color, durationMs = 4000) {
+function setTransientStatus(text, color, durationMs = 5000) {
   setStatus(text, color);
   statusResetTimer = setTimeout(() => {
     statusResetTimer = null;
@@ -898,7 +898,7 @@ async function uninstallApp(id) {
         await invoke("uninstall_app", { appId: id });
         closeModal();
         await refreshStatuses();
-        setStatus(`${app.name} se desinstaló correctamente`, "var(--green)");
+        setTransientStatus(`${app.name} se desinstaló correctamente`, "var(--green)", 5000);
         renderSidebar();
         renderContent();
         showAlertModal(
@@ -936,7 +936,7 @@ async function launchApp(id) {
   renderContent();
   try {
     const msg = await invoke("launch_app", { appId: id });
-    setStatus(msg || `Lanzando: ${app?.name || id}`, "var(--accent)");
+    setTransientStatus(msg || `Lanzando: ${app?.name || id}`, "var(--accent)", 5000);
   } catch (e) {
     const text = String(e);
     const elevationPrefix = "__WINSLIM_ELEVATION_REQUIRED__:";
@@ -981,7 +981,7 @@ function showElevationFallbackModal(id, app, reason) {
     try {
       const message = await invoke("launch_app_elevated", { appId: id });
       closeModal();
-      setStatus(message || `Lanzando como administrador: ${appName}`, "var(--accent)");
+      setTransientStatus(message || `Lanzando como administrador: ${appName}`, "var(--accent)", 5000);
     } catch (error) {
       closeModal();
       showAlertModal(
@@ -1036,10 +1036,10 @@ function renderDlPanel() {
       setStatus(`${latest.name} — ${latest.status}`, stateColor(latest.state));
     } else if (latest.state === "done" && !state.finished.has(latest.app_id)) {
       state.finished.add(latest.app_id);
-      setStatus(`✓ ${latest.status || `${latest.name} instalado`}`, "var(--green)");
+      setTransientStatus(`✓ ${latest.status || `${latest.name} instalado`}`, "var(--green)", 5000);
     } else if (latest.state === "error" && !state.finished.has(latest.app_id)) {
       state.finished.add(latest.app_id);
-      setStatus(`✖ ${latest.name} error`, "var(--red)");
+      setTransientStatus(`✖ ${latest.name} error`, "var(--red)", 5000);
     }
   }
 
@@ -1584,28 +1584,28 @@ window.addEventListener("DOMContentLoaded", async () => {
         const message = is_update
           ? (changed ? `Actualizado: ${app.name}` : `${app.name} ya estaba actualizado`)
           : `Instalado: ${app.name}`;
-        setStatus(message, "var(--green)");
+        setTransientStatus(message, "var(--green)", 5000);
       }
     } else {
       const app = findApp(app_id);
       const appName = app?.name || app_id;
       await refreshStore({ reportErrors: false });
       if (cancelled && cancellation_kind === "installation") {
-        setStatus(`Instalación cancelada: ${appName}`, "var(--text-muted)");
+        setTransientStatus(`Instalación cancelada: ${appName}`, "var(--text-muted)", 5000);
         showAlertModal(
           "Instalación cancelada",
           String(error || "La instalación fue cancelada por el usuario."),
         );
       } else if (cancelled) {
-        setStatus(`Descarga cancelada: ${appName}`, "var(--text-muted)");
+        setTransientStatus(`Descarga cancelada: ${appName}`, "var(--text-muted)", 5000);
       } else if (interrupted) {
-        setStatus(`Instalación interrumpida: ${appName}`, "var(--text-medium)");
+        setTransientStatus(`Instalación interrumpida: ${appName}`, "var(--text-medium)", 5000);
         showAlertModal(
           "Instalación interrumpida",
           String(error || "El instalador se cerró antes de completar la instalación."),
         );
       } else {
-        setStatus(`Error al instalar ${appName}`, "var(--red)");
+        setTransientStatus(`Error al instalar ${appName}`, "var(--red)", 5000);
         showAlertModal("Error de instalación", String(error || "Error desconocido"));
       }
     }
@@ -1624,7 +1624,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     renderSidebar();
     renderContent();
     renderDlPanel();
-    setStatus("Listo", "var(--green)");
+    setStatus(idleStatusSummary(), "var(--green)");
     clientLog("info", "startup", {
       catalog: state.catalog.length,
       installed: Object.values(state.statuses).filter((status) => status.installed).length,
