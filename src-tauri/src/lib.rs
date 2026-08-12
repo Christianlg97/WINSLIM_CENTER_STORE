@@ -607,14 +607,37 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
 
 fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {
     logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
-    let preferred_executable = state
+    let catalog_entry = state
         .catalog
         .lock()
         .iter()
         .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id))
+        .cloned();
+
+    let preferred_executable = catalog_entry
+        .as_ref()
         .and_then(|entry| entry.get("launch_executable"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
+
+    if let Some(known_paths) = catalog_entry
+        .as_ref()
+        .and_then(|entry| entry.get("known_launch_paths"))
+        .and_then(|value| value.as_array())
+    {
+        for item in known_paths {
+            if let Some(path_str) = item.as_str() {
+                let path = PathBuf::from(path_str);
+                if path.is_file() {
+                    logger::info(
+                        "launch",
+                        format!("Usando ruta directa conocida del catálogo: {}", path.display()),
+                    );
+                    return installer::launch_path_with_preferred(&path, None);
+                }
+            }
+        }
+    }
 
     let cached_launch_path = state
         .installed

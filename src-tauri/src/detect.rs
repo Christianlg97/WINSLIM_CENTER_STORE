@@ -191,7 +191,26 @@ fn system_launch_path(app: &SystemApp) -> Option<PathBuf> {
     // Steam and a few other installers register uninstall.exe as DisplayIcon
     // and leave InstallLocation empty. Keep the folder for lazy resolution
     // when the user presses Open; never scan it during store startup.
-    icon_path.and_then(|path| path.parent().map(std::path::Path::to_path_buf))
+    if let Some(path) = icon_path.and_then(|path| path.parent().map(std::path::Path::to_path_buf)) {
+        return Some(path);
+    }
+
+    // Fallback: extract installation directory from uninstall_string.
+    // InnoSetup and NSIS installers often register unins000.exe as UninstallString
+    // while leaving DisplayIcon and InstallLocation empty in Registry.
+    if let Some(ref uninstall_str) = app.uninstall_string {
+        if let Ok((executable, _)) = crate::installer::split_registered_command(uninstall_str) {
+            if executable.exists() {
+                if let Some(parent) = executable.parent() {
+                    if parent.exists() {
+                        return Some(parent.to_path_buf());
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -452,12 +471,25 @@ pub fn build_statuses(
             let preferred_executable = entry
                 .get("launch_executable")
                 .and_then(|value| value.as_str());
-            let launch_path = system_launch_path(&sys)
-                .and_then(|path| {
-                    crate::installer::resolve_launchable_path(&path, preferred_executable)
+            let known_path = entry
+                .get("known_launch_paths")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter()
+                        .filter_map(|item| item.as_str())
+                        .map(PathBuf::from)
+                        .find(|p| p.is_file())
                 })
-                .map(|path| path.to_string_lossy().to_string())
-                .unwrap_or_default();
+                .map(|p| p.to_string_lossy().to_string());
+
+            let launch_path = known_path.unwrap_or_else(|| {
+                system_launch_path(&sys)
+                    .and_then(|path| {
+                        crate::installer::resolve_launchable_path(&path, preferred_executable)
+                    })
+                    .map(|path| path.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            });
             map.insert(
                 id.to_string(),
                 AppStatus {

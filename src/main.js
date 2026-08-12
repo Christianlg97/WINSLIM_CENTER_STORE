@@ -1428,23 +1428,90 @@ async function reloadCatalog() {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Central Sync Loading Modal Helper Functions                               */
+/* -------------------------------------------------------------------------- */
+
+let syncModalOverlay = null;
+
+function showSyncModal(title = "WinSlimCenter", subtitle = "Sincronizando tienda...") {
+  if (syncModalOverlay) return;
+  syncModalOverlay = document.createElement("div");
+  syncModalOverlay.className = "sync-modal-overlay";
+  syncModalOverlay.innerHTML = `
+    <div class="sync-modal-card" role="dialog" aria-modal="true">
+      <div class="sync-logo-box">
+        <div class="sync-logo-ring"></div>
+        <div class="sync-logo-wrapper">
+          <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+        </div>
+      </div>
+      <div class="sync-title-group">
+        <h2 id="sync-modal-title">${escapeHtml(title)}</h2>
+        <p id="sync-modal-subtitle">${escapeHtml(subtitle)}</p>
+      </div>
+      <div class="sync-progress-container">
+        <div class="sync-progress-track">
+          <div class="sync-progress-bar" id="sync-modal-bar" style="width: 10%"></div>
+        </div>
+        <div class="sync-status-row">
+          <span class="sync-status-text" id="sync-modal-status">Iniciando escaneo...</span>
+          <span class="sync-status-percent" id="sync-modal-percent">10%</span>
+        </div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(syncModalOverlay);
+}
+
+function updateSyncModal(percent, text) {
+  if (!syncModalOverlay) return;
+  const bar = document.getElementById("sync-modal-bar");
+  const status = document.getElementById("sync-modal-status");
+  const percentEl = document.getElementById("sync-modal-percent");
+  if (bar && percent != null) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  if (status && text) status.textContent = text;
+  if (percentEl && percent != null) percentEl.textContent = `${Math.min(100, Math.max(0, percent))}%`;
+}
+
+function closeSyncModal() {
+  if (!syncModalOverlay) return;
+  syncModalOverlay.classList.add("closing");
+  setTimeout(() => {
+    if (syncModalOverlay && syncModalOverlay.parentNode) {
+      syncModalOverlay.parentNode.removeChild(syncModalOverlay);
+    }
+    syncModalOverlay = null;
+  }, 280);
+}
+
 async function refreshStore({ reportErrors = true } = {}) {
   const button = document.getElementById("btn-refresh");
   const original = button.innerHTML;
   button.disabled = true;
-  button.innerHTML = "<span>↻</span> Refrescando...";
+  button.innerHTML = '<span>↻</span> Refrescando...';
+  
+  showSyncModal("Sincronizando Tienda", "Recargando catálogo y escaneando estado del sistema...");
+  updateSyncModal(15, "Recargando catálogo de aplicaciones...");
   setStatus("Recargando aplicaciones y buscando actualizaciones...", "var(--accent)");
+  
   try {
     state.catalog = (await invoke("reload_catalog")) || [];
     state.resolvedIcons = {};
+    updateSyncModal(40, "Analizando registro y programas instalados...");
     state.statuses = (await invoke("refresh_statuses")) || {};
-    await preloadCatalogIcons({ progressStart: 70, progressEnd: 85 });
+    updateSyncModal(65, "Precargando recursos gráficos e iconos...");
+    await preloadCatalogIcons({ progressStart: 65, progressEnd: 82 });
+    updateSyncModal(85, "Comprobando versiones y actualizaciones...");
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
     setProgress(86);
     state.statuses = (await invoke("check_updates")) || state.statuses;
     const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
     renderSidebar();
     renderContent();
+    updateSyncModal(100, "¡Sincronización completada!");
+    await new Promise(r => setTimeout(r, 350));
+    
     if (updates) {
       setStatus(
         `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
@@ -1457,6 +1524,7 @@ async function refreshStore({ reportErrors = true } = {}) {
     setStatus(`No se pudo refrescar la tienda: ${error}`, "var(--red)");
     if (reportErrors) showAlertModal("Error al refrescar", String(error));
   } finally {
+    closeSyncModal();
     setProgress(100);
     button.disabled = false;
     button.innerHTML = original;
@@ -1472,19 +1540,28 @@ async function refreshStatuses() {
 }
 
 async function finishStartupInBackground() {
+  showSyncModal("Iniciando WinSlimCenter", "Analizando el equipo y preparando la tienda...");
+  updateSyncModal(20, "Escaneando aplicaciones instaladas y registro...");
   try {
     state.statuses = (await invoke("refresh_statuses")) || state.statuses;
     renderSidebar();
     renderContent();
 
-    await preloadCatalogIcons({ progressStart: 70, progressEnd: 85 });
+    updateSyncModal(55, "Precargando recursos e iconos de interfaz...");
+    await preloadCatalogIcons({ progressStart: 55, progressEnd: 78 });
+    
+    updateSyncModal(80, "Comprobando actualizaciones disponibles...");
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
-    setProgress(86);
+    setProgress(80);
+    
     try {
       state.statuses = (await invoke("check_updates")) || state.statuses;
       renderSidebar();
       renderContent();
       const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
+      updateSyncModal(100, "¡Tienda lista y optimizada!");
+      await new Promise(r => setTimeout(r, 350));
+      
       if (updates) {
         setStatus(
           `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
@@ -1501,6 +1578,7 @@ async function finishStartupInBackground() {
     setStatus(`La tienda está disponible, pero falló la comprobación del sistema: ${error}`, "var(--red)");
     clientLog("error", "startup-background", String(error?.stack || error));
   } finally {
+    closeSyncModal();
     setProgress(100);
   }
 }

@@ -306,7 +306,7 @@ pub fn is_winget_user_scope_elevation_error(error: &str) -> bool {
                 || normalized.contains("permisos de administrador")))
 }
 
-fn split_registered_command(command: &str) -> Result<(PathBuf, String), String> {
+pub fn split_registered_command(command: &str) -> Result<(PathBuf, String), String> {
     let cleaned = command.trim();
     if cleaned.is_empty() {
         return Err("Comando de desinstalación vacío".into());
@@ -403,18 +403,40 @@ pub fn run_installer_in_background(
         ),
     );
 
-    let mut command = std::process::Command::new(program);
-    crate::process::background(&mut command);
-    command.args(args);
+    let mut command = std::process::Command::new(&program);
+    // Only hide the background window for silent / MSI / non-interactive installers.
+    // Interactive .exe setups (such as InnoSetup) require visual UI and UAC prompts.
+    if ext != "exe" || !args.is_empty() {
+        crate::process::background(&mut command);
+    }
+    command.args(&args);
     if let Some(parent) = installer_path.parent() {
         command.current_dir(parent);
     }
-    let mut child = command
+    let mut child = match command
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| format!("No se pudo lanzar el instalador: {e}"))?;
+    {
+        Ok(child) => child,
+        Err(e) => {
+            // Fallback for setup executables requiring UAC elevation (OS Error 740)
+            if e.raw_os_error() == Some(740) {
+                crate::logger::info(
+                    "installer",
+                    format!("Solicitando elevación UAC para instalador: {}", installer_path.display()),
+                );
+                crate::process::launch_elevated(installer_path)?;
+                crate::logger::info(
+                    "installer",
+                    format!("Instalador elevado iniciado correctamente: {}", installer_path.display()),
+                );
+                return Ok(());
+            }
+            return Err(format!("No se pudo lanzar el instalador: {e}"));
+        }
+    };
 
     let pid = child.id();
     crate::logger::info(
@@ -1539,6 +1561,11 @@ fn x64_sibling(path: &Path) -> Option<PathBuf> {
         .map(|entry| entry.path())
         .filter(|candidate| {
             candidate.is_file()
+                && candidate
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    .map(|value| value.eq_ignore_ascii_case("exe"))
+                    .unwrap_or(false)
                 && executable_architecture_score(candidate) > 0
                 && executable_family(candidate) == family
                 && !is_installer_artifact(candidate)
@@ -1553,6 +1580,14 @@ fn x64_sibling(path: &Path) -> Option<PathBuf> {
 /// but x86 is a valid fallback on 64-bit Windows when it is the only build.
 /// ARM executables are never returned.
 pub fn prefer_x64_executable(path: &Path) -> Option<PathBuf> {
+    if !path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
+    {
+        return None;
+    }
     if let Some(sibling) = x64_sibling(path) {
         return Some(sibling);
     }

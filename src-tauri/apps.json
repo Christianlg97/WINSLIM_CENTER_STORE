@@ -3604,5 +3604,508 @@
       "RPGMakerMZ"
     ],
     "featured": false
+  },
+  {
+    "id": "playnite",
+    "name": "Playnite",
+    "description": "Gestor y lanzador unificado de videojuegos open-source para PC y emuladores.",
+    "version": "latest",
+    "author": "Playnite",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Playnite.Playnite",
+    "winget_source": "winget",
+    "icon_url": "https://playnite.link/favicon.ico",
+    "detect_names": [
+      "Playnite"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "accent_color": "#fd1d1d"
+  },
+  {
+    "id": "parsec",
+    "name": "Parsec",
+    "description": "Streaming de videojuegos de ultra baja latencia y juego remoto multijugador.",
+    "version": "latest",
+    "author": "Parsec Cloud",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Parsec.Parsec",
+    "winget_source": "winget",
+    "icon_url": "https://parsec.app/favicon.ico",
+    "detect_names": [
+      "Parsec"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "accent_color": "#f93c00"
+  },
+  {
+    "id": "moonlight",
+    "name": "Moonlight Game Streaming",
+    "description": "Cliente de juego remoto de código abierto de alta velocidad y baja latencia.",
+    "version": "latest",
+    "author": "Moonlight Team",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MoonlightGameStreamingProject.Moonlight",
+    "winget_source": "winget",
+    "icon_url": "https://moonlight-stream.org/favicon.ico",
+    "detect_names": [
+      "Moonlight"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "accent_color": "#53b64c"
+  },
+  {
+    "id": "mod_organizer_2",
+    "name": "Mod Organizer 2",
+    "description": "Gestor avanzado de mods con aislamiento de archivos para juegos PC.",
+    "version": "latest",
+    "author": "MO2 Team",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "ModOrganizer2.ModOrganizer2",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/ModOrganizer2/modorganizer/master/src/resources/mo_icon.png",
+    "detect_names": [
+      "Mod Organizer 2",
+      "ModOrganizer"
+    ],
+    "icon_background": "#181818",
+    "icon_padding": 4
+  },
+  {
+    "id": "lossless_scaling",
+    "name": "Lossless Scaling",
+    "description": "Herramienta de escalado de imagen y generación de fotogramas para juegos.",
+    "version": "latest",
+    "author": "THS",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://download1320.mediafire.com/jrwulunln3tg4IXPzzhRCVp3gU01SIn-_GHJL8io18A-aitfE1sbVnOu8njjfHYZlyQ3G29959lRPtTKtJvuMElLGTJIeBFNtMwZAvZjRHWSki2bz933WMEOFNt4iA60BAOZOcVvTFO26pWKmryRPBFZxHbGTxMquesD7rw9jixOcw/cwxu3qg50s92z7m/LosslessScaling_3.2.2_Setup.exe",
+    "icon_url": "https://cdn.cloudflare.steamstatic.com/steam/apps/993090/logo.png",
+    "detect_names": [
+      "Lossless Scaling",
+      "LosslessScaling"
+    ],
+    "download_filename": "LosslessScaling_3.2.2_Setup.exe",
+    "icon_background": "#141824",
+    "icon_padding": 2,
+    "accent_color": "#f59e0b",
+    "launch_executable": "LosslessScaling.exe",
+    "known_launch_paths": [
+      "C:\\\\Program Files\\\\Lossless Scaling\\\\LosslessScaling.exe",
+      "C:\\\\Program Files (x86)\\\\Lossless Scaling\\\\LosslessScaling.exe"
+    ]
+  },
+  {
+    "id": "dolphin_emulator",
+    "name": "Dolphin Emulator",
+    "description": "Emulador de consolas Nintendo GameCube y Wii.",
+    "version": "latest",
+    "author": "Dolphin Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DolphinEmulator.Dolphin",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/dolphin-emu/dolphin/master/Data/Sys/Resources/dolphin_logo@2x.png",
+    "detect_names": [
+      "Dolphin"
+    ],
+    "console_tags": [
+      "GameCube",
+      "Wii"
+    ],
+    "icon_background": "#181818",
+    "icon_padding": 4
+  },
+  {
+    "id": "flycast",
+    "name": "Flycast",
+    "description": "Emulador de SEGA Dreamcast, Naomi y Atomiswave.",
+    "version": "latest",
+    "author": "flyinghead",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "flycast.flycast",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/flyinghead/flycast/master/shell/windows/flycast.ico",
+    "detect_names": [
+      "Flycast"
+    ],
+    "console_tags": [
+      "Dreamcast",
+      "SEGA"
+    ],
+    "icon_background": "#181818",
+    "icon_padding": 4,
+    "accent_color": "#ff5200"
+  },
+  {
+    "id": "sameboy",
+    "name": "SameBoy",
+    "description": "Emulador de Game Boy y Game Boy Color con alta precisión de ciclos.",
+    "version": "latest",
+    "author": "LIARMP",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "LIARMP/SameBoy",
+    "asset_pattern": "sameboy_win_*.zip",
+    "icon_url": "https://cdn.simpleicons.org/retroarch/3399FF",
+    "detect_names": [
+      "SameBoy"
+    ],
+    "console_tags": [
+      "Game Boy",
+      "Game Boy Color"
+    ],
+    "launch_executable": "sameboy.exe",
+    "icon_background": "#181818",
+    "icon_padding": 6
+  },
+  {
+    "id": "bgb",
+    "name": "BGB",
+    "description": "Emulador y depurador preciso de Game Boy, Game Boy Color y Super Game Boy.",
+    "version": "latest",
+    "author": "BGB",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://bgb.bircd.org/bgb64.zip",
+    "download_filename": "bgb64.zip",
+    "icon_url": "https://cdn.simpleicons.org/retroarch/41B883",
+    "detect_names": [
+      "BGB"
+    ],
+    "console_tags": [
+      "Game Boy",
+      "Game Boy Color"
+    ],
+    "launch_executable": "bgb64.exe",
+    "icon_background": "#181818",
+    "icon_padding": 6
+  },
+  {
+    "id": "ldplayer",
+    "name": "LDPlayer",
+    "description": "Emulador de Android de alto rendimiento optimizado para juegos de PC.",
+    "version": "latest",
+    "author": "XuanZhi",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "XuanZhi.LDPlayer",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/android/3DDC84",
+    "icon_background": "#181818",
+    "icon_padding": 6,
+    "accent_color": "#f59e0b",
+    "detect_names": [
+      "LDPlayer"
+    ],
+    "console_tags": [
+      "Android"
+    ]
+  },
+  {
+    "id": "wiztree",
+    "name": "WizTree",
+    "description": "Analizador de espacio en disco ultrarrápido que lee la MFT de NTFS.",
+    "version": "latest",
+    "author": "Antibody Software",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "AntibodySoftware.WizTree",
+    "winget_source": "winget",
+    "icon_url": "https://diskanalyzer.com/favicon.ico",
+    "detect_names": [
+      "WizTree"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 4
+  },
+  {
+    "id": "nanazip",
+    "name": "NanaZip",
+    "description": "Compresor de archivos derivado de 7-Zip integrado con el menú de Windows 11.",
+    "version": "latest",
+    "author": "M2Team",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "M2Team.NanaZip",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/7zip/1070B0",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "detect_names": [
+      "NanaZip"
+    ],
+    "accent_color": "#1070b0"
+  },
+  {
+    "id": "revo_uninstaller",
+    "name": "Revo Uninstaller Free",
+    "description": "Desinstalador avanzado de programas con escaneo de registro y carpetas sobrantes.",
+    "version": "latest",
+    "author": "VS Revo Group",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "VSRevoGroup.RevoUninstaller",
+    "winget_source": "winget",
+    "icon_url": "https://www.revouninstaller.com/favicon.ico",
+    "detect_names": [
+      "Revo Uninstaller"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#0075ff"
+  },
+  {
+    "id": "autoruns",
+    "name": "Autoruns (Sysinternals)",
+    "description": "Herramienta avanzada de Microsoft para inspeccionar programas y servicios al arrancar.",
+    "version": "latest",
+    "author": "Microsoft Sysinternals",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Microsoft.Sysinternals.Autoruns",
+    "winget_source": "winget",
+    "icon_url": "https://upload.wikimedia.org/wikipedia/commons/5/5f/Windows_logo_-_2012.svg",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "detect_names": [
+      "Autoruns"
+    ],
+    "accent_color": "#0078d4"
+  },
+  {
+    "id": "geek_uninstaller",
+    "name": "Geek Uninstaller",
+    "description": "Desinstalador de software portátil, ultraligero y rápido para Windows.",
+    "version": "latest",
+    "author": "GeekUninstaller",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "GeekUninstaller.GeekUninstaller",
+    "winget_source": "winget",
+    "icon_url": "https://geekuninstaller.com/favicon.ico",
+    "detect_names": [
+      "Geek Uninstaller"
+    ]
+  },
+  {
+    "id": "blender",
+    "name": "Blender",
+    "description": "Suite de modelado 3D, animación, escultura, edición de vídeo y renderizado libre.",
+    "version": "latest",
+    "author": "Blender Foundation",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "BlenderFoundation.Blender",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/blender/E87D0D",
+    "detect_names": [
+      "Blender"
+    ]
+  },
+  {
+    "id": "krita",
+    "name": "Krita",
+    "description": "Programa de pintura digital, ilustración rasterizada y concept art de código abierto.",
+    "version": "latest",
+    "author": "KDE",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "KDE.Krita",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/krita/3399FF",
+    "detect_names": [
+      "Krita"
+    ]
+  },
+  {
+    "id": "davinci_resolve",
+    "name": "DaVinci Resolve",
+    "description": "Editor de vídeo profesional, corrección de color y efectos visuales de Blackmagic.",
+    "version": "latest",
+    "author": "Blackmagic Design",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "BlackmagicDesign.DaVinciResolve",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/davinciresolve/000000",
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "detect_names": [
+      "DaVinci Resolve"
+    ]
+  },
+  {
+    "id": "foobar2000",
+    "name": "foobar2000",
+    "description": "Reproductor de audio avanzado y ligero para Windows con soporte de alta fidelidad.",
+    "version": "latest",
+    "author": "Peter Pawlowski",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "PeterPawlowski.foobar2000",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/foobar2000/white",
+    "detect_names": [
+      "foobar2000"
+    ],
+    "icon_background": "#181818",
+    "icon_padding": 6,
+    "accent_color": "#25262b"
+  },
+  {
+    "id": "libreoffice",
+    "name": "LibreOffice",
+    "description": "Suite ofimática completa, libre y de código abierto (procesador, hojas de cálculo, presentaciones).",
+    "version": "latest",
+    "author": "The Document Foundation",
+    "category": "Productividad",
+    "section": "Productividad",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "TheDocumentFoundation.LibreOffice",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/libreoffice/18A303",
+    "detect_names": [
+      "LibreOffice"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#18a303"
+  },
+  {
+    "id": "pdf24_creator",
+    "name": "PDF24 Creator",
+    "description": "Suite gratuita de herramientas para crear, unir, convertir y editar archivos PDF.",
+    "version": "latest",
+    "author": "geeksoftware GmbH",
+    "category": "Productividad",
+    "section": "Productividad",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "geeksoftwareGmbH.PDF24Creator",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/pdf24.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "detect_names": [
+      "PDF24 Creator"
+    ],
+    "accent_color": "#0072bc"
+  },
+  {
+    "id": "notion",
+    "name": "Notion",
+    "description": "Espacio de trabajo modular para notas, tareas, bases de datos y wiki personal.",
+    "version": "latest",
+    "author": "Notion Labs",
+    "category": "Productividad",
+    "section": "Productividad",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Notion.Notion",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/notion/000000",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "detect_names": [
+      "Notion"
+    ]
+  },
+  {
+    "id": "wireshark",
+    "name": "Wireshark",
+    "description": "Analizador de protocolos de red libre y multiplataforma de referencia.",
+    "version": "latest",
+    "author": "Wireshark Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "WiresharkFoundation.Wireshark",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/wireshark/167FE5",
+    "detect_names": [
+      "Wireshark"
+    ]
+  },
+  {
+    "id": "filezilla",
+    "name": "FileZilla Client",
+    "description": "Cliente libre de FTP, FTPS y SFTP rápido y fiable para administración de servidores.",
+    "version": "latest",
+    "author": "Tim Kosse",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "TimKosse.FileZillaClient",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/filezilla/BF0000",
+    "detect_names": [
+      "FileZilla"
+    ]
+  },
+  {
+    "id": "sublime_text",
+    "name": "Sublime Text 4",
+    "description": "Editor de texto sofisticado y ultra-rápido para código, marcación y prosa.",
+    "version": "latest",
+    "author": "Sublime HQ",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "SublimeHQ.SublimeText.4",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/sublimetext/FF9800",
+    "detect_names": [
+      "Sublime Text"
+    ]
   }
 ]
