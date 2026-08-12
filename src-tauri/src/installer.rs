@@ -603,23 +603,54 @@ pub async fn do_install(
                 .and_then(|v| v.as_str())
                 .ok_or("Falta github_repo")?;
             let pattern = app.get("asset_pattern").and_then(|v| v.as_str());
-            let (u, tag) = download::github_latest_release_asset(repo, pattern).await?;
-            if force_update
-                && current_version
-                    .as_deref()
-                    .and_then(|current| crate::detect::is_newer(&tag, current))
-                    == Some(false)
-            {
-                let _ = fs::remove_dir_all(&download_path);
-                on_progress(
-                    100,
-                    format!("{name} ya está en la versión más reciente ({tag})"),
-                    false,
-                );
-                return Ok(false);
+            match download::github_latest_release_asset(repo, pattern).await {
+                Ok((u, tag)) => {
+                    if force_update
+                        && current_version
+                            .as_deref()
+                            .and_then(|current| crate::detect::is_newer(&tag, current))
+                            == Some(false)
+                    {
+                        let _ = fs::remove_dir_all(&download_path);
+                        on_progress(
+                            100,
+                            format!("{name} ya está en la versión más reciente ({tag})"),
+                            false,
+                        );
+                        return Ok(false);
+                    }
+                    resolved_version = Some(tag);
+                    u
+                }
+                Err(err) => {
+                    if let Some(fallback_url) = app
+                        .get("download_url")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        crate::logger::warn(
+                            "installer",
+                            format!("GitHub Release no disponible para {repo} ({err}). Usando download_url de fallback: {fallback_url}"),
+                        );
+                        fallback_url.to_string()
+                    } else if let Some(winget_id) = app
+                        .get("winget_id")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.trim().is_empty())
+                    {
+                        crate::logger::warn(
+                            "installer",
+                            format!("GitHub Release no disponible para {repo} ({err}). Usando WinGet fallback: {winget_id}"),
+                        );
+                        let direct_url = winget_installer_url(app).await.map_err(|fallback_error| {
+                            format!("GitHub Release ({err}) y WinGet fallback ({fallback_error}) fallaron")
+                        })?;
+                        direct_url
+                    } else {
+                        return Err(err);
+                    }
+                }
             }
-            resolved_version = Some(tag);
-            u
         }
         "github_repo" => {
             let repo = app

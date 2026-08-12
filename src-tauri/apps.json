@@ -505,9 +505,15 @@
     "author": "Telegram FZ-LLC",
     "category": "Social",
     "section": "Social y Comunicación",
-    "source_type": "github_release",
-    "github_repo": "telegramdesktop/tdesktop",
-    "asset_pattern": "tsetup-x64.*.exe",
+    "source_type": "winget",
+    "winget_id": "Telegram.TelegramDesktop",
+    "download_url": "https://telegram.org/dl/desktop/win64",
+    "installer_args": [
+      "/VERYSILENT",
+      "/SUPPRESSMSGBOXES",
+      "/NORESTART",
+      "/SP-"
+    ],
     "accent_color": "#229ed9",
     "detect_names": [
       "Telegram Desktop",

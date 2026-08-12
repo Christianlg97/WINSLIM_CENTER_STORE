@@ -7,7 +7,7 @@ rem source tree clean while preserving fast subsequent builds.
 set "WINSLIM_TARGET_DIR=%LOCALAPPDATA%\WinSlimCenter\cargo-target"
 set "CARGO_TARGET_DIR=%WINSLIM_TARGET_DIR%"
 
-if not exist "node_modules\" (
+if not exist "node_modules\@tauri-apps\" (
   echo [INFO] Instalando dependencias del proyecto...
   call npm install
   if errorlevel 1 goto :err_npm

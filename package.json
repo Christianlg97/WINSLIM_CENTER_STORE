@@ -4,10 +4,10 @@
   "version": "0.1.3",
   "type": "module",
   "scripts": {
-    "dev": "tauri dev",
-    "build": "tauri build",
+    "dev": "npx tauri dev",
+    "build": "npx tauri build",
     "audit:catalog": "node scratch/audit_catalog_links.cjs",
-    "tauri": "tauri"
+    "tauri": "npx tauri"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2"
