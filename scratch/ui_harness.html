@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WinSlimCenter UI Harness</title>
+    <base href="/src/" />
+    <link rel="stylesheet" href="/src/styles.css" />
+    <script>
+      const listeners = {};
+      let mockTasks = [];
+      const installTimers = new Map();
+      function emitTasks() {
+        listeners["downloads-changed"]?.({ payload: { tasks: mockTasks } });
+      }
+      async function catalog() {
+        return fetch("/src-tauri/apps.json").then((response) => response.json());
+      }
+      window.__TAURI__ = {
+        core: {
+          invoke: async (command, args = {}) => {
+            if (command === "get_bootstrap") {
+              return { catalog: await catalog(), app_version: "0.1.3", installed: {}, statuses: {}, settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
+            }
+            if (command === "reload_catalog") return catalog();
+            if (command === "refresh_statuses" || command === "check_updates") return {};
+            if (command === "get_tasks") return mockTasks;
+            if (command === "get_templates") return [];
+            if (command === "save_catalog") return "apps.test.json";
+            if (command === "update_center_app") return "Actualización simulada correctamente";
+            if (command === "install_app") {
+              const appId = args.appEntry?.id;
+              mockTasks = [{ app_id: appId, name: args.appEntry?.name || appId, progress: 100, state: "installing", status: "Instalador abierto", can_pause: false, can_resume: false, can_cancel: true }];
+              emitTasks();
+              installTimers.set(appId, setTimeout(() => {
+                mockTasks = [];
+                emitTasks();
+                listeners["install-finished"]?.({ payload: { ok: true, app_id: appId, changed: true, is_update: false } });
+              }, 5000));
+              return null;
+            }
+            if (command === "cancel_download") {
+              const appId = args.appId;
+              clearTimeout(installTimers.get(appId));
+              installTimers.delete(appId);
+              mockTasks = mockTasks.map((task) => task.app_id === appId
+                ? { ...task, state: "cancelling", status: "Cancelando la instalación...", can_cancel: false }
+                : task);
+              emitTasks();
+              setTimeout(() => {
+                mockTasks = [];
+                emitTasks();
+                listeners["install-finished"]?.({ payload: { ok: false, app_id: appId, changed: false, is_update: false, cancelled: true, cancellation_kind: "installation", error: "Instalación cancelada por el usuario." } });
+              }, 40);
+              return null;
+            }
+            return null;
+          },
+        },
+        event: {
+          listen: async (name, handler) => {
+            listeners[name] = handler;
+            return () => delete listeners[name];
+          },
+        },
+      };
+    </script>
+  </head>
+  <body>
+    <div id="app">
+      <header class="topbar">
+        <div class="brand"><span class="brand-mark"><img src="/src/assets/winslim-center-logo.png" alt="" /></span><span class="brand-name">WinSlimCenter</span><span class="brand-sub">App Store</span></div>
+        <input id="search" class="search" type="text" placeholder="Buscar aplicaciones…" autocomplete="off" spellcheck="false" />
+        <div class="top-actions">
+          <button type="button" class="icon-btn" id="btn-refresh" title="Recargar aplicaciones y buscar actualizaciones"><span>↻</span> Refrescar</button>
+          <button type="button" class="icon-btn" id="btn-update"><span>⬆</span> Actualizar tienda</button>
+        </div>
+      </header>
+      <div class="shell"><aside class="sidebar" id="sidebar"></aside><main class="main"><div class="scroll" id="content"></div></main></div>
+      <footer class="status-bar">
+        <div class="status-message" role="status" aria-live="polite">
+          <span class="status-dot" id="status-dot" aria-hidden="true"></span>
+          <div class="status-copy"><span class="status-label">ESTADO</span><span class="status-text" id="status-text">Listo</span></div>
+          <span class="status-progress hidden" id="status-progress">0%</span>
+          <span class="status-progress-track hidden" id="status-progress-track" aria-hidden="true"><span class="status-progress-fill" id="status-progress-fill"></span></span>
+        </div>
+        <div class="version-badge" title="Versión instalada de WinSlimCenter"><span class="version-product">WinSlimCenter</span><span class="version-number" id="app-version">v0.1.3</span></div>
+      </footer>
+    </div>
+    <div class="modal-backdrop hidden" id="modal-backdrop"><div class="modal" id="modal" role="dialog" aria-modal="true"></div></div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

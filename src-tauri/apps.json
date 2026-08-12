@@ -1,0 +1,3547 @@
+[
+  {
+    "id": "winslim_terminal",
+    "name": "WinSlimTerminal",
+    "description": "Terminal ligera y moderna de WinSlim, lista para descargar y usar.",
+    "version": "latest",
+    "author": "Darkeiser003",
+    "category": "Desarrollo",
+    "section": "Destacados",
+    "featured": true,
+    "source_type": "wget",
+    "download_url": "https://github.com/Darkeiser003/Terminal/releases/download/Latest/WinSlimTerminal-Unpacked-Latest.zip",
+    "download_filename": "WinSlimTerminal-Unpacked-Latest.zip",
+    "icon_url": "assets/winslim-terminal.png",
+    "icon_background": "#ffffff",
+    "launch_executable": "winslim-terminal.exe",
+    "accent_color": "#25262b",
+    "detect_names": [
+      "WinSlimTerminal",
+      "WinSlim Terminal"
+    ]
+  },
+  {
+    "id": "steam",
+    "name": "Steam",
+    "description": "La plataforma de juegos más grande del mundo. Compra, descubre y juega a miles de títulos.",
+    "version": "latest",
+    "author": "Valve",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": true,
+    "source_type": "wget",
+    "download_url": "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/steam.png",
+    "accent_color": "#1b2838",
+    "detect_names": [
+      "Steam"
+    ]
+  },
+  {
+    "id": "discord",
+    "name": "Discord",
+    "description": "App de voz, video y chat de texto para comunidades de jugadores y desarrolladores.",
+    "version": "latest",
+    "author": "Discord Inc.",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "featured": true,
+    "source_type": "wget",
+    "download_url": "https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64",
+    "icon_url": "https://cdn.simpleicons.org/discord/white",
+    "accent_color": "#5865F2",
+    "detect_names": [
+      "Discord"
+    ]
+  },
+  {
+    "id": "ubisoft_connect",
+    "name": "Ubisoft Connect",
+    "description": "Plataforma de juegos de Ubisoft: Assassin's Creed, Far Cry, Rainbow Six y más.",
+    "version": "latest",
+    "author": "Ubisoft",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "wget",
+    "download_url": "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe",
+    "icon_url": "https://cdn.simpleicons.org/ubisoft/white",
+    "accent_color": "#0059d6",
+    "detect_names": [
+      "Ubisoft Connect",
+      "Ubisoft"
+    ],
+    "featured": false
+  },
+  {
+    "id": "itch_io",
+    "name": "Itch.io App",
+    "description": "Marketplace indie para juegos, assets, libros y herramientas creadas por desarrolladores independientes.",
+    "version": "latest",
+    "author": "Itch.io",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "accent_color": "#fa5c5c",
+    "detect_names": [
+      "itch"
+    ],
+    "winget_id": "ItchIo.Itch",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/itchio/itch/HEAD/release/images/itch-icons/icon1024.png",
+    "featured": false
+  },
+  {
+    "id": "epic_games",
+    "name": "Epic Games Launcher",
+    "description": "Juegos gratis cada semana + Unreal Engine. Fortnite, GTA, Rocket League y más.",
+    "version": "latest",
+    "author": "Epic Games",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/epic-games.png",
+    "accent_color": "#313131",
+    "detect_names": [
+      "Epic Games Launcher",
+      "Epic Games"
+    ]
+  },
+  {
+    "id": "seven_zip",
+    "name": "7-Zip",
+    "description": "Compresor/descompresor open source. Formatos 7z, ZIP, RAR, TAR, ISO y muchos más.",
+    "version": "latest",
+    "author": "Igor Pavlov",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/7zip.png",
+    "accent_color": "#b71c1c",
+    "detect_names": [
+      "7-Zip"
+    ],
+    "winget_id": "7zip.7zip",
+    "winget_source": "winget",
+    "featured": true
+  },
+  {
+    "id": "winrar",
+    "name": "WinRAR",
+    "description": "Archivador RAR y ZIP clásico para Windows. Ideal para abrir archivos comprimidos.",
+    "version": "latest",
+    "author": "RARLAB",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://www.win-rar.com/favicon.ico",
+    "accent_color": "#3b67c6",
+    "detect_names": [
+      "WinRAR"
+    ],
+    "winget_id": "RARLab.WinRAR",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "peazip",
+    "name": "PeaZip",
+    "description": "Archivador universal freeware: más de 200 formatos, cifrado AES y gestor de contraseñas.",
+    "version": "latest",
+    "author": "Giorgio Tani",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "peazip/PeaZip",
+    "asset_pattern": "peazip-*.WIN64.exe",
+    "accent_color": "#2f7aa7",
+    "icon_url": "https://raw.githubusercontent.com/peazip/PeaZip/HEAD/peazip-sources/res/share/icons/peazip.ico",
+    "featured": false
+  },
+  {
+    "id": "bandizip",
+    "name": "Bandizip",
+    "description": "Compresor superrápido con interfaz limpia. Extrae archivos ZIP/RAR/7Z/ARJ sin esfuerzo.",
+    "version": "latest",
+    "author": "Bandisoft",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://www.bandisoft.com/bandizip/dl.php?win",
+    "accent_color": "#1976d2",
+    "icon_url": "https://www.bandisoft.com/favicon.ico",
+    "featured": false
+  },
+  {
+    "id": "vscode",
+    "name": "Visual Studio Code",
+    "description": "Editor de código de Microsoft con soporte para cientos de lenguajes y extensiones.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": true,
+    "source_type": "winget",
+    "accent_color": "#172b3a",
+    "detect_names": [
+      "Microsoft Visual Studio Code",
+      "Visual Studio Code"
+    ],
+    "icon_url": "assets/vscode.png",
+    "winget_id": "Microsoft.VisualStudioCode",
+    "winget_source": "winget"
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode",
+    "description": "Agente de programación con IA, disponible como aplicación nativa de escritorio.",
+    "version": "latest",
+    "author": "OpenCode",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "SST.OpenCodeDesktop",
+    "winget_source": "winget",
+    "icon_url": "assets/opencode.png",
+    "accent_color": "#25262b",
+    "detect_names": [
+      "OpenCode",
+      "OpenCode Desktop"
+    ]
+  },
+  {
+    "id": "visual_studio_2022",
+    "name": "Visual Studio 2022 Community",
+    "description": "IDE completo para .NET, C#, C++, Python, Web y desarrollo móvil.",
+    "version": "2022",
+    "author": "Microsoft",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "wget",
+    "download_url": "https://c2rsetup.officeapps.live.com/c2r/downloadVS.aspx?sku=community&channel=Release&version=VS2022&source=VSLandingPage&cid=2030:b4e058af4d2b4b69a6c4a6ec38e3d988",
+    "accent_color": "#5c2d91",
+    "icon_url": "https://visualstudio.microsoft.com/wp-content/uploads/2021/10/Product-Icon.svg",
+    "featured": false
+  },
+  {
+    "id": "git_for_windows",
+    "name": "Git for Windows",
+    "description": "Cliente Git oficial para Windows con Git Bash, GUI y soporte SSH integrado. Incluye Git Bash y el comando bash para Windows.",
+    "version": "latest",
+    "author": "Git Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "github_release",
+    "github_repo": "git-for-windows/git",
+    "asset_pattern": "Git-*-64-bit.exe",
+    "accent_color": "#f05032",
+    "icon_url": "https://cdn.simpleicons.org/git/white",
+    "featured": false
+  },
+  {
+    "id": "ea_app",
+    "name": "EA App",
+    "description": "La nueva plataforma de EA: FIFA, Madden, Battlefield, The Sims 4 y EA Play.",
+    "version": "latest",
+    "author": "Electronic Arts",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "wget",
+    "download_url": "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe",
+    "icon_url": "https://cdn.simpleicons.org/ea/white",
+    "accent_color": "#cc0000",
+    "featured": false
+  },
+  {
+    "id": "battle_net",
+    "name": "Battle.net",
+    "description": "Launcher de Blizzard: World of Warcraft, Diablo, Overwatch, StarCraft, Call of Duty.",
+    "version": "latest",
+    "author": "Blizzard Entertainment",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/battledotnet/white",
+    "accent_color": "#009ae5",
+    "winget_id": "Blizzard.BattleNet",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "amazon_games",
+    "name": "Amazon Games",
+    "description": "Juegos Prime gratis cada mes + New World, Lost Ark, Blue Protocol y MMOs exclusivos.",
+    "version": "latest",
+    "author": "Amazon",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/svg/amazon.svg",
+    "accent_color": "#ff9900",
+    "winget_id": "Amazon.Games",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "brave",
+    "name": "Brave Browser",
+    "description": "Navegador privado, rápido y con bloqueador de anuncios integrado. Criptomoneda BAT.",
+    "version": "latest",
+    "author": "Brave Software",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "featured": true,
+    "source_type": "github_release",
+    "github_repo": "brave/brave-browser",
+    "asset_pattern": "BraveBrowserStandaloneSetup*.exe",
+    "accent_color": "#fb542b",
+    "icon_url": "https://cdn.simpleicons.org/brave/white"
+  },
+  {
+    "id": "google_chrome",
+    "name": "Google Chrome",
+    "description": "El navegador web más usado del mundo: rápido, seguro y con millones de extensiones.",
+    "version": "latest",
+    "author": "Google",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "wget",
+    "download_url": "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-D564-463C-AFF1-A69D9E530F96%7D%26iid%3D%7B00000000-0000-0000-0000-000000000000%7D%26lang%3Des%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dprefers%26ap%3Dx64-stable-statsdef_1%26installdataindex%3Dempty/update2/installers/ChromeSetup.exe",
+    "accent_color": "#4285F4",
+    "icon_url": "https://cdn.simpleicons.org/googlechrome/white",
+    "featured": false
+  },
+  {
+    "id": "mozilla_firefox",
+    "name": "Mozilla Firefox",
+    "description": "Navegador libre, independiente y centrado en la privacidad por la Fundación Mozilla.",
+    "version": "latest",
+    "author": "Mozilla",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "wget",
+    "download_url": "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=es-ES",
+    "accent_color": "#ff7139",
+    "icon_url": "https://cdn.simpleicons.org/firefox/white",
+    "featured": false
+  },
+  {
+    "id": "vivaldi",
+    "name": "Vivaldi",
+    "description": "Navegador super personalizable: pestañas apiladas, gestos, notas y comandos rápidos.",
+    "version": "latest",
+    "author": "Vivaldi Technologies",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "winget",
+    "accent_color": "#ef3939",
+    "icon_url": "https://cdn.simpleicons.org/vivaldi/white",
+    "winget_id": "Vivaldi.Vivaldi",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "notepad_plus_plus",
+    "name": "Notepad++",
+    "description": "Editor de texto ligero con resaltado de sintaxis para más de 80 lenguajes.",
+    "version": "latest",
+    "author": "Notepad++ Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "github_release",
+    "github_repo": "notepad-plus-plus/notepad-plus-plus",
+    "asset_pattern": "npp.*.Installer.x64.exe",
+    "accent_color": "#008000",
+    "icon_url": "https://cdn.simpleicons.org/notepadplusplus/white",
+    "featured": false
+  },
+  {
+    "id": "obs_studio",
+    "name": "OBS Studio",
+    "description": "Software libre para grabar pantalla y hacer streaming en Twitch, YouTube y Kick.",
+    "version": "latest",
+    "author": "OBS Project",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "featured": true,
+    "source_type": "github_release",
+    "github_repo": "obsproject/obs-studio",
+    "asset_pattern": "OBS-Studio-*-Windows-x64-Installer.exe",
+    "accent_color": "#302e31",
+    "icon_url": "https://cdn.simpleicons.org/obsstudio/white"
+  },
+  {
+    "id": "spotify",
+    "name": "Spotify",
+    "description": "Música, podcasts y audiolibros en streaming. 100 millones de canciones gratis.",
+    "version": "latest",
+    "author": "Spotify AB",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "wget",
+    "download_url": "https://download.scdn.co/SpotifySetup.exe",
+    "accent_color": "#1db954",
+    "detect_names": [
+      "Spotify"
+    ],
+    "icon_url": "https://cdn.simpleicons.org/spotify/white",
+    "featured": false
+  },
+  {
+    "id": "vlc",
+    "name": "VLC Media Player",
+    "description": "Reproductor multimedia open source que reproduce TODO: MP4, MKV, AVI, DVD, FLAC, MP3...",
+    "version": "latest",
+    "author": "VideoLAN",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "accent_color": "#ff8800",
+    "detect_names": [
+      "VLC media player",
+      "VLC"
+    ],
+    "icon_url": "https://cdn.simpleicons.org/vlcmediaplayer/white",
+    "winget_id": "VideoLAN.VLC",
+    "winget_source": "winget",
+    "featured": true
+  },
+  {
+    "id": "mpc_hc",
+    "name": "MPC-HC",
+    "description": "Media Player Classic Home Cinema. Reproductor de vídeo ligero y sin adornos.",
+    "version": "latest",
+    "author": "MPC-HC Team",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "clsid2/mpc-hc",
+    "asset_pattern": "MPC-HC.*x64.exe",
+    "accent_color": "#ffcc00",
+    "icon_url": "https://raw.githubusercontent.com/clsid2/mpc-hc/develop/src/mpc-hc/res/icon.ico",
+    "featured": false
+  },
+  {
+    "id": "audacity",
+    "name": "Audacity",
+    "description": "Editor de audio gratuito y multi plataforma. Graba, corta, mezcla y aplica efectos.",
+    "version": "latest",
+    "author": "Audacity Team",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "audacity/audacity",
+    "asset_pattern": "audacity-win-*-64bit.exe",
+    "accent_color": "#0079c1",
+    "icon_url": "https://cdn.simpleicons.org/audacity/white",
+    "featured": false
+  },
+  {
+    "id": "onlyoffice",
+    "name": "ONLYOFFICE Desktop",
+    "description": "Editores de documentos, hojas y presentaciones 100% compatibles con Office 365.",
+    "version": "latest",
+    "author": "Ascensio System",
+    "category": "Productividad",
+    "section": "Productividad",
+    "source_type": "github_release",
+    "github_repo": "ONLYOFFICE/DesktopEditors",
+    "asset_pattern": "DesktopEditors_x64.exe",
+    "accent_color": "#444444",
+    "icon_url": "https://cdn.simpleicons.org/onlyoffice/white",
+    "featured": false
+  },
+  {
+    "id": "obsidian",
+    "name": "Obsidian",
+    "description": "Notas markdown en local con enlaces bidireccionales. Construye tu segundo cerebro.",
+    "version": "latest",
+    "author": "Obsidian",
+    "category": "Productividad",
+    "section": "Productividad",
+    "source_type": "github_release",
+    "github_repo": "obsidianmd/obsidian-releases",
+    "asset_pattern": "Obsidian-*.exe",
+    "accent_color": "#7c3aed",
+    "icon_url": "https://cdn.simpleicons.org/obsidian/white",
+    "featured": false
+  },
+  {
+    "id": "sumatra_pdf",
+    "name": "Sumatra PDF",
+    "description": "Visor de PDF ligero, rápido y libre. También abre EPUB, MOBI, CBZ, DJVU.",
+    "version": "latest",
+    "author": "SumatraPDF",
+    "category": "Productividad",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "accent_color": "#00579e",
+    "winget_id": "SumatraPDF.SumatraPDF",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/sumatrapdfreader/sumatrapdf/HEAD/appx/SumatraLogo310x310.png",
+    "featured": false
+  },
+  {
+    "id": "thunderbird",
+    "name": "Mozilla Thunderbird",
+    "description": "Cliente de correo, calendario y RSS libre. Soporta IMAP, POP3 y múltiples cuentas.",
+    "version": "latest",
+    "author": "Mozilla",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "source_type": "wget",
+    "download_url": "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=es-ES",
+    "accent_color": "#0a84ff",
+    "icon_url": "https://cdn.simpleicons.org/thunderbird/white",
+    "featured": false
+  },
+  {
+    "id": "telegram",
+    "name": "Telegram Desktop",
+    "description": "Mensajería instantánea rápida, nubes ilimitadas, canales, stickers y bots.",
+    "version": "latest",
+    "author": "Telegram FZ-LLC",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "source_type": "github_release",
+    "github_repo": "telegramdesktop/tdesktop",
+    "asset_pattern": "tsetup-x64.*.exe",
+    "accent_color": "#229ed9",
+    "detect_names": [
+      "Telegram Desktop",
+      "Telegram"
+    ],
+    "icon_url": "https://cdn.simpleicons.org/telegram/white",
+    "featured": false
+  },
+  {
+    "id": "signal",
+    "name": "Signal",
+    "description": "Mensajería privada con cifrado de extremo a extremo por defecto. Sin anuncios.",
+    "version": "latest",
+    "author": "Signal Foundation",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "source_type": "winget",
+    "accent_color": "#25927a",
+    "icon_url": "https://cdn.simpleicons.org/signal/white",
+    "winget_id": "OpenWhisperSystems.Signal",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "tailscale",
+    "name": "Tailscale",
+    "description": "VPN gratuita y fácil de usar para conectar dispositivos y redes de forma segura con WireGuard.",
+    "version": "latest",
+    "author": "Tailscale Inc.",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "installer_args": [
+      "--silent",
+      "--agree"
+    ],
+    "accent_color": "#5d6df5",
+    "winget_id": "Tailscale.Tailscale",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/tailscale/white"
+  },
+  {
+    "id": "windscribe",
+    "name": "Windscribe",
+    "description": "VPN gratuita con límite de datos y protección de privacidad para navegar con más seguridad.",
+    "version": "latest",
+    "author": "Windscribe",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "accent_color": "#00bcd4",
+    "icon_url": "https://raw.githubusercontent.com/Windscribe/Desktop-App/HEAD/src/client/frontend/gui/svg/BADGE_BLACK_ICON.svg",
+    "icon_background": "#ffffff",
+    "icon_padding": 8,
+    "icon_fit": "contain",
+    "winget_id": "Windscribe.Windscribe",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "mullvad",
+    "name": "Mullvad VPN",
+    "description": "VPN privada y sencilla con enfoque en privacidad, anonimato y protección de datos.",
+    "version": "latest",
+    "author": "Mullvad",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "accent_color": "#4a90e2",
+    "winget_id": "MullvadVPN.MullvadVPN",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/mullvad/white",
+    "featured": false
+  },
+  {
+    "id": "protonvpn",
+    "name": "Proton VPN",
+    "description": "VPN segura con protección de privacidad, streaming y acceso libre a contenido global.",
+    "version": "latest",
+    "author": "Proton AG",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "accent_color": "#6d4aff",
+    "icon_url": "https://cdn.simpleicons.org/protonvpn/white",
+    "winget_id": "Proton.ProtonVPN",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "openvpn_gui",
+    "name": "OpenVPN GUI",
+    "description": "Cliente OpenVPN para Windows con soporte para conexiones seguras y privadas.",
+    "version": "latest",
+    "author": "OpenVPN",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "accent_color": "#1f7a8c",
+    "winget_id": "OpenVPNTechnologies.OpenVPN",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/openvpn/white",
+    "featured": false
+  },
+  {
+    "id": "rustdesk",
+    "name": "RustDesk",
+    "description": "Escritorio remoto open source, alternativa a TeamViewer y AnyDesk. Auto-hospedable.",
+    "version": "latest",
+    "author": "RustDesk",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": true,
+    "source_type": "github_release",
+    "github_repo": "rustdesk/rustdesk",
+    "asset_pattern": "rustdesk-*-x86_64.msi",
+    "accent_color": "#ef4c3b",
+    "icon_url": "https://cdn.simpleicons.org/rustdesk/white"
+  },
+  {
+    "id": "anydesk",
+    "name": "AnyDesk",
+    "description": "Acceso remoto rápido y ligero para asistencia técnica y trabajo en remoto.",
+    "version": "latest",
+    "author": "AnyDesk Software",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://download.anydesk.com/AnyDesk.exe",
+    "accent_color": "#ef4035",
+    "icon_url": "https://cdn.simpleicons.org/anydesk/white",
+    "featured": false
+  },
+  {
+    "id": "powertoys",
+    "name": "Microsoft PowerToys",
+    "description": "Utilidades oficiales de Microsoft: FancyZones, PowerRename, Run, ColorPicker...",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": true,
+    "source_type": "github_release",
+    "github_repo": "microsoft/PowerToys",
+    "asset_pattern": "PowerToysSetup-*-x64.exe",
+    "accent_color": "#f25022",
+    "icon_url": "https://raw.githubusercontent.com/microsoft/PowerToys/HEAD/doc/images/icons/PowerToys%20icon/PNG/2160x2160.png"
+  },
+  {
+    "id": "cpu_z",
+    "name": "CPU-Z",
+    "description": "Información detallada sobre procesador, placa base, memoria RAM y gráfica.",
+    "version": "latest",
+    "author": "CPUID",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://www.cpuid.com/medias/images/softwares/cpu-z.png",
+    "accent_color": "#0b70bd",
+    "winget_id": "CPUID.CPU-Z",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "crystaldiskinfo",
+    "name": "CrystalDiskInfo",
+    "description": "Monitoriza la salud de tus discos duros SSD/HDD con S.M.A.R.T. en tiempo real.",
+    "version": "latest",
+    "author": "Crystal Dew World",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://raw.githubusercontent.com/hiyohiyo/CrystalDiskInfo/HEAD/resN/DiskInfo.ico",
+    "accent_color": "#009688",
+    "winget_id": "CrystalDewWorld.CrystalDiskInfo",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "etcher",
+    "name": "balenaEtcher",
+    "description": "Graba imágenes ISO/IMG en USB o tarjetas SD de forma sencilla y segura.",
+    "version": "latest",
+    "author": "Balena",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "balena-io/etcher",
+    "asset_pattern": "balenaEtcher-*.Setup.exe",
+    "accent_color": "#20beff",
+    "icon_url": "https://raw.githubusercontent.com/balena-io/etcher/HEAD/assets/iconset/512x512.png",
+    "featured": false
+  },
+  {
+    "id": "rufus",
+    "name": "Rufus",
+    "description": "Crea USB booteables para Windows, Linux, UEFI, BIOS. Más rápido que Etcher.",
+    "version": "latest",
+    "author": "Pete Batard",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "pbatard/rufus",
+    "asset_pattern": "rufus-*.exe",
+    "accent_color": "#e52320",
+    "icon_url": "https://rufus.ie/pics/rufus-128.png",
+    "featured": false
+  },
+  {
+    "id": "handbrake",
+    "name": "HandBrake",
+    "description": "Transcodificador de vídeo libre. Convierte cualquier vídeo a MP4/MKV con codecs modernos.",
+    "version": "latest",
+    "author": "HandBrake Team",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "HandBrake/HandBrake",
+    "asset_pattern": "HandBrake-*-x86_64-Win_GUI.exe",
+    "accent_color": "#333333",
+    "icon_url": "https://raw.githubusercontent.com/HandBrake/HandBrake/master/win/CS/HandBrakeWPF/Views/Images/logo128.png",
+    "featured": false
+  },
+  {
+    "id": "sharex",
+    "name": "ShareX",
+    "description": "Capturas de pantalla, grabación GIF, subida automática a Imgur/Discord/Telegram.",
+    "version": "latest",
+    "author": "ShareX Team",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "ShareX/ShareX",
+    "asset_pattern": "ShareX-*-setup-x64.exe",
+    "accent_color": "#d22630",
+    "icon_url": "https://cdn.simpleicons.org/sharex/white",
+    "featured": false
+  },
+  {
+    "id": "greenshot",
+    "name": "Greenshot",
+    "description": "Capturador de pantalla ligero con anotaciones, flechas, textos y sombras.",
+    "version": "latest",
+    "author": "Greenshot",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "greenshot/greenshot",
+    "asset_pattern": "Greenshot-INSTALLER-*.exe",
+    "accent_color": "#80c342",
+    "icon_url": "https://getgreenshot.org/favicon.ico",
+    "featured": false
+  },
+  {
+    "id": "flameshot",
+    "name": "Flameshot",
+    "description": "Captura de pantalla potente con editor en vivo. Linux en Windows ❤️",
+    "version": "latest",
+    "author": "Flameshot Org",
+    "category": "Multimedia",
+    "section": "Multimedia",
+    "source_type": "github_release",
+    "github_repo": "flameshot-org/flameshot",
+    "asset_pattern": "Flameshot-*-win64.msi",
+    "accent_color": "#ff4444",
+    "icon_url": "https://raw.githubusercontent.com/flameshot-org/flameshot/master/data/img/app/flameshot.svg",
+    "featured": false
+  },
+  {
+    "id": "docker_desktop",
+    "name": "Docker Desktop",
+    "description": "Contenedores Docker y Kubernetes integrados en Windows con WSL2 backend.",
+    "version": "latest",
+    "author": "Docker Inc.",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "wget",
+    "download_url": "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+    "accent_color": "#0db7ed",
+    "icon_url": "https://cdn.simpleicons.org/docker/white",
+    "featured": false
+  },
+  {
+    "id": "postman",
+    "name": "Postman",
+    "description": "Herramienta líder para diseñar, probar y documentar APIs REST, GraphQL y SOAP.",
+    "version": "latest",
+    "author": "Postman",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "wget",
+    "download_url": "https://dl.pstmn.io/download/latest/win64",
+    "accent_color": "#ff6c37",
+    "icon_url": "https://cdn.simpleicons.org/postman/white",
+    "featured": false
+  },
+  {
+    "id": "dbeaver",
+    "name": "DBeaver Community",
+    "description": "Gestor de bases de datos universal: MySQL, PostgreSQL, SQL Server, SQLite, MongoDB...",
+    "version": "latest",
+    "author": "DBeaver Corp",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "github_release",
+    "github_repo": "dbeaver/dbeaver",
+    "asset_pattern": "dbeaver-ce-*-windows-x86_64.exe",
+    "accent_color": "#382923",
+    "icon_url": "https://cdn.simpleicons.org/dbeaver/white",
+    "featured": false
+  },
+  {
+    "id": "insomnia",
+    "name": "Insomnia",
+    "description": "Cliente REST, GraphQL y gRPC open source. Limpio y colaborativo.",
+    "version": "latest",
+    "author": "Kong",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "github_release",
+    "github_repo": "Kong/insomnia",
+    "asset_pattern": "Insomnia.Core-nsis-*.exe",
+    "accent_color": "#4000bf",
+    "icon_url": "https://cdn.simpleicons.org/insomnia/white",
+    "featured": false
+  },
+  {
+    "id": "nodejs",
+    "name": "Node.js LTS",
+    "description": "Entorno de ejecución JavaScript. Incluye npm para instalar paquetes. Incluye el runtime y REPL de Node.js.",
+    "version": "LTS",
+    "author": "OpenJS Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "accent_color": "#339933",
+    "detect_names": [
+      "Node.js"
+    ],
+    "icon_url": "https://cdn.simpleicons.org/nodedotjs/white",
+    "winget_id": "OpenJS.NodeJS.LTS",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "python3",
+    "name": "Python 3.12",
+    "description": "Lenguaje Python para scripting, IA, web y ciencia de datos. Incluye pip y Tkinter. Incluye el intérprete y REPL de Python.",
+    "version": "latest",
+    "author": "Python Software Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "accent_color": "#3776ab",
+    "icon_url": "https://cdn.simpleicons.org/python/white",
+    "winget_id": "Python.Python.3.14",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "duckstation",
+    "name": "DuckStation",
+    "description": "Emulador preciso y rápido de la PlayStation original para Windows.",
+    "version": "latest",
+    "author": "DuckStation Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "console_tags": [
+      "PS1"
+    ],
+    "source_type": "winget",
+    "winget_id": "Stenzek.DuckStation",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/stenzek/duckstation/HEAD/scripts/appimage/org.duckstation.DuckStation.png",
+    "accent_color": "#334155",
+    "detect_names": [
+      "DuckStation"
+    ],
+    "featured": false
+  },
+  {
+    "id": "rpcs3",
+    "name": "RPCS3",
+    "description": "Emulador y depurador de PlayStation 3 de código abierto para Windows.",
+    "version": "latest",
+    "author": "RPCS3 Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "console_tags": [
+      "PS3"
+    ],
+    "source_type": "github_release",
+    "github_repo": "RPCS3/rpcs3-binaries-win",
+    "asset_pattern": "rpcs3-*_win64_msvc.7z",
+    "icon_url": "https://raw.githubusercontent.com/RPCS3/rpcs3/HEAD/rpcs3/rpcs3.ico",
+    "accent_color": "#3b82f6",
+    "launch_executable": "rpcs3.exe",
+    "detect_names": [
+      "RPCS3"
+    ],
+    "featured": false
+  },
+  {
+    "id": "xenia",
+    "name": "Xenia",
+    "description": "Emulador experimental de Xbox 360 para equipos Windows modernos.",
+    "version": "latest",
+    "author": "Xenia Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "console_tags": [
+      "Xbox 360"
+    ],
+    "source_type": "winget",
+    "winget_id": "Xenia.Xenia",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/xenia-project/xenia/HEAD/assets/icon/256.png",
+    "accent_color": "#65a30d",
+    "detect_names": [
+      "Xenia"
+    ],
+    "featured": false
+  },
+  {
+    "id": "ppsspp",
+    "name": "PPSSPP",
+    "description": "Emulador de PSP para jugar títulos clásicos en Windows con buen rendimiento y compatibilidad.",
+    "version": "latest",
+    "author": "PPSSPP Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "github_release",
+    "github_repo": "hrydgard/ppsspp",
+    "asset_pattern": "PPSSPP-v*-Windows-x64.zip",
+    "icon_url": "https://raw.githubusercontent.com/hrydgard/ppsspp/master/icons/hicolor/512x512/apps/ppsspp.png",
+    "accent_color": "#4f46e5",
+    "console_tags": [
+      "PSP"
+    ],
+    "featured": false
+  },
+  {
+    "id": "cemu",
+    "name": "Cemu",
+    "description": "Emulador de Wii U para disfrutar de juegos de Nintendo en Windows.",
+    "version": "latest",
+    "author": "Cemu Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "github_release",
+    "github_repo": "cemu-project/Cemu",
+    "asset_pattern": "cemu-*-windows-x64.zip",
+    "accent_color": "#0f766e",
+    "icon_url": "https://cemu.info/favicon.ico",
+    "console_tags": [
+      "Wii U"
+    ],
+    "featured": false
+  },
+  {
+    "id": "plutonium",
+    "name": "Plutonium",
+    "description": "Cliente multijugador y herramientas de modificación para videojuegos de Black Ops y más.",
+    "version": "latest",
+    "author": "Plutonium Team",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "wget",
+    "download_url": "https://cdn.plutonium.pw/updater/plutonium.exe",
+    "icon_url": "https://cdn.simpleicons.org/electron/white",
+    "accent_color": "#dc2626",
+    "featured": false
+  },
+  {
+    "id": "dosbox",
+    "name": "DOSBox Staging",
+    "description": "Continuación moderna de DOSBox para ejecutar juegos y aplicaciones DOS con compatibilidad y configuración mejoradas.",
+    "version": "latest",
+    "author": "DOSBox Staging Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "winget",
+    "winget_id": "DOSBoxStaging.DOSBoxStaging",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/dosbox-staging/dosbox-staging/HEAD/extras/icons/png/icon_256.png",
+    "accent_color": "#7c3aed",
+    "console_tags": [
+      "DOS"
+    ],
+    "detect_names": [
+      "DOSBox Staging"
+    ],
+    "featured": false
+  },
+  {
+    "id": "mgba",
+    "name": "mGBA",
+    "description": "Emulador de Game Boy Advance con interfaz sencilla y compatibilidad amplia.",
+    "version": "latest",
+    "author": "mGBA Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "github_release",
+    "github_repo": "mgba-emu/mgba",
+    "asset_pattern": "mGBA-*-win64-installer.exe",
+    "accent_color": "#16a34a",
+    "icon_url": "https://raw.githubusercontent.com/mgba-emu/mgba/master/res/mgba-256.png",
+    "console_tags": [
+      "Game Boy",
+      "Game Boy Color",
+      "Game Boy Advance"
+    ],
+    "installer_cancel_exit_codes": [
+      1
+    ],
+    "featured": false
+  },
+  {
+    "id": "xemu",
+    "name": "Xemu",
+    "description": "Emulador de Xbox para ejecutar juegos de la consola original en Windows.",
+    "version": "latest",
+    "author": "Xemu Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "github_release",
+    "github_repo": "xemu-project/xemu",
+    "asset_pattern": "xemu-*-windows-x86_64.zip",
+    "accent_color": "#ea580c",
+    "icon_url": "https://xemu.app/favicon.ico",
+    "console_tags": [
+      "Xbox"
+    ],
+    "featured": false
+  },
+  {
+    "id": "pcsx2",
+    "name": "PCSX2",
+    "description": "Emulador de PlayStation 2 con soporte para una gran cantidad de títulos clásicos.",
+    "version": "latest",
+    "author": "PCSX2 Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "github_release",
+    "github_repo": "PCSX2/pcsx2",
+    "asset_pattern": "PCSX2-*-windows-x64-installer.exe",
+    "accent_color": "#f59e0b",
+    "icon_url": "https://raw.githubusercontent.com/PCSX2/pcsx2/master/bin/resources/icons/AppIconLarge.png",
+    "console_tags": [
+      "PS2"
+    ],
+    "featured": false
+  },
+  {
+    "id": "retroarch",
+    "name": "RetroArch",
+    "description": "Front-end de emulación multiformato con soporte para decenas de núcleos y plataformas. Front-end oficial de Libretro con núcleos para múltiples consolas.",
+    "version": "latest",
+    "author": "Libretro",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "source_type": "winget",
+    "accent_color": "#3b82f6",
+    "icon_url": "https://cdn.simpleicons.org/retroarch/white",
+    "winget_id": "Libretro.RetroArch",
+    "winget_source": "winget",
+    "console_tags": [
+      "Multiplata",
+      "PS1",
+      "PSP",
+      "NES",
+      "SNES",
+      "Nintendo 64",
+      "Game Boy",
+      "Game Boy Color",
+      "Game Boy Advance",
+      "Sega"
+    ],
+    "featured": false
+  },
+  {
+    "id": "yimmenu",
+    "name": "YimMenu",
+    "description": "Herramienta de modificación para GTA V con funciones adicionales para usuarios avanzados.",
+    "version": "nightly",
+    "author": "YimMenu Team",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://github.com/YimMenu/YimMenuV2/releases/download/nightly/YimMenuV2.dll",
+    "accent_color": "#0f172a",
+    "icon_url": "https://cdn.simpleicons.org/rockstargames/white",
+    "featured": false
+  },
+  {
+    "id": "ghelper",
+    "name": "GHelper",
+    "description": "Utilidad para controlar configuraciones y funciones avanzadas de equipos gaming ASUS, Lenovo y otros modelos compatibles.",
+    "version": "latest",
+    "author": "Serge",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "seerge/g-helper",
+    "asset_pattern": "GHelper.exe",
+    "icon_url": "assets/g-helper.ico",
+    "icon_background": "#0b5fa5",
+    "icon_padding": 4,
+    "accent_color": "#7c3aed",
+    "detect_names": [
+      "GHelper",
+      "G-Helper"
+    ],
+    "featured": false
+  },
+  {
+    "id": "xenos",
+    "name": "Xenos Injector",
+    "description": "Herramienta de análisis y modificación para entornos Windows con enfoque avanzado.",
+    "version": "latest",
+    "author": "DarthTon",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "accent_color": "#7f1d1d",
+    "icon_url": "https://cdn.simpleicons.org/cplusplus/white",
+    "github_repo": "DarthTon/Xenos",
+    "asset_pattern": "*.7z",
+    "featured": false
+  },
+  {
+    "id": "antigravity",
+    "name": "Antigravity",
+    "description": "Entorno de desarrollo avanzado e IA agentica de Google DeepMind para asistencia y creación de software.",
+    "version": "latest",
+    "author": "Google DeepMind",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/google/white",
+    "accent_color": "#4285f4",
+    "winget_id": "Google.Antigravity",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "openai_codex",
+    "name": "OpenAI Codex",
+    "description": "Sistema y modelos de inteligencia artificial de OpenAI especializados en generación y comprensión de código.",
+    "version": "latest",
+    "author": "OpenAI",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://upload.wikimedia.org/wikipedia/commons/4/4d/OpenAI_Logo.svg",
+    "accent_color": "#10a37f",
+    "winget_id": "OpenAI.Codex",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "claudecode",
+    "name": "Claude Code",
+    "description": "Herramienta oficial de Anthropic para programar, revisar código y automatizar tareas desde terminal o escritorio.",
+    "version": "latest",
+    "author": "Anthropic",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/anthropic/white",
+    "accent_color": "#d97706",
+    "winget_id": "Anthropic.ClaudeCode",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "trae",
+    "name": "Trae AI",
+    "description": "IDE adaptativo con IA integrada de ByteDance que acelera la creación y refactorización de código.",
+    "version": "latest",
+    "author": "ByteDance",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/bytedance/white",
+    "accent_color": "#3b82f6",
+    "winget_id": "ByteDance.Trae",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "cursor",
+    "name": "Cursor",
+    "description": "El editor de código potencado por IA diseñado para escribir, editar y depurar software velozmente.",
+    "version": "latest",
+    "author": "Anysphere",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/cursor/white",
+    "accent_color": "#0f172a",
+    "winget_id": "Anysphere.Cursor",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi AI",
+    "description": "Asistente inteligente de Moonshot AI con ventana de contexto ultra amplia para análisis de datos y código.",
+    "version": "latest",
+    "author": "Moonshot AI",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://huggingface.co/moonshotai/Kimi-K2.5/resolve/main/figures/kimi-logo.png",
+    "icon_background": "#000000",
+    "icon_padding": 6,
+    "accent_color": "#8b5cf6",
+    "winget_id": "MoonshotAI.Kimi",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "resource_hacker",
+    "name": "Resource Hacker",
+    "description": "Compilador y descompilador de recursos para editar ejecutables de Windows 32/64 bits (.exe y .dll).",
+    "version": "latest",
+    "author": "Angus Johnson",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/cplusplus/white",
+    "accent_color": "#0284c7",
+    "winget_id": "AngusJohnson.ResourceHacker",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "thorium_avx2",
+    "name": "Thorium Browser AVX2",
+    "description": "Edición de Thorium para procesadores modernos con AVX2; ofrece el mayor nivel de optimización disponible.",
+    "version": "latest",
+    "author": "Alex313031",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "github_release",
+    "github_repo": "Alex313031/Thorium-Win",
+    "asset_pattern": "thorium_AVX2_*.zip",
+    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
+    "accent_color": "#2563eb",
+    "launch_executable": "thorium.exe",
+    "featured": false
+  },
+  {
+    "id": "thorium_avx",
+    "name": "Thorium Browser AVX",
+    "description": "Edición de Thorium compatible con procesadores x64 que admiten AVX pero no AVX2.",
+    "version": "latest",
+    "author": "Alex313031",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "github_release",
+    "github_repo": "Alex313031/Thorium-Win",
+    "asset_pattern": "thorium_AVX_*.zip",
+    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
+    "accent_color": "#2563eb",
+    "launch_executable": "thorium.exe",
+    "featured": false
+  },
+  {
+    "id": "thorium_sse4",
+    "name": "Thorium Browser SSE4",
+    "description": "Edición de compatibilidad de Thorium optimizada para procesadores x64 con SSE4.",
+    "version": "latest",
+    "author": "Alex313031",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "github_release",
+    "github_repo": "Alex313031/Thorium-Win",
+    "asset_pattern": "thorium_SSE4_*.zip",
+    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
+    "accent_color": "#2563eb",
+    "launch_executable": "thorium.exe",
+    "featured": false
+  },
+  {
+    "id": "thorium_sse3",
+    "name": "Thorium Browser SSE3",
+    "description": "Edición de máxima compatibilidad de Thorium para procesadores x64 antiguos con SSE3.",
+    "version": "latest",
+    "author": "Alex313031",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "github_release",
+    "github_repo": "Alex313031/Thorium-Win",
+    "asset_pattern": "thorium_SSE3_*.zip",
+    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
+    "accent_color": "#2563eb",
+    "launch_executable": "thorium.exe",
+    "featured": false
+  },
+  {
+    "id": "slimjet",
+    "name": "Slimjet",
+    "description": "Navegador web superrápido y seguro basado en Blink repleto de utilidades integradas y bloqueador de publicidad.",
+    "version": "latest",
+    "author": "FlashPeak",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "wget",
+    "download_url": "https://www.slimjet.com/release/sjtsetup_x64.exe",
+    "icon_url": "https://www.slimjet.com/favicon.ico",
+    "accent_color": "#059669",
+    "featured": false
+  },
+  {
+    "id": "opera_gx",
+    "name": "Opera GX",
+    "description": "El navegador creado especialmente para jugadores con limitadores de CPU, RAM y ancho de banda en tiempo real.",
+    "version": "latest",
+    "author": "Opera Software",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/operagx/white",
+    "accent_color": "#ff1b2d",
+    "winget_id": "Opera.OperaGX",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "helium_browser",
+    "name": "Helium Browser",
+    "description": "Navegador flotante translúcido para mantener ventanas de vídeo e información siempre visibles en pantalla.",
+    "version": "latest",
+    "author": "Imputnet",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "github_release",
+    "github_repo": "imputnet/helium-windows",
+    "asset_pattern": "Helium_*_x64-installer.exe",
+    "icon_url": "https://raw.githubusercontent.com/imputnet/helium/main/resources/branding/app_icon/raw.png",
+    "accent_color": "#3854d8",
+    "detect_names": [
+      "Helium",
+      "Helium Browser"
+    ],
+    "featured": false
+  },
+  {
+    "id": "microsoft_edge",
+    "name": "Microsoft Edge",
+    "description": "El navegador nativo de Windows 10/11 optimizado con Microsoft Copilot e integración con servicios de Office.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "source_type": "winget",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/microsoft-edge.png",
+    "accent_color": "#0078d4",
+    "winget_id": "Microsoft.Edge",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "msi_afterburner",
+    "name": "MSI Afterburner",
+    "description": "La utilidad de overclocking, monitorización y ajuste de tarjetas gráficas más reconocida del mundo.",
+    "version": "latest",
+    "author": "MSI / Guru3D",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/msi/white",
+    "accent_color": "#e11d48",
+    "winget_id": "Guru3D.Afterburner",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "rivatuner",
+    "name": "RivaTuner Statistics Server",
+    "description": "Servidor de estadísticas y visualización en pantalla (OSD) de framerate y temperaturas para videojuegos.",
+    "version": "latest",
+    "author": "Unwinder",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/msi/white",
+    "accent_color": "#be123c",
+    "winget_id": "Guru3D.RTSS",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "wintoys",
+    "name": "WinToys",
+    "description": "Optimiza, limpia, desinstala aplicaciones bloatware y ajusta el rendimiento de Windows 10 y 11.",
+    "version": "latest",
+    "author": "BogDan Vitan",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/speedtest/white",
+    "accent_color": "#2563eb",
+    "winget_id": "9P8LTPGCBZXD",
+    "winget_source": "msstore",
+    "featured": false
+  },
+  {
+    "id": "hwinfo",
+    "name": "HWiNFO64",
+    "description": "Herramienta profesional para diagnóstico, análisis detallado y monitoreo de sensores de hardware en tiempo real.",
+    "version": "latest",
+    "author": "REALiX",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=hwinfo.com&sz=128",
+    "accent_color": "#1e3a8a",
+    "winget_id": "REALiX.HWiNFO",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "coretemp",
+    "name": "Core Temp",
+    "description": "Monitor de temperatura compacto y preciso para cada núcleo del procesador con alertas térmicas.",
+    "version": "latest",
+    "author": "ALCPU",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=alcpu.com&sz=128",
+    "accent_color": "#b91c1c",
+    "winget_id": "ALCPU.CoreTemp",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "ntlite",
+    "name": "NTLite",
+    "description": "Personalización e integración avanzada de imágenes de instalación de Windows ISO, eliminando componentes innecesarios.",
+    "version": "latest",
+    "author": "NLLabs",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://downloads.ntlite.com/files/NTLite_setup_x64.exe",
+    "icon_url": "https://www.ntlite.com/favicon.ico",
+    "accent_color": "#0369a1",
+    "featured": false
+  },
+  {
+    "id": "autohotkey",
+    "name": "AutoHotkey",
+    "description": "Potente lenguaje de scripting y macros para automatizar tareas, remapear teclas y crear atajos de teclado.",
+    "version": "latest",
+    "author": "AutoHotkey Foundation",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://www.autohotkey.com/download/ahk-v2.exe",
+    "icon_url": "https://cdn.simpleicons.org/autohotkey/white",
+    "accent_color": "#334155",
+    "featured": false
+  },
+  {
+    "id": "google_drive",
+    "name": "Google Drive Desktop",
+    "description": "Sincronizador oficial de Google Drive para acceder a tus archivos en la nube directamente desde el Explorador.",
+    "version": "latest",
+    "author": "Google",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe",
+    "icon_url": "https://cdn.simpleicons.org/googledrive/white",
+    "accent_color": "#15803d",
+    "featured": false
+  },
+  {
+    "id": "megasync",
+    "name": "MEGAsync",
+    "description": "Cliente de escritorio para sincronizar carpetas en tiempo real con almacenamiento encriptado MEGA.",
+    "version": "latest",
+    "author": "Mega Limited",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://mega.nz/MEGAsyncSetup64.exe",
+    "icon_url": "https://cdn.simpleicons.org/mega/white",
+    "accent_color": "#dc2626",
+    "featured": false
+  },
+  {
+    "id": "process_hacker",
+    "name": "Process Hacker (System Informer)",
+    "description": "Monitor avanzado e inspeccionador de procesos del sistema, memoria, subprocesos y servicios de Windows.",
+    "version": "latest",
+    "author": "System Informer Team",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "winsiderss/systeminformer",
+    "icon_url": "https://raw.githubusercontent.com/winsiderss/systeminformer/master/SystemInformer/SystemInformer.ico",
+    "accent_color": "#4338ca",
+    "featured": false
+  },
+  {
+    "id": "disk_genius",
+    "name": "DiskGenius",
+    "description": "Herramienta completa para gestión de particiones, recuperación de archivos perdidos y clonación de discos SSD.",
+    "version": "latest",
+    "author": "Eassos",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "icon_url": "https://www.diskgenius.com/favicon.ico",
+    "accent_color": "#0f766e",
+    "winget_id": "Eassos.DiskGenius",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "logitech_ghub",
+    "name": "Logitech G HUB",
+    "description": "Gestor unificado para ratones, teclados, auriculares y volantes Logitech G con perfiles de iluminación y juego.",
+    "version": "latest",
+    "author": "Logitech",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "wget",
+    "download_url": "https://download01.logi.com/web/ftp/pub/techsupport/gaming/lghub_installer.exe",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/logitech.png",
+    "accent_color": "#00b4ec",
+    "featured": false
+  },
+  {
+    "id": "razer_synapse",
+    "name": "Razer Synapse",
+    "description": "Configuración unificada de periféricos Razer, macros avanzadas e iluminación Chroma RGB personalizable.",
+    "version": "latest",
+    "author": "Razer",
+    "category": "Juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "icon_url": "https://cdn.simpleicons.org/razer/white",
+    "accent_color": "#16a34a",
+    "winget_id": "RazerInc.RazerInstaller.Synapse4",
+    "winget_source": "winget",
+    "featured": false
+  },
+  {
+    "id": "ipython",
+    "name": "Anaconda + IPython",
+    "description": "Distribución científica de Python que incluye IPython y su consola interactiva.",
+    "version": "latest",
+    "author": "Anaconda",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Anaconda.Anaconda3",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/anaconda/white",
+    "detect_names": [
+      "Anaconda3",
+      "Anaconda"
+    ]
+  },
+  {
+    "id": "deno",
+    "name": "Deno",
+    "description": "Runtime seguro para JavaScript y TypeScript con REPL integrado.",
+    "version": "latest",
+    "author": "Deno Land",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DenoLand.Deno",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/deno/white",
+    "detect_names": [
+      "Deno"
+    ]
+  },
+  {
+    "id": "bun",
+    "name": "Bun",
+    "description": "Runtime, gestor de paquetes, test runner y REPL para JavaScript.",
+    "version": "latest",
+    "author": "Oven",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Oven-sh.Bun",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/bun/white",
+    "detect_names": [
+      "Bun"
+    ]
+  },
+  {
+    "id": "ruby",
+    "name": "Ruby + IRB",
+    "description": "Lenguaje Ruby para Windows con la consola interactiva IRB y DevKit.",
+    "version": "latest",
+    "author": "RubyInstaller Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "RubyInstallerTeam.RubyWithDevKit.3.4",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/ruby/white",
+    "detect_names": [
+      "Ruby",
+      "Ruby with MSYS2"
+    ]
+  },
+  {
+    "id": "perl",
+    "name": "Strawberry Perl",
+    "description": "Distribución completa de Perl para Windows con compilador y herramientas.",
+    "version": "latest",
+    "author": "Strawberry Perl",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "StrawberryPerl.StrawberryPerl",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/perl/white",
+    "detect_names": [
+      "Strawberry Perl"
+    ]
+  },
+  {
+    "id": "php",
+    "name": "PHP",
+    "description": "Runtime PHP para Windows; incluye la consola interactiva php -a.",
+    "version": "latest",
+    "author": "PHP Group",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "PHP.PHP.8.4",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/php/white",
+    "detect_names": [
+      "PHP 8.4",
+      "PHP"
+    ]
+  },
+  {
+    "id": "lua",
+    "name": "Lua",
+    "description": "Lenguaje de scripting Lua con intérprete interactivo.",
+    "version": "latest",
+    "author": "Lua.org",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DEVCOM.Lua",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/lua/white",
+    "detect_names": [
+      "Lua"
+    ]
+  },
+  {
+    "id": "luajit",
+    "name": "LuaJIT",
+    "description": "Implementación JIT de alto rendimiento de Lua.",
+    "version": "latest",
+    "author": "LuaJIT Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DEVCOM.LuaJIT",
+    "winget_source": "winget",
+    "icon_url": "assets/luajit.png",
+    "detect_names": [
+      "LuaJIT"
+    ]
+  },
+  {
+    "id": "raku",
+    "name": "Rakudo (Raku)",
+    "description": "Compilador Rakudo y REPL del lenguaje Raku.",
+    "version": "latest",
+    "author": "Raku Community",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Rakudo.Rakudo",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/rakudo/rakudo/main/tools/build/binary-release/msi/assets/rakudo_icon.ico",
+    "detect_names": [
+      "Rakudo Star",
+      "Rakudo"
+    ]
+  },
+  {
+    "id": "r_language",
+    "name": "R",
+    "description": "Entorno y lenguaje R para estadística, análisis de datos y consola interactiva.",
+    "version": "latest",
+    "author": "R Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "RProject.R",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/r/white",
+    "detect_names": [
+      "R for Windows",
+      "R"
+    ]
+  },
+  {
+    "id": "julia",
+    "name": "Julia",
+    "description": "Lenguaje de alto rendimiento para cálculo técnico y científico con REPL.",
+    "version": "latest",
+    "author": "JuliaLang",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Julialang.Julia",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/julia/white",
+    "detect_names": [
+      "Julia"
+    ]
+  },
+  {
+    "id": "elixir",
+    "name": "Elixir + IEx",
+    "description": "Lenguaje funcional Elixir con instalador oficial para Windows y consola IEx.",
+    "version": "latest",
+    "author": "Elixir Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "elixir-lang/elixir",
+    "asset_pattern": "elixir-otp-29.exe",
+    "icon_url": "https://cdn.simpleicons.org/elixir/white",
+    "detect_names": [
+      "Elixir"
+    ]
+  },
+  {
+    "id": "erlang",
+    "name": "Erlang/OTP",
+    "description": "Plataforma Erlang/OTP con la consola interactiva erl.",
+    "version": "latest",
+    "author": "Ericsson",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Erlang.ErlangOTP",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/erlang/white",
+    "detect_names": [
+      "Erlang OTP",
+      "Erlang"
+    ]
+  },
+  {
+    "id": "dotnet_sdk",
+    "name": ".NET SDK + F# Interactive",
+    "description": "SDK de .NET que incluye la consola dotnet fsi para F#.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Microsoft.DotNet.SDK.10",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/dotnet/white",
+    "detect_names": [
+      "Microsoft .NET SDK",
+      ".NET SDK"
+    ]
+  },
+  {
+    "id": "scala_cli",
+    "name": "Scala CLI",
+    "description": "Toolchain oficial recomendada para Scala con compilador y REPL.",
+    "version": "latest",
+    "author": "VirtusLab",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "VirtusLab.ScalaCLI",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/scala/white",
+    "detect_names": [
+      "Scala CLI"
+    ]
+  },
+  {
+    "id": "groovy",
+    "name": "Apache Groovy",
+    "description": "Lenguaje dinámico para la JVM con la consola groovysh.",
+    "version": "latest",
+    "author": "Apache Software Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Apache.Groovy.4",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/apachegroovy/white",
+    "detect_names": [
+      "Groovy"
+    ]
+  },
+  {
+    "id": "sbcl",
+    "name": "Steel Bank Common Lisp",
+    "description": "Implementación de Common Lisp con compilador y REPL SBCL.",
+    "version": "latest",
+    "author": "SBCL",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "SBCL.SBCL",
+    "winget_source": "winget",
+    "icon_url": "https://www.sbcl.org/sbclbutton.png",
+    "detect_names": [
+      "Steel Bank Common Lisp",
+      "SBCL"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 7,
+    "icon_fit": "contain"
+  },
+  {
+    "id": "racket",
+    "name": "Racket",
+    "description": "Plataforma de lenguajes y entorno interactivo de la familia Lisp/Scheme.",
+    "version": "latest",
+    "author": "Racket",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Racket.Racket",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/racket/white",
+    "detect_names": [
+      "Racket"
+    ]
+  },
+  {
+    "id": "swift",
+    "name": "Swift Toolchain",
+    "description": "Toolchain oficial de Swift para Windows con REPL y compilador.",
+    "version": "latest",
+    "author": "Swift Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Swift.Toolchain",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/swift/white",
+    "detect_names": [
+      "Swift",
+      "Swift Toolchain"
+    ]
+  },
+  {
+    "id": "dart",
+    "name": "Dart SDK",
+    "description": "SDK del lenguaje Dart con herramientas de desarrollo y consola.",
+    "version": "latest",
+    "author": "Google",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Google.DartSDK",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/dart/white",
+    "detect_names": [
+      "Dart SDK"
+    ]
+  },
+  {
+    "id": "crystal",
+    "name": "Crystal",
+    "description": "Lenguaje compilado con sintaxis inspirada en Ruby y herramientas interactivas.",
+    "version": "latest",
+    "author": "Crystal Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "CrystalLang.Crystal",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/crystal/white",
+    "detect_names": [
+      "Crystal"
+    ]
+  },
+  {
+    "id": "nim",
+    "name": "Nim",
+    "description": "Compilador y herramientas del lenguaje Nim para Windows de 64 bits.",
+    "version": "latest",
+    "author": "Nim Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "nim-lang/nightlies",
+    "asset_pattern": "windows_x64.zip",
+    "icon_url": "https://cdn.simpleicons.org/nim/white",
+    "detect_names": [
+      "Nim"
+    ],
+    "launch_executable": "bin/nim.exe"
+  },
+  {
+    "id": "v_language",
+    "name": "V",
+    "description": "Compilador y REPL del lenguaje V para Windows.",
+    "version": "latest",
+    "author": "V Language",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "vlang/v",
+    "asset_pattern": "v_windows.zip",
+    "icon_url": "https://cdn.simpleicons.org/v/white",
+    "detect_names": [
+      "V"
+    ],
+    "launch_executable": "v.exe"
+  },
+  {
+    "id": "gore",
+    "name": "Gore",
+    "description": "REPL interactivo para el lenguaje Go en Windows.",
+    "version": "latest",
+    "author": "Motemen",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "x-motemen/gore",
+    "asset_pattern": "gore_*_windows_amd64.zip",
+    "icon_url": "https://cdn.simpleicons.org/go/white",
+    "detect_names": [
+      "Gore"
+    ],
+    "launch_executable": "gore.exe"
+  },
+  {
+    "id": "octave",
+    "name": "GNU Octave",
+    "description": "Entorno numérico compatible con MATLAB y consola interactiva.",
+    "version": "latest",
+    "author": "GNU Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "GNU.Octave",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/octave/white",
+    "detect_names": [
+      "GNU Octave",
+      "Octave"
+    ]
+  },
+  {
+    "id": "maxima",
+    "name": "Maxima",
+    "description": "Sistema de álgebra computacional con consola interactiva.",
+    "version": "latest",
+    "author": "Maxima Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MaximaTeam.Maxima",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=maxima.sourceforge.io&sz=128",
+    "detect_names": [
+      "Maxima"
+    ]
+  },
+  {
+    "id": "coq_platform",
+    "name": "Coq Platform",
+    "description": "Distribución oficial del asistente de pruebas Coq; incluye coqtop.",
+    "version": "latest",
+    "author": "Coq Team",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Coq.CoqPlatform",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/rocq-prover/rocq-prover.org/main/rocq-id/avatar/SVG/avatar-rocq-1.svg",
+    "detect_names": [
+      "Coq Platform",
+      "Coq"
+    ]
+  },
+  {
+    "id": "swipl",
+    "name": "SWI-Prolog",
+    "description": "Implementación completa de Prolog con la consola swipl.",
+    "version": "latest",
+    "author": "SWI-Prolog",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "SWI-Prolog.SWI-Prolog",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=swi-prolog.org&sz=128",
+    "detect_names": [
+      "SWI-Prolog"
+    ]
+  },
+  {
+    "id": "gforth",
+    "name": "Gforth",
+    "description": "Implementación GNU del lenguaje Forth con consola gforth.",
+    "version": "latest",
+    "author": "GNU Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "GNU.Gforth",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=gforth.org&sz=128",
+    "detect_names": [
+      "Gforth"
+    ]
+  },
+  {
+    "id": "sqlite",
+    "name": "SQLite",
+    "description": "Motor SQLite y utilidad de consola sqlite3.",
+    "version": "latest",
+    "author": "SQLite Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "SQLite.SQLite",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/sqlite/white",
+    "detect_names": [
+      "SQLite"
+    ]
+  },
+  {
+    "id": "postgresql",
+    "name": "PostgreSQL",
+    "description": "Servidor PostgreSQL con la consola psql.",
+    "version": "latest",
+    "author": "PostgreSQL Global Development Group",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "PostgreSQL.PostgreSQL.18",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/postgresql/white",
+    "detect_names": [
+      "PostgreSQL 18",
+      "PostgreSQL"
+    ]
+  },
+  {
+    "id": "mysql",
+    "name": "MySQL Server",
+    "description": "Servidor MySQL con cliente de línea de comandos.",
+    "version": "latest",
+    "author": "Oracle",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Oracle.MySQL",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/mysql/white",
+    "detect_names": [
+      "MySQL Server",
+      "MySQL"
+    ]
+  },
+  {
+    "id": "mysql_shell",
+    "name": "MySQL Shell",
+    "description": "Shell avanzada de MySQL para SQL, JavaScript y Python.",
+    "version": "latest",
+    "author": "Oracle",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-26.7.0-windows-x86-64bit.msi",
+    "download_filename": "mysql-shell-26.7.0-windows-x86-64bit.msi",
+    "icon_url": "https://cdn.simpleicons.org/mysql/white",
+    "launch_executable": "mysqlsh.exe",
+    "detect_names": [
+      "MySQL Shell"
+    ]
+  },
+  {
+    "id": "mariadb",
+    "name": "MariaDB Server",
+    "description": "Servidor MariaDB con cliente de consola compatible con mysql.",
+    "version": "latest",
+    "author": "MariaDB Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MariaDB.Server",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/mariadb/white",
+    "detect_names": [
+      "MariaDB",
+      "MariaDB Server"
+    ]
+  },
+  {
+    "id": "duckdb",
+    "name": "DuckDB CLI",
+    "description": "Base de datos analítica embebida con consola duckdb.",
+    "version": "latest",
+    "author": "DuckDB Foundation",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DuckDB.cli",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/duckdb/white",
+    "detect_names": [
+      "DuckDB CLI",
+      "DuckDB"
+    ]
+  },
+  {
+    "id": "mongosh",
+    "name": "MongoDB Shell",
+    "description": "Shell oficial mongosh para administrar MongoDB.",
+    "version": "latest",
+    "author": "MongoDB",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MongoDB.Shell",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/mongodb/white",
+    "detect_names": [
+      "MongoDB Shell",
+      "mongosh"
+    ]
+  },
+  {
+    "id": "jq",
+    "name": "jq",
+    "description": "Procesador y filtro JSON para la línea de comandos.",
+    "version": "latest",
+    "author": "jqlang",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "jqlang.jq",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/jqlang/jq/HEAD/docs/public/icon.png",
+    "detect_names": [
+      "jq"
+    ]
+  },
+  {
+    "id": "yq",
+    "name": "yq",
+    "description": "Procesador YAML, JSON y XML para la línea de comandos.",
+    "version": "latest",
+    "author": "Mike Farah",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MikeFarah.yq",
+    "winget_source": "winget",
+    "icon_url": "https://mikefarah.gitbook.io/yq/~gitbook/icon?size=medium&theme=dark&border=false",
+    "detect_names": [
+      "yq"
+    ]
+  },
+  {
+    "id": "powershell",
+    "name": "PowerShell",
+    "description": "Shell y lenguaje de automatización multiplataforma; comando pwsh.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Microsoft.PowerShell",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/PowerShell/PowerShell/HEAD/assets/Square150x150Logo.png",
+    "detect_names": [
+      "PowerShell 7",
+      "PowerShell"
+    ]
+  },
+  {
+    "id": "nushell",
+    "name": "Nushell",
+    "description": "Shell moderno orientado a datos; comando nu.",
+    "version": "latest",
+    "author": "Nushell Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Nushell.Nushell",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/nushell/white",
+    "detect_names": [
+      "Nushell"
+    ]
+  },
+  {
+    "id": "xonsh",
+    "name": "Xonsh",
+    "description": "Shell basado en Python con sintaxis de consola y lenguaje Python.",
+    "version": "latest",
+    "author": "Xonsh Project",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "xonsh.xonsh-winget",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/xonsh/xonsh/HEAD/docs/_static/landing2/images/xonsh_term_icon_512x512.png",
+    "detect_names": [
+      "xonsh-winget",
+      "Xonsh"
+    ]
+  },
+  {
+    "id": "elvish",
+    "name": "Elvish",
+    "description": "Shell expresivo y moderno para Windows.",
+    "version": "latest",
+    "author": "Elvish",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "elves.elvish",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/elves/elvish/HEAD/website/favicons/android-chrome-512x512.png",
+    "detect_names": [
+      "Elvish"
+    ]
+  },
+  {
+    "id": "ventoy",
+    "name": "Ventoy",
+    "description": "Herramienta para crear unidades USB multiboot arrancables.",
+    "version": "latest",
+    "author": "Ventoy",
+    "category": "Utilidades",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Ventoy.Ventoy",
+    "winget_source": "winget",
+    "icon_url": "https://www.ventoy.net/static/img/ventoy.png",
+    "detect_names": [
+      "Ventoy"
+    ]
+  },
+  {
+    "id": "gog_galaxy",
+    "name": "GOG GALAXY",
+    "description": "Cliente de GOG para instalar, actualizar y organizar juegos.",
+    "version": "latest",
+    "author": "GOG",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "GOG.Galaxy",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/gogdotcom/white",
+    "detect_names": [
+      "GOG GALAXY",
+      "GOG Galaxy"
+    ]
+  },
+  {
+    "id": "humble_app",
+    "name": "Humble App",
+    "description": "Cliente oficial de Humble Games Collection para Windows.",
+    "version": "latest",
+    "author": "Humble Bundle",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "HumbleBundle.HumbleApp",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/humblebundle/white",
+    "detect_names": [
+      "Humble App"
+    ]
+  },
+  {
+    "id": "emu_86box",
+    "name": "86Box",
+    "description": "Emulador de sistemas IBM PC y compatibles.",
+    "version": "latest",
+    "author": "86Box Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "86Box.86Box",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/86Box/86Box/HEAD/src/qt/icons/86Box-red.ico",
+    "detect_names": [
+      "86Box"
+    ],
+    "console_tags": [
+      "PC"
+    ]
+  },
+  {
+    "id": "atari800",
+    "name": "Atari800Win PLus",
+    "description": "Emulador de ordenadores Atari de 8 bits y consola 5200.",
+    "version": "latest",
+    "author": "Atari800Win",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Atari800Win.PLus",
+    "winget_source": "winget",
+    "icon_url": "assets/atari800.png",
+    "detect_names": [
+      "Atari800Win PLus"
+    ],
+    "console_tags": [
+      "Atari 8-bit",
+      "Atari 5200"
+    ]
+  },
+  {
+    "id": "adventure_game_studio",
+    "name": "Adventure Game Studio",
+    "description": "Motor y entorno para crear y ejecutar aventuras gráficas clásicas.",
+    "version": "latest",
+    "author": "AGS Project Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "AGSProjectTeam.AdventureGameStudio",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/adventuregamestudio/ags/HEAD/OSX/ags.iconset/icon_256x256.png",
+    "detect_names": [
+      "Adventure Game Studio"
+    ],
+    "console_tags": [
+      "PC"
+    ]
+  },
+  {
+    "id": "azahar",
+    "name": "Azahar",
+    "description": "Emulador de Nintendo 3DS derivado de Citra para sistemas modernos.",
+    "version": "latest",
+    "author": "Azahar Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "AzaharEmu.Azahar",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/azahar-emu/azahar/HEAD/dist/qt_themes/default/icons/256x256/azahar.png",
+    "detect_names": [
+      "Azahar"
+    ],
+    "console_tags": [
+      "Nintendo 3DS"
+    ]
+  },
+  {
+    "id": "desmume",
+    "name": "DeSmuME",
+    "description": "Emulador de Nintendo DS para Windows.",
+    "version": "latest",
+    "author": "DeSmuME Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "DeSmuMETeam.DeSmuME",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/TASEmulators/desmume/HEAD/desmume/src/frontend/cocoa/images/Icon_DeSmuME_32x32@2x.png",
+    "detect_names": [
+      "DeSmuME"
+    ],
+    "console_tags": [
+      "Nintendo DS"
+    ]
+  },
+  {
+    "id": "mame",
+    "name": "MAME",
+    "description": "Emulador de máquinas arcade y sistemas clásicos.",
+    "version": "latest",
+    "author": "MAMEdev",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MAMEdev.MAME",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/mamedev/mame/HEAD/scripts/resources/windows/mame/mame.ico",
+    "detect_names": [
+      "MAME"
+    ],
+    "console_tags": [
+      "Arcade",
+      "Multiplata"
+    ]
+  },
+  {
+    "id": "mednafen",
+    "name": "Mednafen",
+    "description": "Emulador multisistema preciso con múltiples núcleos de consola.",
+    "version": "latest",
+    "author": "Mednafen Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "MednafenTeam.Mednafen",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/libretro-mirrors/mednafen-git/HEAD/src/drivers/win-icon.ico",
+    "detect_names": [
+      "Mednafen"
+    ],
+    "console_tags": [
+      "Multiplata",
+      "PS1",
+      "NES",
+      "SNES",
+      "PC Engine"
+    ]
+  },
+  {
+    "id": "melonds",
+    "name": "melonDS",
+    "description": "Emulador de Nintendo DS y DSi.",
+    "version": "latest",
+    "author": "melonDS Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "melonDS.melonDS",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/melonDS-emu/melonDS/HEAD/res/icon/melon_256x256.png",
+    "detect_names": [
+      "melonDS"
+    ],
+    "console_tags": [
+      "Nintendo DS",
+      "Nintendo DSi"
+    ]
+  },
+  {
+    "id": "redream",
+    "name": "redream",
+    "description": "Emulador de Sega Dreamcast sencillo y de alto rendimiento.",
+    "version": "latest",
+    "author": "redream",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "redream.redream",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=redream.io&sz=128",
+    "detect_names": [
+      "redream"
+    ],
+    "console_tags": [
+      "Dreamcast"
+    ]
+  },
+  {
+    "id": "ruffle",
+    "name": "Ruffle",
+    "description": "Emulador moderno de Adobe Flash Player escrito en Rust.",
+    "version": "latest",
+    "author": "Ruffle Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Ruffle.Ruffle",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/ruffle-rs/ruffle/HEAD/desktop/assets/Assets.xcassets/RuffleMacIcon.iconset/icon_256x256.png",
+    "detect_names": [
+      "Ruffle"
+    ],
+    "console_tags": [
+      "Flash"
+    ]
+  },
+  {
+    "id": "rmg",
+    "name": "Rosalie's Mupen GUI",
+    "description": "Interfaz moderna de Mupen64Plus para emular Nintendo 64.",
+    "version": "latest",
+    "author": "Rosalie241",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "Rosalie241/RMG",
+    "asset_pattern": "RMG-Portable-Windows64-*.zip",
+    "icon_url": "https://raw.githubusercontent.com/Rosalie241/RMG/HEAD/Source/RMG/UserInterface/Resource/RMG.png",
+    "detect_names": [
+      "RMG",
+      "Rosalie's Mupen GUI"
+    ],
+    "console_tags": [
+      "Nintendo 64"
+    ],
+    "launch_executable": "RMG.exe"
+  },
+  {
+    "id": "scummvm",
+    "name": "ScummVM",
+    "description": "Motor para aventuras gráficas clásicas y numerosos juegos históricos.",
+    "version": "latest",
+    "author": "ScummVM Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "ScummVM.ScummVM",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/scummvm/scummvm/HEAD/dists/ios7/Images.xcassets/AppIcon.appiconset/icon4-1024.png",
+    "detect_names": [
+      "ScummVM"
+    ],
+    "console_tags": [
+      "Aventuras gráficas",
+      "PC"
+    ]
+  },
+  {
+    "id": "snes9x",
+    "name": "Snes9x",
+    "description": "Emulador portable de Super Nintendo y Super Famicom.",
+    "version": "latest",
+    "author": "Snes9x Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "snes9xgit/snes9x",
+    "asset_pattern": "snes9x-*-win32-x64.zip",
+    "icon_url": "https://raw.githubusercontent.com/snes9xgit/snes9x/master/gtk/data/snes9x_256x256.png",
+    "detect_names": [
+      "Snes9x"
+    ],
+    "console_tags": [
+      "SNES"
+    ],
+    "launch_executable": "snes9x-x64.exe"
+  },
+  {
+    "id": "tic80",
+    "name": "TIC-80",
+    "description": "Fantasy computer libre con editor y runtime integrado.",
+    "version": "latest",
+    "author": "Nesbox",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "nesbox/TIC-80",
+    "asset_pattern": "tic80-*-win.zip",
+    "icon_url": "https://raw.githubusercontent.com/nesbox/TIC-80/HEAD/build/windows/icon.ico",
+    "detect_names": [
+      "TIC-80"
+    ],
+    "console_tags": [
+      "Fantasy console"
+    ],
+    "launch_executable": "tic80.exe"
+  },
+  {
+    "id": "vita3k",
+    "name": "Vita3K",
+    "description": "Emulador experimental de PlayStation Vita.",
+    "version": "latest",
+    "author": "Vita3K Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Vita3K.Vita3K",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/Vita3K/Vita3K/HEAD/vita3k/Vita3K.png",
+    "detect_names": [
+      "Vita3K"
+    ],
+    "console_tags": [
+      "PS Vita"
+    ]
+  },
+  {
+    "id": "sharpemu",
+    "name": "SharpEmu",
+    "description": "Emulador de ordenadores Sharp clásicos.",
+    "version": "latest",
+    "author": "SharpEmu",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "sharpemu.SharpEmu",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/sharpemu/sharpemu/main/assets/images/logo_transparent.png",
+    "detect_names": [
+      "SharpEmu"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "icon_fit": "contain",
+    "console_tags": [
+      "Sharp"
+    ]
+  },
+  {
+    "id": "gzdoom",
+    "name": "GZDoom",
+    "description": "Port moderno de Doom con soporte ampliado para juegos y mods.",
+    "version": "latest",
+    "author": "ZDoom Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "ZDoom/gzdoom",
+    "asset_pattern": "gzdoom-*-windows.zip",
+    "icon_url": "https://raw.githubusercontent.com/ZDoom/gzdoom/master/src/win32/icon1.ico",
+    "detect_names": [
+      "GZDoom"
+    ],
+    "console_tags": [
+      "DOS",
+      "PC"
+    ],
+    "launch_executable": "gzdoom.exe"
+  },
+  {
+    "id": "easyrpg_player",
+    "name": "EasyRPG Player",
+    "description": "Reproductor libre de juegos creados con RPG Maker 2000 y 2003.",
+    "version": "latest",
+    "author": "EasyRPG",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://easyrpg.org/downloads/player/latest/easyrpg-player-latest-windows-x64.zip",
+    "download_filename": "easyrpg-player-latest-windows-x64.zip",
+    "icon_url": "https://raw.githubusercontent.com/EasyRPG/Player/master/resources/logo.png",
+    "console_tags": [
+      "RPG Maker 2000/2003",
+      "PC"
+    ],
+    "launch_executable": "Player.exe",
+    "detect_names": [
+      "EasyRPG Player"
+    ]
+  },
+  {
+    "id": "stella",
+    "name": "Stella",
+    "description": "Emulador de Atari 2600 mantenido activamente.",
+    "version": "latest",
+    "author": "Stella Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "stella-emu/stella",
+    "asset_pattern": "Stella-*-windows.zip",
+    "icon_url": "https://raw.githubusercontent.com/stella-emu/stella/HEAD/src/common/stella-128x128.png",
+    "detect_names": [
+      "Stella"
+    ],
+    "console_tags": [
+      "Atari 2600"
+    ],
+    "launch_executable": "Stella.exe"
+  },
+  {
+    "id": "root_cling",
+    "name": "ROOT + Cling",
+    "description": "Plataforma científica ROOT que incluye el intérprete interactivo de C++ Cling.",
+    "version": "latest",
+    "author": "CERN",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "root-project/root",
+    "asset_pattern": "root_*win64.python311.vc17.exe",
+    "icon_url": "https://raw.githubusercontent.com/root-project/root/HEAD/icons/Root6Icon.png",
+    "detect_names": [
+      "ROOT"
+    ]
+  },
+  {
+    "id": "gap",
+    "name": "GAP",
+    "description": "Sistema de álgebra computacional para teoría de grupos con consola GAP.",
+    "version": "latest",
+    "author": "GAP Group",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "gap-system/gap",
+    "asset_pattern": "gap-*-x86_64.exe",
+    "icon_url": "https://www.gap-system.org/assets/logo/light/gaplogo-notext512.png?v=2",
+    "detect_names": [
+      "GAP"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "icon_fit": "contain"
+  },
+  {
+    "id": "elm",
+    "name": "Elm",
+    "description": "Compilador oficial de Elm con su consola elm repl.",
+    "version": "latest",
+    "author": "Elm",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "elm/compiler",
+    "asset_pattern": "installer-for-windows.exe",
+    "icon_url": "https://raw.githubusercontent.com/elm/compiler/HEAD/installers/win/logo.ico",
+    "detect_names": [
+      "Elm"
+    ]
+  },
+  {
+    "id": "redis_cli",
+    "name": "Memurai Developer + redis-cli",
+    "description": "Servidor compatible con Redis para Windows que incluye el cliente redis-cli.",
+    "version": "latest",
+    "author": "Memurai",
+    "category": "Desarrollo",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Memurai.MemuraiDeveloper",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=memurai.com&sz=128",
+    "detect_names": [
+      "Memurai Developer",
+      "Memurai"
+    ]
+  },
+  {
+    "id": "fs_uae",
+    "name": "FS-UAE",
+    "description": "Emulador de Amiga centrado en una experiencia moderna y configurable.",
+    "version": "latest",
+    "author": "FS-UAE Project",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "FrodeSolheim/fs-uae",
+    "asset_pattern": "FS-UAE_*_Windows_x86-64.exe",
+    "icon_url": "https://raw.githubusercontent.com/FrodeSolheim/fs-uae/main/.attic/share/icons/hicolor/256x256/apps/net.fs_uae.FS-UAE.png",
+    "detect_names": [
+      "FS-UAE"
+    ],
+    "console_tags": [
+      "Amiga"
+    ]
+  },
+  {
+    "id": "supermodel",
+    "name": "Supermodel",
+    "description": "Emulador de la placa arcade Sega Model 3.",
+    "version": "latest",
+    "author": "Supermodel Team",
+    "category": "Emuladores",
+    "section": "Emuladores",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "trzy/Supermodel",
+    "asset_pattern": "supermodel-*-windows.zip",
+    "icon_url": "https://raw.githubusercontent.com/trzy/Supermodel/master/Docs/Images/Real3D_Logo.png",
+    "detect_names": [
+      "Supermodel"
+    ],
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "icon_fit": "contain",
+    "console_tags": [
+      "Sega Model 3",
+      "Arcade"
+    ],
+    "launch_executable": "Supermodel.exe"
+  },
+  {
+    "id": "fan_control",
+    "name": "Fan Control",
+    "description": "Control avanzado de ventiladores y curvas térmicas para CPU, GPU, placa base y sensores compatibles.",
+    "version": "latest",
+    "author": "Rem0o",
+    "category": "Hardware y monitorización",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "Rem0o.FanControl",
+    "winget_source": "winget",
+    "icon_url": "https://getfancontrol.com/favicon.svg",
+    "accent_color": "#1785d1",
+    "detect_names": [
+      "Fan Control"
+    ],
+    "featured": false
+  },
+  {
+    "id": "voicemod",
+    "name": "Voicemod",
+    "description": "Cambiador de voz en tiempo real, generador de voces y panel de sonidos para juegos y comunicación.",
+    "version": "latest",
+    "author": "Voicemod",
+    "category": "Audio",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "XP9B0BH6T8Z7KZ",
+    "winget_source": "msstore",
+    "icon_url": "https://www.google.com/s2/favicons?domain=voicemod.net&sz=128",
+    "accent_color": "#7c3aed",
+    "start_app_names": [
+      "Voicemod",
+      "Voicemod Desktop"
+    ],
+    "featured": false
+  },
+  {
+    "id": "ab_download_manager",
+    "name": "AB Download Manager",
+    "description": "Gestor de descargas moderno y multiplataforma con colas, reanudación y extensión para navegadores.",
+    "version": "latest",
+    "author": "Amir Abiri",
+    "category": "Descargas",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "amir1376.ABDownloadManager",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/amir1376/ab-download-manager/master/desktop/app/icons/icon.png",
+    "accent_color": "#2563eb",
+    "detect_names": [
+      "AB Download Manager"
+    ],
+    "featured": false
+  },
+  {
+    "id": "space_sniffer",
+    "name": "SpaceSniffer",
+    "description": "Analizador visual del espacio ocupado en discos mediante mapas de bloques interactivos.",
+    "version": "latest",
+    "author": "Uderzo Software",
+    "category": "Discos y almacenamiento",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "UderzoSoftware.SpaceSniffer",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/bdukes/Chocolatey-Packages/d7c02ae406446bca50b98b872da481852fc65682/spacesniffer/icon.png",
+    "accent_color": "#d97706",
+    "detect_names": [
+      "SpaceSniffer"
+    ],
+    "featured": false
+  },
+  {
+    "id": "bleachbit",
+    "name": "BleachBit",
+    "description": "Limpieza de archivos temporales, cachés, historiales y otros datos innecesarios del sistema.",
+    "version": "latest",
+    "author": "BleachBit",
+    "category": "Limpieza",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "BleachBit.BleachBit",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=bleachbit.org&sz=128",
+    "accent_color": "#16a34a",
+    "launch_executable": "bleachbit.exe",
+    "detect_names": [
+      "BleachBit"
+    ],
+    "featured": false
+  },
+  {
+    "id": "quick_cpu",
+    "name": "Quick CPU",
+    "description": "Monitorización y ajuste de energía, frecuencias, aparcado de núcleos y rendimiento de procesadores x64.",
+    "version": "latest",
+    "author": "CoderBag",
+    "category": "Hardware y monitorización",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "CoderBag.QuickCPUx64",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=coderbag.com&sz=128",
+    "accent_color": "#0284c7",
+    "detect_names": [
+      "Quick CPU"
+    ],
+    "featured": false
+  },
+  {
+    "id": "occt",
+    "name": "OCCT Personal",
+    "description": "Pruebas de estabilidad, carga y monitorización para CPU, GPU, memoria, alimentación y refrigeración.",
+    "version": "latest",
+    "author": "OCBASE",
+    "category": "Benchmark y diagnóstico",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "OCBase.OCCT.Personal",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=ocbase.com&sz=128",
+    "accent_color": "#ef4444",
+    "detect_names": [
+      "OCCT"
+    ],
+    "featured": false
+  },
+  {
+    "id": "heaven_benchmark",
+    "name": "UNIGINE Heaven Benchmark",
+    "description": "Benchmark gráfico 3D para comprobar rendimiento, estabilidad, temperatura y refrigeración de la GPU.",
+    "version": "latest",
+    "author": "UNIGINE",
+    "category": "Benchmark y diagnóstico",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "Unigine.HeavenBenchmark",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=benchmark.unigine.com&sz=128",
+    "accent_color": "#38bdf8",
+    "detect_names": [
+      "Heaven Benchmark",
+      "Unigine Heaven Benchmark"
+    ],
+    "featured": false
+  },
+  {
+    "id": "furmark_2",
+    "name": "FurMark 2",
+    "description": "Prueba intensiva y benchmark OpenGL/Vulkan para evaluar estabilidad, consumo y temperatura de la GPU.",
+    "version": "latest",
+    "author": "Geeks3D",
+    "category": "Benchmark y diagnóstico",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "Geeks3D.FurMark.2",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=geeks3d.com&sz=128",
+    "accent_color": "#f97316",
+    "detect_names": [
+      "FurMark 2"
+    ],
+    "featured": false
+  },
+  {
+    "id": "nvidia_control_panel",
+    "name": "NVIDIA Control Panel",
+    "description": "Panel oficial para gestionar pantalla, configuración 3D, vídeo y opciones específicas de las GPU NVIDIA.",
+    "version": "latest",
+    "author": "NVIDIA",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "9NF8H0H7WMLT",
+    "winget_source": "msstore",
+    "icon_url": "https://cdn.simpleicons.org/nvidia/76b900",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#76b900",
+    "start_app_names": [
+      "NVIDIA Control Panel"
+    ],
+    "featured": false
+  },
+  {
+    "id": "nvidia_app",
+    "name": "NVIDIA App",
+    "description": "Aplicación oficial para controladores, optimización de juegos, ajustes gráficos y superposición de captura NVIDIA.",
+    "version": "latest",
+    "author": "NVIDIA",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "XP8CLZL93F5Z4P",
+    "winget_source": "msstore",
+    "icon_url": "https://cdn.simpleicons.org/nvidia/76b900",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#76b900",
+    "start_app_names": [
+      "NVIDIA App"
+    ],
+    "featured": false
+  },
+  {
+    "id": "malwarebytes",
+    "name": "Malwarebytes",
+    "description": "Protección y análisis contra malware, ransomware, programas no deseados y amenazas web.",
+    "version": "latest",
+    "author": "Malwarebytes",
+    "category": "Seguridad",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "Malwarebytes.Malwarebytes",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/malwarebytes/0d3ecc",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#0d3ecc",
+    "detect_names": [
+      "Malwarebytes"
+    ],
+    "featured": false
+  },
+  {
+    "id": "avira_security",
+    "name": "Avira Security",
+    "description": "Suite de seguridad oficial de Avira con análisis antivirus, protección web y herramientas de privacidad.",
+    "version": "latest",
+    "author": "Avira",
+    "category": "Seguridad",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "XPFD23M0L795KD",
+    "winget_source": "msstore",
+    "icon_url": "https://cdn.simpleicons.org/avira/e02027",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#e02027",
+    "start_app_names": [
+      "Avira Security"
+    ],
+    "featured": false
+  },
+  {
+    "id": "snappy_driver_installer_origin",
+    "name": "Snappy Driver Installer Origin",
+    "description": "Herramienta portátil para identificar, descargar e instalar controladores de Windows desde paquetes de índices.",
+    "version": "latest",
+    "author": "Glenn Delahoy",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "GlennDelahoy.SnappyDriverInstallerOrigin",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=glenn.delahoy.com&sz=128",
+    "accent_color": "#2563eb",
+    "detect_names": [
+      "Snappy Driver Installer Origin"
+    ],
+    "featured": false
+  },
+  {
+    "id": "winamp",
+    "name": "Winamp",
+    "description": "Reproductor multimedia clásico para música local, listas, ecualización, visualizaciones y complementos.",
+    "version": "latest",
+    "author": "Winamp",
+    "category": "Audio",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "Winamp.Winamp",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=winamp.com&sz=128",
+    "accent_color": "#f59e0b",
+    "detect_names": [
+      "Winamp"
+    ],
+    "featured": false
+  },
+  {
+    "id": "paint_net",
+    "name": "paint.net",
+    "description": "Editor de imágenes para Windows con capas, efectos, historial ilimitado y soporte para complementos.",
+    "version": "latest",
+    "author": "dotPDN",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "dotPDN.PaintDotNet",
+    "winget_source": "winget",
+    "icon_url": "https://www.google.com/s2/favicons?domain=getpaint.net&sz=128",
+    "accent_color": "#3b82f6",
+    "detect_names": [
+      "paint.net"
+    ],
+    "featured": false
+  },
+  {
+    "id": "gimp",
+    "name": "GIMP",
+    "description": "Editor profesional de imágenes libre con capas, máscaras, filtros, automatización y administración de color.",
+    "version": "latest",
+    "author": "The GIMP Team",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "GIMP.GIMP",
+    "winget_source": "winget",
+    "icon_url": "https://www.gimp.org/images/frontpage/wilber-big.png",
+    "accent_color": "#5c554c",
+    "detect_names": [
+      "GIMP"
+    ],
+    "featured": false
+  },
+  {
+    "id": "softorbits_icon_maker",
+    "name": "SoftOrbits Icon Maker",
+    "description": "Editor oficial de SoftOrbits para crear, convertir y exportar iconos ICO y PNG en múltiples tamaños.",
+    "version": "latest",
+    "author": "SoftOrbits",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "wget",
+    "download_url": "https://download.softorbits.com/files/IconMaker-Setup.exe",
+    "icon_url": "https://www.google.com/s2/favicons?domain=softorbits.es&sz=128",
+    "accent_color": "#0ea5e9",
+    "detect_names": [
+      "SoftOrbits Icon Maker",
+      "Icon Maker"
+    ],
+    "featured": false
+  },
+  {
+    "id": "jpegview",
+    "name": "JPEGView",
+    "description": "Visor y editor ligero de imágenes con procesamiento rápido, ajustes en tiempo real y soporte de formatos comunes.",
+    "version": "latest",
+    "author": "JPEGView Project",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "sylikc.JPEGView",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/sylikc/jpegview/master/src/JPEGView/res/JPEGView.ico",
+    "accent_color": "#84cc16",
+    "detect_names": [
+      "JPEGView"
+    ],
+    "featured": false
+  },
+  {
+    "id": "imageglass",
+    "name": "ImageGlass",
+    "description": "Visor de imágenes moderno, rápido y personalizable con soporte para numerosos formatos.",
+    "version": "latest",
+    "author": "Duong Dieu Phap",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "DuongDieuPhap.ImageGlass",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/d2phap/ImageGlass/develop/source/ImageGlass.Win32/icon256.ico",
+    "accent_color": "#06b6d4",
+    "detect_names": [
+      "ImageGlass"
+    ],
+    "featured": false
+  },
+  {
+    "id": "godot_engine",
+    "name": "Godot Engine",
+    "description": "Motor libre para crear juegos 2D y 3D con editor integrado, GDScript, C# y exportación multiplataforma.",
+    "version": "latest",
+    "author": "Godot Engine",
+    "category": "Motores de videojuegos",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "winget_id": "GodotEngine.GodotEngine",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/godotengine/godot/master/misc/logo/icon.svg",
+    "icon_background": "#ffffff",
+    "icon_padding": 4,
+    "accent_color": "#478cbf",
+    "detect_names": [
+      "Godot Engine"
+    ],
+    "featured": false
+  },
+  {
+    "id": "unity_hub",
+    "name": "Unity Hub",
+    "description": "Gestor oficial para instalar versiones del editor Unity, módulos de compilación, proyectos y licencias.",
+    "version": "latest",
+    "author": "Unity Technologies",
+    "category": "Motores de videojuegos",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "winget_id": "Unity.UnityHub",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/unity/ffffff",
+    "icon_background": "#111827",
+    "icon_padding": 5,
+    "accent_color": "#64748b",
+    "detect_names": [
+      "Unity Hub"
+    ],
+    "featured": false
+  },
+  {
+    "id": "cinebench_2026",
+    "name": "Cinebench 2026",
+    "description": "Benchmark oficial de Maxon para medir rendimiento CPU y GPU mediante cargas de renderizado Redshift actuales.",
+    "version": "2026",
+    "author": "Maxon",
+    "category": "Benchmark y diagnóstico",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://mx-app-blob-prod.maxon.net/mx-package-production/website/windows/maxon/cinebench/Cinebench2026_win_x86_64.zip",
+    "download_filename": "Cinebench2026_win_x86_64.zip",
+    "launch_executable": "Cinebench.exe",
+    "icon_url": "https://maxonassets.imgix.net/images/Products/Cinebench/Cinebench-Horizontal.svg",
+    "icon_background": "#111111",
+    "icon_padding": 0,
+    "icon_position": "left",
+    "accent_color": "#dc2626",
+    "featured": false
+  },
+  {
+    "id": "android_platform_tools",
+    "name": "Android SDK Platform-Tools",
+    "description": "Paquete oficial de Google con ADB y Fastboot para depuración, recuperación y administración de dispositivos Android.",
+    "version": "latest",
+    "author": "Google",
+    "category": "Desarrollo Android",
+    "section": "Desarrollo",
+    "source_type": "winget",
+    "winget_id": "Google.PlatformTools",
+    "winget_source": "winget",
+    "icon_url": "https://cdn.simpleicons.org/android/3ddc84",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#3ddc84",
+    "detect_names": [
+      "Android SDK Platform-Tools"
+    ],
+    "featured": false
+  },
+  {
+    "id": "whatsapp",
+    "name": "WhatsApp",
+    "description": "Aplicación oficial de mensajería y llamadas de WhatsApp para Windows.",
+    "version": "latest",
+    "author": "WhatsApp Inc.",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "source_type": "winget",
+    "winget_id": "9NKSQGP7F2NH",
+    "winget_source": "msstore",
+    "icon_url": "https://cdn.simpleicons.org/whatsapp/25d366",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#25d366",
+    "start_app_names": [
+      "WhatsApp"
+    ],
+    "featured": false
+  },
+  {
+    "id": "teamspeak",
+    "name": "TeamSpeak 3 Client",
+    "description": "Cliente estable de comunicación de voz de baja latencia para equipos, comunidades y servidores privados.",
+    "version": "latest",
+    "author": "TeamSpeak Systems",
+    "category": "Social",
+    "section": "Social y Comunicación",
+    "source_type": "winget",
+    "winget_id": "TeamSpeakSystems.TeamSpeakClient",
+    "winget_source": "winget",
+    "icon_url": "https://teamspeak.com/user/themes/teamspeak/assets/images/mediakit/TS_Stacked_BlueDark.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 8,
+    "icon_fit": "contain",
+    "accent_color": "#2580c3",
+    "detect_names": [
+      "TeamSpeak 3 Client",
+      "TeamSpeak Client"
+    ],
+    "featured": false
+  },
+  {
+    "id": "xbox_app",
+    "name": "Xbox",
+    "description": "Aplicación oficial para PC Game Pass, biblioteca, instalación de juegos, juego en la nube y servicios Xbox.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Plataformas de juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "winget_id": "9MV0B5HZVK9Z",
+    "winget_source": "msstore",
+    "winget_dependencies": [
+      {
+        "name": "Gaming Services",
+        "winget_id": "9MWPM2CQNLHN",
+        "winget_source": "msstore"
+      },
+      {
+        "name": "Xbox Identity Provider",
+        "winget_id": "9WZDNCRD1HKW",
+        "winget_source": "msstore"
+      },
+      {
+        "name": "Store Purchase App",
+        "winget_id": "9NBLGGH4LS1F",
+        "winget_source": "msstore"
+      }
+    ],
+    "icon_url": "https://store-images.s-microsoft.com/image/apps.60199.13798539581762600.abe1643f-1704-4a4d-a61b-47ccc25da012.2d0f53d6-e474-4958-bb99-2b237faa877d",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#107c10",
+    "start_app_names": [
+      "Xbox"
+    ],
+    "featured": false
+  },
+  {
+    "id": "xbox_game_bar",
+    "name": "Xbox Game Bar",
+    "description": "Superposición oficial de Windows para capturas, audio, rendimiento, widgets y funciones sociales Xbox.",
+    "version": "latest",
+    "author": "Microsoft",
+    "category": "Plataformas de juegos",
+    "section": "Juegos",
+    "source_type": "winget",
+    "winget_id": "9NZKPSTSNW4P",
+    "winget_source": "msstore",
+    "winget_dependencies": [
+      {
+        "name": "Xbox Identity Provider",
+        "winget_id": "9WZDNCRD1HKW",
+        "winget_source": "msstore"
+      }
+    ],
+    "icon_url": "https://store-images.s-microsoft.com/image/apps.46958.14474323638833886.4a2816b2-d8f2-49ae-80e4-32141d1d2722.6aca5fc7-3847-465f-a3ce-d218f8848b52",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#107c10",
+    "start_app_names": [
+      "Game Bar",
+      "Xbox Game Bar"
+    ],
+    "featured": false
+  },
+  {
+    "id": "intel_xtu",
+    "name": "Intel Extreme Tuning Utility (Intel XTU)",
+    "description": "Herramienta oficial de Intel para monitorizar, ajustar y probar procesadores compatibles. Intel ofrece ramas distintas para Core de 14.ª generación y Core Ultra.",
+    "version": "latest",
+    "author": "Intel",
+    "category": "Hardware y monitorización",
+    "section": "Utilidades",
+    "source_type": "web",
+    "web_url": "https://www.intel.com/content/www/us/en/download/17881/intel-extreme-tuning-utility-intel-xtu.html",
+    "icon_url": "https://cdn.simpleicons.org/intel/0071C5",
+    "icon_background": "#ffffff",
+    "icon_padding": 7,
+    "icon_fit": "contain",
+    "accent_color": "#0071c5",
+    "detect_names": [
+      "Intel(R) Extreme Tuning Utility",
+      "Intel Extreme Tuning Utility",
+      "Intel XTU"
+    ],
+    "featured": false
+  },
+  {
+    "id": "vmware_workstation",
+    "name": "VMware Workstation Pro",
+    "description": "Hipervisor de escritorio oficial de VMware. Broadcom requiere acceder a su portal para obtener la versión vigente de Windows.",
+    "version": "latest",
+    "author": "VMware by Broadcom",
+    "category": "Virtualización",
+    "section": "Utilidades",
+    "source_type": "web",
+    "web_url": "https://support.broadcom.com/group/ecx/productdownloads?subfamily=VMware%20Workstation%20Pro&freeDownloads=true",
+    "icon_url": "https://cdn.simpleicons.org/vmware/607078",
+    "icon_background": "#ffffff",
+    "icon_padding": 7,
+    "accent_color": "#607078",
+    "detect_names": [
+      "VMware Workstation",
+      "VMware Workstation Pro"
+    ],
+    "featured": false
+  },
+  {
+    "id": "battlestate_games_launcher",
+    "name": "Battlestate Games Launcher",
+    "description": "Lanzador oficial de Escape from Tarkov. La descarga requiere la cuenta y licencia correspondientes en la web oficial.",
+    "version": "latest",
+    "author": "Battlestate Games",
+    "category": "Plataformas de juegos",
+    "section": "Juegos",
+    "source_type": "web",
+    "web_url": "https://www.escapefromtarkov.com/",
+    "icon_url": "https://www.google.com/s2/favicons?domain=escapefromtarkov.com&sz=128",
+    "accent_color": "#8b7d62",
+    "detect_names": [
+      "Battlestate Games Launcher",
+      "BsgLauncher"
+    ],
+    "featured": false
+  },
+  {
+    "id": "aseprite",
+    "name": "Aseprite",
+    "description": "Editor profesional de pixel art y animación. El instalador oficial firmado se obtiene tras comprarlo en uno de sus distribuidores autorizados.",
+    "version": "latest",
+    "author": "Igara Studio",
+    "category": "Imagen y diseño",
+    "section": "Multimedia",
+    "source_type": "web",
+    "web_url": "https://www.aseprite.org/download/",
+    "icon_url": "https://cdn.simpleicons.org/aseprite/7D929E",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#7d929e",
+    "detect_names": [
+      "Aseprite"
+    ],
+    "featured": false
+  },
+  {
+    "id": "amd_ryzen_master",
+    "name": "AMD Ryzen Master",
+    "description": "Utilidad oficial de monitorización y ajuste para procesadores AMD Ryzen compatibles. AMD ofrece instaladores distintos según la generación del procesador.",
+    "version": "latest",
+    "author": "AMD",
+    "category": "Hardware y monitorización",
+    "section": "Utilidades",
+    "source_type": "web",
+    "web_url": "https://www.amd.com/en/products/software/ryzen-master.html",
+    "icon_url": "https://cdn.simpleicons.org/amd/ED1C24",
+    "icon_background": "#ffffff",
+    "icon_padding": 7,
+    "accent_color": "#ed1c24",
+    "detect_names": [
+      "AMD Ryzen Master",
+      "Ryzen Master"
+    ],
+    "featured": false
+  },
+  {
+    "id": "rpg_maker_mz",
+    "name": "RPG Maker MZ",
+    "description": "Motor oficial para crear juegos de rol. Su adquisición y activación se gestionan en la tienda oficial; también dispone de una prueba oficial de 30 días.",
+    "version": "latest",
+    "author": "Gotcha Gotcha Games",
+    "category": "Motores de videojuegos",
+    "section": "Desarrollo",
+    "source_type": "web",
+    "web_url": "https://store.rpgmakerofficial.com/products/rpg-maker-mz",
+    "icon_url": "https://www.google.com/s2/favicons?domain=rpgmakerofficial.com&sz=128",
+    "accent_color": "#2563eb",
+    "detect_names": [
+      "RPG Maker MZ",
+      "RPGMakerMZ"
+    ],
+    "featured": false
+  }
+]

@@ -1,0 +1,1285 @@
+mod detect;
+mod download;
+mod installer;
+mod logger;
+mod paths;
+mod process;
+mod store;
+
+use detect::AppStatus;
+use download::{SharedDownloads, TaskSnapshot, TaskState};
+use parking_lot::Mutex;
+use serde::Serialize;
+use serde_json::Value;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::sync::Arc;
+use store::{InstalledInfo, Settings};
+use tauri::async_runtime;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+pub struct AppState {
+    pub catalog_path: Mutex<PathBuf>,
+    pub catalog: Mutex<Vec<Value>>,
+    pub installed: Mutex<HashMap<String, InstalledInfo>>,
+    pub statuses: Mutex<HashMap<String, AppStatus>>,
+    pub settings: Mutex<Settings>,
+    pub downloads: SharedDownloads,
+}
+
+#[derive(Clone, Serialize)]
+struct DlEvent {
+    tasks: Vec<TaskSnapshot>,
+}
+
+#[derive(Clone, Serialize)]
+struct BackgroundProgressEvent {
+    stage: &'static str,
+    message: &'static str,
+    progress: u8,
+}
+
+fn emit_background_progress(
+    app: Option<&AppHandle>,
+    stage: &'static str,
+    message: &'static str,
+    progress: u8,
+) {
+    if let Some(app) = app {
+        let _ = app.emit(
+            "background-progress",
+            BackgroundProgressEvent {
+                stage,
+                message,
+                progress,
+            },
+        );
+    }
+    logger::debug(
+        "background-progress",
+        format!("etapa={stage}, progreso={progress}, mensaje={message}"),
+    );
+}
+
+fn emit_dl(app: &AppHandle, state: &AppState) {
+    let should_schedule_cleanup = {
+        let mut downloads = state.downloads.lock();
+        downloads.prune_finished();
+        downloads.has_cleanup_pending()
+    };
+
+    let tasks = {
+        let downloads = state.downloads.lock();
+        downloads.snapshots()
+    };
+    let _ = app.emit("downloads-changed", DlEvent { tasks });
+
+    if should_schedule_cleanup {
+        let app_handle = app.clone();
+        let downloads = state.downloads.clone();
+        async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+            let mut downloads = downloads.lock();
+            downloads.prune_finished();
+            let tasks = downloads.snapshots();
+            let _ = app_handle.emit("downloads-changed", DlEvent { tasks });
+        });
+    }
+}
+
+fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
+    let started = std::time::Instant::now();
+    logger::debug("status", "Reconstruyendo estados de aplicaciones.");
+    emit_background_progress(
+        app,
+        "prepare",
+        "Preparando la comprobación del sistema...",
+        5,
+    );
+    let catalog = state.catalog.lock().clone();
+    let mut installed = state.installed.lock().clone();
+    // Drop center entries whose folder vanished
+    let before = installed.len();
+    installed.retain(|_, info| {
+        info.install_path.is_empty() || PathBuf::from(&info.install_path).exists()
+    });
+    if installed.len() != before {
+        let _ = store::save_installed(&installed);
+        *state.installed.lock() = installed.clone();
+    }
+    emit_background_progress(
+        app,
+        "registry",
+        "Revisando aplicaciones registradas en Windows...",
+        15,
+    );
+    let system = detect::scan_installed_programs();
+    emit_background_progress(
+        app,
+        "start-apps",
+        "Localizando aplicaciones y accesos ejecutables...",
+        40,
+    );
+    let start_apps = detect::scan_start_apps();
+    emit_background_progress(
+        app,
+        "winget",
+        "Consultando paquetes administrados por Winget...",
+        62,
+    );
+    let winget_packages = detect::scan_winget_packages();
+    emit_background_progress(
+        app,
+        "statuses",
+        "Actualizando botones, rutas y estados de instalación...",
+        78,
+    );
+    let statuses =
+        detect::build_statuses(&catalog, &installed, &system, &start_apps, &winget_packages);
+    logger::info(
+        "status",
+        format!(
+            "Estados reconstruidos: catálogo={}, instaladas_centro={}, detectadas_sistema={}, apps_inicio={}, duración={} ms",
+            catalog.len(),
+            installed.len(),
+            system.len(),
+            start_apps.len(),
+            started.elapsed().as_millis()
+        ),
+    );
+    for (app_id, status) in statuses.iter().filter(|(_, status)| status.installed) {
+        logger::debug(
+            "status-detail",
+            format!(
+                "app_id={app_id}, origen={}, versión={}, ruta={}, abrir={}, desinstalar={}, actualización={}",
+                status.origin,
+                status.version,
+                status.install_path,
+                status.can_launch,
+                status.can_uninstall,
+                status.update_available
+            ),
+        );
+    }
+    *state.statuses.lock() = statuses;
+    emit_background_progress(app, "complete", "Comprobación del sistema completada.", 100);
+}
+
+fn rebuild_statuses(state: &AppState) {
+    rebuild_statuses_with_progress(state, None);
+}
+
+#[tauri::command]
+fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
+    logger::info("bootstrap", "La interfaz solicitó los datos iniciales.");
+    let catalog = state.catalog.lock().clone();
+    let installed = state.installed.lock().clone();
+    let statuses = state.statuses.lock().clone();
+    let settings = state.settings.lock().clone();
+    let tasks = state.downloads.lock().snapshots();
+    Ok(serde_json::json!({
+        "catalog": catalog,
+        "installed": installed,
+        "statuses": statuses,
+        "settings": settings,
+        "tasks": tasks,
+        "app_version": env!("CARGO_PKG_VERSION"),
+        "apps_dir": paths::app_dir().to_string_lossy(),
+        "catalog_path": state.catalog_path.lock().to_string_lossy(),
+    }))
+}
+
+#[tauri::command]
+fn refresh_statuses(app: AppHandle, state: State<'_, AppState>) -> HashMap<String, AppStatus> {
+    logger::info("status", "Refresco manual de estados solicitado.");
+    rebuild_statuses_with_progress(&state, Some(&app));
+    state.statuses.lock().clone()
+}
+
+#[tauri::command]
+fn get_tasks(state: State<'_, AppState>) -> Vec<TaskSnapshot> {
+    state.downloads.lock().snapshots()
+}
+
+#[tauri::command]
+fn reload_catalog(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
+    let path = state.catalog_path.lock().clone();
+    let apps = store::load_catalog(&path);
+    logger::info(
+        "catalog",
+        format!(
+            "Catálogo recargado desde {}: {} entradas",
+            path.display(),
+            apps.len()
+        ),
+    );
+    *state.catalog.lock() = apps.clone();
+    rebuild_statuses(&state);
+    Ok(apps)
+}
+
+#[tauri::command]
+fn save_catalog(state: State<'_, AppState>, apps: Vec<Value>) -> Result<String, String> {
+    logger::info(
+        "catalog",
+        format!("Guardado de catálogo solicitado: {} entradas", apps.len()),
+    );
+    let mut ids = HashSet::new();
+    for (idx, entry) in apps.iter().enumerate() {
+        if !entry.is_object() {
+            return Err(format!("Entrada {idx} no es un objeto."));
+        }
+        for req in ["id", "name", "source_type"] {
+            if entry
+                .get(req)
+                .and_then(|v| v.as_str())
+                .is_none_or(|value| value.trim().is_empty())
+            {
+                return Err(format!(
+                    "Entrada {idx} ({}) falta '{req}'.",
+                    entry.get("id").and_then(|v| v.as_str()).unwrap_or("?")
+                ));
+            }
+        }
+        let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
+        if !ids.insert(id) {
+            return Err(format!("El identificador '{id}' está duplicado."));
+        }
+        let source_type = entry
+            .get("source_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let required_source_field = match source_type {
+            "direct" | "wget" => Some("download_url"),
+            "github_release" | "github_repo" => Some("github_repo"),
+            "winget" => Some("winget_id"),
+            "web" => Some("web_url"),
+            other => {
+                return Err(format!(
+                    "Entrada {idx} usa un origen desconocido: '{other}'."
+                ))
+            }
+        };
+        if required_source_field.is_some_and(|field| {
+            entry
+                .get(field)
+                .and_then(Value::as_str)
+                .is_none_or(|value| value.trim().is_empty())
+        }) {
+            return Err(format!(
+                "Entrada {idx} ({id}) no contiene el dato necesario para su origen."
+            ));
+        }
+        if entry.get("residual_paths").is_some_and(|value| {
+            value.as_array().is_none_or(|items| {
+                items
+                    .iter()
+                    .any(|item| item.as_str().is_none_or(|path| path.trim().is_empty()))
+            })
+        }) {
+            return Err(format!(
+                "Entrada {idx} ({id}) contiene residual_paths no válidas."
+            ));
+        }
+        if entry.get("winget_dependencies").is_some_and(|value| {
+            value.as_array().is_none_or(|items| {
+                items.iter().any(|item| {
+                    item.get("winget_id")
+                        .and_then(Value::as_str)
+                        .is_none_or(|package| package.trim().is_empty())
+                })
+            })
+        }) {
+            return Err(format!(
+                "Entrada {idx} ({id}) contiene dependencias WinGet no válidas."
+            ));
+        }
+    }
+    let path = state.catalog_path.lock().clone();
+    let target = {
+        let beside = paths::exe_dir().join("apps.json");
+        if path == beside || !cfg!(debug_assertions) {
+            beside
+        } else {
+            path
+        }
+    };
+    store::save_json(&target, &apps)?;
+    *state.catalog_path.lock() = target.clone();
+    *state.catalog.lock() = apps;
+    rebuild_statuses(&state);
+    Ok(target.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn get_templates() -> Vec<Value> {
+    store::app_templates()
+}
+
+#[tauri::command]
+fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
+    logger::info(
+        "settings",
+        format!(
+            "Guardando apariencia: tema={}, acento={}",
+            settings.theme, settings.accent
+        ),
+    );
+    let s = store::migrate_settings(settings);
+    store::save_settings(&s)?;
+    *state.settings.lock() = s;
+    Ok(())
+}
+
+#[tauri::command]
+fn open_apps_dir(app: AppHandle) -> Result<(), String> {
+    paths::ensure_dirs()?;
+    let dir = paths::app_dir();
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_path(dir.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) -> Result<String, String> {
+    let path = logger::path().ok_or("El registro de sesión todavía no está disponible")?;
+    logger::info("logs", format!("Abriendo el registro: {}", path.display()));
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_path(path.to_string_lossy().to_string(), None::<String>)
+        .map_err(|error| {
+            logger::error("logs", format!("No se pudo abrir el registro: {error}"));
+            error.to_string()
+        })?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+fn write_log(level: String, event: String, details: String) {
+    logger::log(&level, &format!("frontend:{event}"), details);
+}
+
+#[tauri::command]
+fn open_url(app: AppHandle, url: String) -> Result<(), String> {
+    let cleaned = url.trim();
+    if cleaned.is_empty() {
+        return Err("URL vacía".into());
+    }
+    logger::info(
+        "open-url",
+        format!("Abriendo URL: {}", logger::safe_url(cleaned)),
+    );
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_url(cleaned.to_string(), None::<String>)
+        .map_err(|e| e.to_string())
+}
+
+async fn confirm_uninstalled(state: &AppState, app_id: &str) -> Result<(), String> {
+    // Some uninstallers return as soon as they delegate the work to another
+    // process. Re-read Windows' uninstall registry until the real state has
+    // changed, so the UI never reports a successful uninstall prematurely.
+    for _ in 0..40 {
+        rebuild_statuses(state);
+        let installed = state
+            .statuses
+            .lock()
+            .get(app_id)
+            .map(|status| status.installed)
+            .unwrap_or(false);
+        if !installed {
+            return Ok(());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+
+    Err("El desinstalador terminó, pero Windows todavía registra la aplicación como instalada. Revisa si quedó abierto un diálogo de confirmación.".into())
+}
+
+async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, String> {
+    for attempt in 1..=60 {
+        rebuild_statuses(state);
+        if let Some(status) = state.statuses.lock().get(app_id).cloned() {
+            if status.installed {
+                logger::info(
+                    "install-verify",
+                    format!(
+                        "Instalación confirmada: app_id={app_id}, intento={attempt}, origen={}, ruta={}, abrir={}",
+                        status.origin, status.install_path, status.can_launch
+                    ),
+                );
+                return Ok(status);
+            }
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+    }
+    Err(format!(
+        "Windows no confirmó que '{app_id}' quedara instalada después de que el instalador terminara. Puede haberse cancelado o cerrado sin completar la operación."
+    ))
+}
+
+#[tauri::command]
+async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(), String> {
+    logger::info(
+        "uninstall",
+        format!("Solicitud de desinstalación: app_id={app_id}"),
+    );
+    let st = state
+        .statuses
+        .lock()
+        .get(&app_id)
+        .cloned()
+        .ok_or_else(|| "No se encontró el estado de la aplicación".to_string())?;
+    if !st.can_uninstall {
+        return Err("No se puede desinstalar esta aplicación desde Center.".into());
+    }
+    let catalog_entry = state
+        .catalog
+        .lock()
+        .iter()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
+        .cloned()
+        .unwrap_or_else(|| serde_json::json!({ "id": app_id }));
+
+    if st.origin == "system" {
+        logger::info(
+            "uninstall",
+            format!(
+                "Desinstalación del sistema: app_id={app_id}, ruta={}",
+                st.install_path
+            ),
+        );
+        let uninstall_command = st.uninstall_command.clone();
+        let install_path = st.install_path.clone();
+        let shortcut_target = install_path.clone();
+        let residual_target = install_path.clone();
+        let cleanup_entry = catalog_entry.clone();
+        let winget = catalog_entry
+            .get("source_type")
+            .and_then(Value::as_str)
+            .filter(|source| *source == "winget")
+            .and_then(|_| {
+                catalog_entry
+                    .get("winget_id")
+                    .and_then(Value::as_str)
+                    .map(|id| {
+                        (
+                            id.to_string(),
+                            catalog_entry
+                                .get("winget_source")
+                                .and_then(Value::as_str)
+                                .unwrap_or("winget")
+                                .to_string(),
+                        )
+                    })
+            });
+        let is_msstore = catalog_entry
+            .get("winget_source")
+            .and_then(Value::as_str)
+            .is_some_and(|source| source.eq_ignore_ascii_case("msstore"));
+        async_runtime::spawn_blocking(move || {
+            let mut errors = Vec::new();
+            if let Some((package_id, source)) = winget {
+                match installer::uninstall_with_winget(&package_id, &source) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => {
+                        logger::warn("uninstall", format!("Fallback tras WinGet: {error}"));
+                        if installer::is_winget_user_scope_elevation_error(&error) {
+                            if let Some(command) = uninstall_command.as_deref() {
+                                match installer::uninstall_system_app_as_user(command) {
+                                    Ok(()) => return Ok(()),
+                                    Err(user_error) => {
+                                        logger::warn(
+                                            "uninstall-user-fallback",
+                                            format!(
+                                                "Falló el reintento como usuario: {user_error}"
+                                            ),
+                                        );
+                                        errors.push(format!(
+                                            "Fallback con el usuario interactivo: {user_error}"
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        errors.push(error);
+                        if is_msstore {
+                            return Err(errors.join("; "));
+                        }
+                    }
+                }
+            }
+            if let Some(uninstall_command) = uninstall_command {
+                match installer::uninstall_system_app(&uninstall_command) {
+                    Ok(()) => return Ok(()),
+                    Err(registry_error) if !install_path.is_empty() => {
+                        errors.push(format!("Desinstalador registrado: {registry_error}"));
+                    }
+                    Err(registry_error) => errors.push(registry_error),
+                }
+            }
+            if !install_path.is_empty() {
+                match installer::uninstall_from_install_path(&PathBuf::from(&install_path)) {
+                    Ok(()) => return Ok(()),
+                    Err(error) => errors.push(format!("Fallback de carpeta: {error}")),
+                }
+            }
+            Err(if errors.is_empty() {
+                "No hay un método de desinstalación válido para esta aplicación".into()
+            } else {
+                errors.join("; ")
+            })
+        })
+        .await
+        .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
+
+        confirm_uninstalled(&state, &app_id).await?;
+        let cleanup = async_runtime::spawn_blocking(move || {
+            let shortcuts =
+                installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
+            let residuals = installer::cleanup_declared_residual_paths(
+                &cleanup_entry,
+                &PathBuf::from(residual_target),
+            );
+            (shortcuts, residuals)
+        })
+        .await
+        .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
+        let (shortcut_cleanup, residual_cleanup) = cleanup;
+        let mut warnings = Vec::new();
+        if let Err(error) = shortcut_cleanup {
+            warnings.push(error);
+        }
+        if let Err(error) = residual_cleanup {
+            warnings.push(error);
+        }
+        if !warnings.is_empty() {
+            return Err(warnings.join("\n"));
+        }
+        if let Err(error) = installer::cleanup_package_download(&app_id) {
+            logger::warn("cleanup", error);
+        }
+        return Ok(());
+    }
+
+    let shortcut_target = st.install_path.clone();
+    let residual_target = st.install_path.clone();
+    let cleanup_entry = catalog_entry;
+    let mut installed = state.installed.lock().clone();
+    let uninstall_id = app_id.clone();
+    let updated_installed = async_runtime::spawn_blocking(move || {
+        installer::uninstall_app(&uninstall_id, &mut installed)?;
+        Ok::<_, String>(installed)
+    })
+    .await
+    .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
+    *state.installed.lock() = updated_installed;
+    confirm_uninstalled(&state, &app_id).await?;
+    let cleanup = async_runtime::spawn_blocking(move || {
+        let shortcuts =
+            installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
+        let residuals = installer::cleanup_declared_residual_paths(
+            &cleanup_entry,
+            &PathBuf::from(residual_target),
+        );
+        (shortcuts, residuals)
+    })
+    .await
+    .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
+    let (shortcut_cleanup, residual_cleanup) = cleanup;
+    let mut warnings = Vec::new();
+    if let Err(error) = shortcut_cleanup {
+        warnings.push(error);
+    }
+    if let Err(error) = residual_cleanup {
+        warnings.push(error);
+    }
+    if !warnings.is_empty() {
+        return Err(warnings.join("\n"));
+    }
+    if let Err(error) = installer::cleanup_package_download(&app_id) {
+        logger::warn("cleanup", error);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn launch_app(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
+    logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
+    let preferred_executable = state
+        .catalog
+        .lock()
+        .iter()
+        .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id.as_str()))
+        .and_then(|entry| entry.get("launch_executable"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let cached_launch_path = state
+        .installed
+        .lock()
+        .get(&app_id)
+        .and_then(|info| info.launch_path.clone())
+        .filter(|path| PathBuf::from(path).is_file());
+    if let Some(path) = cached_launch_path {
+        logger::info("launch", format!("Usando ejecutable almacenado: {path}"));
+        return installer::launch_path_with_preferred(&PathBuf::from(path), None);
+    }
+
+    if let Some(st) = state.statuses.lock().get(&app_id).cloned() {
+        if st.installed && st.install_path.starts_with("shell:") {
+            return installer::launch_shell_target(&st.install_path);
+        }
+        if st.installed && !st.install_path.is_empty() {
+            return installer::launch_path_with_preferred(
+                &PathBuf::from(&st.install_path),
+                preferred_executable.as_deref(),
+            );
+        }
+        if st.installed {
+            return Err(
+                "Windows detecta la aplicación, pero no registra una ruta de ejecución válida."
+                    .into(),
+            );
+        }
+    }
+    let installed = state.installed.lock();
+    installer::launch_app(&app_id, &installed)
+}
+
+#[tauri::command]
+fn launch_app_elevated(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
+    logger::info(
+        "launch",
+        format!("Solicitud de apertura elevada: app_id={app_id}"),
+    );
+    let preferred_executable = state
+        .catalog
+        .lock()
+        .iter()
+        .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id.as_str()))
+        .and_then(|entry| entry.get("launch_executable"))
+        .and_then(|value| value.as_str())
+        .map(str::to_string);
+
+    let cached_launch_path = state
+        .installed
+        .lock()
+        .get(&app_id)
+        .and_then(|info| info.launch_path.clone())
+        .filter(|path| PathBuf::from(path).is_file());
+    if let Some(path) = cached_launch_path {
+        return installer::launch_path_elevated_with_preferred(&PathBuf::from(path), None);
+    }
+
+    if let Some(status) = state.statuses.lock().get(&app_id).cloned() {
+        if status.installed && status.install_path.starts_with("shell:") {
+            return Err("Las aplicaciones empaquetadas de Windows no admiten el inicio elevado desde WinSlimCenter.".into());
+        }
+        if status.installed && !status.install_path.is_empty() {
+            return installer::launch_path_elevated_with_preferred(
+                &PathBuf::from(status.install_path),
+                preferred_executable.as_deref(),
+            );
+        }
+    }
+
+    let installed = state.installed.lock();
+    let info = installed
+        .get(&app_id)
+        .ok_or("La aplicación no está instalada")?;
+    installer::launch_path_elevated_with_preferred(
+        &PathBuf::from(&info.install_path),
+        preferred_executable.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn pause_download(app: AppHandle, state: State<'_, AppState>, app_id: String) {
+    logger::info("download", format!("Pausa solicitada: app_id={app_id}"));
+    state.downloads.lock().pause(&app_id);
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+fn resume_download(app: AppHandle, state: State<'_, AppState>, app_id: String) {
+    logger::info(
+        "download",
+        format!("Reanudación solicitada: app_id={app_id}"),
+    );
+    state.downloads.lock().resume(&app_id);
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+fn cancel_download(app: AppHandle, state: State<'_, AppState>, app_id: String) {
+    logger::warn(
+        "download",
+        format!("Cancelación solicitada: app_id={app_id}"),
+    );
+    state.downloads.lock().cancel(&app_id);
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+fn pause_all(app: AppHandle, state: State<'_, AppState>) {
+    logger::info("download", "Pausa global solicitada.");
+    state.downloads.lock().pause_all();
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+fn resume_all(app: AppHandle, state: State<'_, AppState>) {
+    logger::info("download", "Reanudación global solicitada.");
+    state.downloads.lock().resume_all();
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+fn cancel_all(app: AppHandle, state: State<'_, AppState>) {
+    logger::warn("download", "Cancelación global solicitada.");
+    state.downloads.lock().cancel_all();
+    emit_dl(&app, &state);
+}
+
+#[tauri::command]
+async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, AppStatus>, String> {
+    let started = std::time::Instant::now();
+    logger::info("updates", "Comprobando actualizaciones.");
+    let catalog = state.catalog.lock().clone();
+    let mut statuses = state.statuses.lock().clone();
+    let has_installed_winget_app = catalog.iter().any(|entry| {
+        let id = entry.get("id").and_then(|value| value.as_str());
+        let is_winget = entry.get("source_type").and_then(|value| value.as_str()) == Some("winget");
+        is_winget
+            && id
+                .and_then(|value| statuses.get(value))
+                .map(|status| status.installed)
+                .unwrap_or(false)
+    });
+    let winget_updates = if has_installed_winget_app {
+        installer::winget_available_updates().await.ok()
+    } else {
+        None
+    };
+
+    for entry in &catalog {
+        let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(st) = statuses.get_mut(id) else {
+            continue;
+        };
+        if !st.installed {
+            continue;
+        }
+        let source = entry
+            .get("source_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        match source {
+            "github_release" => {
+                let Some(repo) = entry.get("github_repo").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                let pattern = entry.get("asset_pattern").and_then(|v| v.as_str());
+                if let Ok((_url, tag)) = download::github_latest_release_asset(repo, pattern).await
+                {
+                    st.update_available =
+                        detect::is_newer(&tag, &st.version).unwrap_or(tag != st.version);
+                    st.latest_version = Some(tag);
+                }
+            }
+            "winget" => {
+                if let (Some(output), Some(package_id)) = (
+                    winget_updates.as_deref(),
+                    entry.get("winget_id").and_then(|value| value.as_str()),
+                ) {
+                    let versions = installer::winget_update_versions(output, package_id);
+                    st.update_available = versions.is_some();
+                    if let Some((installed, available)) = versions {
+                        if st.version.is_empty() || st.version.eq_ignore_ascii_case("latest") {
+                            st.version = installed;
+                        }
+                        st.latest_version = Some(available);
+                    } else {
+                        st.latest_version = None;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let available = statuses
+        .values()
+        .filter(|status| status.update_available)
+        .count();
+    logger::info(
+        "updates",
+        format!(
+            "Comprobación terminada: disponibles={available}, duración={} ms",
+            started.elapsed().as_millis()
+        ),
+    );
+    *state.statuses.lock() = statuses.clone();
+    Ok(statuses)
+}
+
+const GITHUB_LATEST_URL: &str = "https://github.com/tiranosaurio73/WINSLIM_CENTER/releases/download/latest/WINSLIMCENTER_latest.zip";
+
+#[tauri::command]
+async fn update_center_app(app: AppHandle) -> Result<String, String> {
+    logger::info("self-update", "Actualización de WinSlimCenter solicitada.");
+    let app_handle = app.clone();
+    async_runtime::spawn(async move {
+        let result = async {
+            let package_dir = paths::package_download_dir("winslimcenter-update");
+            let download_path = package_dir.join("WINSLIMCENTER_latest.zip");
+            let staging_dir = package_dir.join("stage");
+            let script_path = package_dir.join("update_center.ps1");
+            let _ = std::fs::remove_dir_all(&package_dir);
+            std::fs::create_dir_all(&package_dir).map_err(|e| e.to_string())?;
+
+            let flags = download::DownloadFlags::new();
+            download::download_url(GITHUB_LATEST_URL, &download_path, &flags, |_, _, _| {}).await?;
+
+            std::fs::create_dir_all(&staging_dir).map_err(|e| e.to_string())?;
+            installer::extract_zip(&download_path, &staging_dir)?;
+
+            let source_root = if let Ok(entries) = std::fs::read_dir(&staging_dir) {
+                let dirs: Vec<_> = entries
+                    .filter_map(Result::ok)
+                    .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+                    .collect();
+                if dirs.len() == 1 {
+                    dirs[0].path()
+                } else {
+                    staging_dir.clone()
+                }
+            } else {
+                staging_dir.clone()
+            };
+
+            let exe_dir = paths::exe_dir();
+            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            let script = format!(
+                r#"
+$ErrorActionPreference = 'SilentlyContinue'
+Start-Sleep -Seconds 3
+$source = '{}'
+$target = '{}'
+$exe = '{}'
+if (Test-Path $source) {{
+    if (Test-Path $target) {{
+        Get-ChildItem -Path $source -Force | ForEach-Object {{
+            $dest = Join-Path $target $_.Name
+            if ($_.PSIsContainer) {{
+                if (Test-Path $dest) {{ Remove-Item $dest -Recurse -Force }}
+                Copy-Item -Path $_.FullName -Destination $dest -Recurse -Force
+            }} else {{
+                Copy-Item -Path $_.FullName -Destination $dest -Force
+            }}
+        }}
+    }}
+}}
+if (Test-Path $exe) {{
+    Start-Process -FilePath $exe -WorkingDirectory $target
+}}
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '{}' -Force -Recurse -ErrorAction SilentlyContinue
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
+Remove-Item -Path '{}' -Force -Recurse -ErrorAction SilentlyContinue
+"#,
+                source_root.to_string_lossy(),
+                exe_dir.to_string_lossy(),
+                exe_path.to_string_lossy(),
+                script_path.to_string_lossy(),
+                staging_dir.to_string_lossy(),
+                download_path.to_string_lossy(),
+                package_dir.to_string_lossy(),
+            );
+            std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
+            let mut command = std::process::Command::new("powershell");
+            crate::process::background(&mut command);
+            let _ = command
+                .args([
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    &script_path.to_string_lossy(),
+                ])
+                .spawn();
+            Ok::<(), String>(())
+        }
+        .await;
+        match result {
+            Ok(()) => app_handle.exit(0),
+            Err(error) => {
+                logger::error("self-update", &error);
+                if let Err(cleanup_error) =
+                    installer::cleanup_package_download("winslimcenter-update")
+                {
+                    logger::warn("cleanup", cleanup_error);
+                }
+            }
+        }
+    });
+
+    Ok("Actualización iniciada. La app se cerrará y reabrirá automáticamente.".into())
+}
+
+#[tauri::command]
+async fn install_app(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    app_entry: Value,
+    force_update: Option<bool>,
+) -> Result<(), String> {
+    let app_id = app_entry
+        .get("id")
+        .and_then(|v| v.as_str())
+        .ok_or("App sin id")?
+        .to_string();
+    let name = app_entry
+        .get("name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&app_id)
+        .to_string();
+    let accent = app_entry
+        .get("accent_color")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let force = force_update.unwrap_or(false);
+    logger::info(
+        "install",
+        format!(
+            "Solicitud recibida: app_id={app_id}, nombre={name}, actualización={force}, origen={}",
+            app_entry
+                .get("source_type")
+                .and_then(|value| value.as_str())
+                .unwrap_or("desconocido")
+        ),
+    );
+
+    let current_version = {
+        let statuses = state.statuses.lock();
+        if let Some(st) = statuses.get(&app_id) {
+            if st.installed && !force && !st.update_available {
+                if st.origin == "system" {
+                    return Err(format!(
+                        "'{name}' ya está instalada en el equipo. No se reinstalará."
+                    ));
+                }
+                return Err(format!("'{name}' ya está instalada."));
+            }
+            if st.installed {
+                Some(st.version.clone())
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
+    let flags = {
+        let mut dl = state.downloads.lock();
+        dl.begin(&app_id, &name, accent)
+            .ok_or_else(|| format!("'{name}' ya está en la cola de descargas."))?
+    };
+    emit_dl(&app, &state);
+
+    let downloads = state.downloads.clone();
+    let app_handle = app.clone();
+
+    {
+        let mut dl = downloads.lock();
+        dl.update(
+            &app_id,
+            Some(TaskState::Downloading),
+            Some(0),
+            Some("Iniciando...".into()),
+            None,
+        );
+    }
+    emit_dl(&app_handle, &state);
+
+    let app_entry_for_task = app_entry.clone();
+    let app_id_for_task = app_id.clone();
+    let name_for_task = name.clone();
+    let force_for_task = force;
+    let flags_for_task = flags.clone();
+
+    async_runtime::spawn(async move {
+        let app_state = app_handle.state::<AppState>();
+        let downloads = app_state.downloads.clone();
+        let mut installed = app_state.installed.lock().clone();
+        let had_center_install = installed.contains_key(&app_id_for_task);
+        let operation_started = std::time::Instant::now();
+        let mut last_logged_progress: Option<u32> = None;
+        let mut last_progress_log = std::time::Instant::now();
+
+        let result = installer::do_install(
+            &app_entry_for_task,
+            &mut installed,
+            &flags_for_task,
+            force_for_task,
+            current_version,
+            |progress, status, is_pausable| {
+                if last_logged_progress != Some(progress)
+                    || last_progress_log.elapsed() >= std::time::Duration::from_secs(1)
+                {
+                    logger::debug(
+                        "install-progress",
+                        format!(
+                            "app_id={app_id_for_task}, progreso={progress}%, pausable={is_pausable}, estado={status}"
+                        ),
+                    );
+                    last_logged_progress = Some(progress);
+                    last_progress_log = std::time::Instant::now();
+                }
+                let st = if status.to_lowercase().contains("extray")
+                    || status.to_lowercase().contains("registr")
+                    || status.to_lowercase().contains("instal")
+                    || status.to_lowercase().contains("winget")
+                {
+                    TaskState::Installing
+                } else if flags_for_task
+                    .pause
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    && is_pausable
+                {
+                    TaskState::Paused
+                } else {
+                    TaskState::Downloading
+                };
+                {
+                    let mut dl = downloads.lock();
+                    dl.update_pausable(&app_id_for_task, is_pausable);
+                    dl.update(
+                        &app_id_for_task,
+                        Some(st),
+                        Some(progress),
+                        Some(status),
+                        None,
+                    );
+                }
+                let tasks = downloads.lock().snapshots();
+                let _ = app_handle.emit("downloads-changed", DlEvent { tasks });
+            },
+        )
+        .await;
+
+        let result = match result {
+            Ok(changed) => {
+                *app_state.installed.lock() = installed.clone();
+                if changed {
+                    match confirm_installed(&app_state, &app_id_for_task).await {
+                        Ok(_) => Ok(changed),
+                        Err(error) => {
+                            Err(format!("{}{error}", installer::INSTALL_INTERRUPTED_PREFIX))
+                        }
+                    }
+                } else {
+                    Ok(changed)
+                }
+            }
+            Err(error) => Err(error),
+        };
+
+        match result {
+            Ok(changed) => {
+                logger::info(
+                    "install",
+                    format!(
+                        "Operación completada: app_id={app_id_for_task}, cambió={changed}, duración={} ms",
+                        operation_started.elapsed().as_millis()
+                    ),
+                );
+                *app_state.installed.lock() = installed;
+                rebuild_statuses(&app_state);
+                let completion = if force_for_task {
+                    if changed {
+                        format!("{name_for_task} actualizado correctamente")
+                    } else {
+                        format!("{name_for_task} ya estaba actualizado")
+                    }
+                } else {
+                    format!("{name_for_task} instalado correctamente")
+                };
+                {
+                    let mut dl = downloads.lock();
+                    dl.update(
+                        &app_id_for_task,
+                        Some(TaskState::Done),
+                        Some(100),
+                        Some(completion),
+                        None,
+                    );
+                }
+                emit_dl(&app_handle, &app_state);
+                let _ = app_handle.emit(
+                    "install-finished",
+                    serde_json::json!({
+                        "app_id": app_id_for_task,
+                        "ok": true,
+                        "changed": changed,
+                        "is_update": force_for_task
+                    }),
+                );
+            }
+            Err(e) => {
+                logger::error(
+                    "install",
+                    format!(
+                        "Operación fallida: app_id={app_id_for_task}, duración={} ms, error={e}",
+                        operation_started.elapsed().as_millis()
+                    ),
+                );
+                let cleanup_error = installer::cleanup_failed_install(
+                    &app_id_for_task,
+                    force_for_task || !had_center_install,
+                )
+                .err();
+                rebuild_statuses(&app_state);
+                let installation_cancelled = installer::is_install_cancelled(&e);
+                let download_cancelled = e == "Cancelado" || e.starts_with("Descarga cancelada");
+                let cancelled = installation_cancelled || download_cancelled;
+                let interrupted = installer::is_install_interrupted(&e);
+                let mut display_error = installer::display_install_error(&e).to_string();
+                if let Some(cleanup_error) = cleanup_error {
+                    logger::error("cleanup", &cleanup_error);
+                    display_error.push_str(&format!("\n\n{cleanup_error}"));
+                } else {
+                    logger::info(
+                        "cleanup",
+                        format!("Restos del paquete eliminados: app_id={app_id_for_task}"),
+                    );
+                }
+                {
+                    let mut dl = downloads.lock();
+                    if cancelled {
+                        dl.update(
+                            &app_id_for_task,
+                            Some(TaskState::Cancelled),
+                            Some(0),
+                            Some(if installation_cancelled {
+                                "Instalación cancelada".into()
+                            } else {
+                                "Descarga cancelada".into()
+                            }),
+                            None,
+                        );
+                    } else {
+                        let task_message = if interrupted {
+                            "Instalación interrumpida".to_string()
+                        } else {
+                            let summary: String = display_error.chars().take(60).collect();
+                            format!("Error: {summary}")
+                        };
+                        dl.update(
+                            &app_id_for_task,
+                            Some(TaskState::Error),
+                            None,
+                            Some(task_message),
+                            Some(display_error.clone()),
+                        );
+                    }
+                }
+                emit_dl(&app_handle, &app_state);
+                let _ = app_handle.emit(
+                    "install-finished",
+                    serde_json::json!({
+                        "app_id": app_id_for_task,
+                        "ok": false,
+                        "cancelled": cancelled,
+                        "cancellation_kind": if installation_cancelled { "installation" } else if download_cancelled { "download" } else { "" },
+                        "interrupted": interrupted,
+                        "error": display_error
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(())
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    let application = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let setup_started = std::time::Instant::now();
+            let log_path = logger::init()?;
+            let default_panic_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |panic_info| {
+                logger::error("panic", panic_info.to_string());
+                default_panic_hook(panic_info);
+            }));
+            logger::info("startup", format!("Registro iniciado en {}", log_path.display()));
+            paths::ensure_dirs().map_err(|e| e.to_string())?;
+            let resource_dir = app.path().resource_dir().ok();
+            let catalog_path = paths::resolve_apps_json(resource_dir);
+            let catalog = store::load_catalog(&catalog_path);
+            let installed = store::load_installed();
+            let settings = store::load_settings();
+            // Keep the first window responsive. The complete Windows, Start Apps and
+            // Winget scan starts from the frontend after its first visible frame.
+            let statuses = detect::build_statuses(&catalog, &installed, &[], &[], "");
+            logger::info(
+                "startup",
+                format!(
+                    "Carga inicial rápida: catálogo={}, instaladas_centro={}, estados_provisionales={}, duración={} ms",
+                    catalog.len(),
+                    installed.len(),
+                    statuses.len(),
+                    setup_started.elapsed().as_millis()
+                ),
+            );
+            logger::info("startup", format!("Catálogo: {}", catalog_path.display()));
+            logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::app_dir().display()));
+            app.manage(AppState {
+                catalog_path: Mutex::new(catalog_path),
+                catalog: Mutex::new(catalog),
+                installed: Mutex::new(installed),
+                statuses: Mutex::new(statuses),
+                settings: Mutex::new(settings),
+                downloads: Arc::new(Mutex::new(download::DownloadManager::new())),
+            });
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_bootstrap,
+            refresh_statuses,
+            check_updates,
+            update_center_app,
+            get_tasks,
+            reload_catalog,
+            save_catalog,
+            get_templates,
+            save_settings,
+            open_apps_dir,
+            open_logs,
+            write_log,
+            open_url,
+            uninstall_app,
+            launch_app,
+            launch_app_elevated,
+            install_app,
+            pause_download,
+            resume_download,
+            cancel_download,
+            pause_all,
+            resume_all,
+            cancel_all,
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application");
+
+    application.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            logger::shutdown();
+        }
+    });
+}
