@@ -22,12 +22,16 @@ const FEATURED_ORDER = [
 
 const PROJECT_SLOGANS = [
   "Tu software esencial, reunido en un solo lugar.",
-  "Instala, actualiza y organiza Windows con menos esfuerzo.",
-  "Una tienda ligera para un Windows más limpio y práctico.",
+  "Instala, actualiza y organiza tu equipo con menos esfuerzo.",
+  "Una tienda ligera para un sistema más limpio y práctico.",
   "Todo lo que necesitas. Sin ruido, sin complicaciones.",
   "Descubre aplicaciones útiles y mantén tu equipo preparado.",
-  "Windows a tu manera: rápido, ordenado y bajo control.",
+  "Tu equipo a tu manera: rápido, ordenado y bajo control.",
   "Menos búsquedas. Más tiempo para hacer lo que importa.",
+  "Tu centro de control: software optimizado, accesible y al día.",
+  "Todo tu software en un clic: sencillo, directo y personalizado.",
+  "Gestión inteligente de aplicaciones para un rendimiento impecable.",
+  "Tu biblioteca de programas: rápida, organizada y siempre actualizada.",
 ];
 
 function chooseProjectSlogan() {
@@ -605,7 +609,7 @@ function projectHeroHtml() {
       <div class="hero-left">
         <div class="project-hero-logo"><img src="assets/winslim-center-logo.png" alt="Logotipo de WinSlimCenter" /></div>
         <div class="project-hero-copy">
-          <div class="project-kicker">TU CENTRO DE APLICACIONES PARA WINDOWS</div>
+          <div class="project-kicker">TU CENTRO DE APLICACIONES Y HERRAMIENTAS</div>
           <h2>WinSlimCenter</h2>
           <p class="project-slogan">${escapeHtml(state.projectSlogan)}</p>
           <p class="desc">Una experiencia sencilla para descubrir, instalar, abrir, actualizar y desinstalar tus aplicaciones desde un catálogo cuidado.</p>
