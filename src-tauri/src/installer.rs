@@ -836,7 +836,58 @@ pub async fn do_install(
 /// Remove download and staging artifacts left by a cancelled or failed
 /// installation. Successful system installers and portable apps already clean
 /// these paths in `do_install`.
-pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result<(), String> {
+fn remove_path_robust(target: &Path) -> Result<(), String> {
+    if !target.exists() {
+        return Ok(());
+    }
+
+    for attempt in 0..4 {
+        let result = if target.is_dir() {
+            if let Ok(entries) = fs::read_dir(target) {
+                for entry in entries.flatten() {
+                    if let Ok(metadata) = entry.metadata() {
+                        let mut permissions = metadata.permissions();
+                        if permissions.readonly() {
+                            #[allow(clippy::permissions_set_readonly_false)]
+                            permissions.set_readonly(false);
+                            let _ = fs::set_permissions(entry.path(), permissions);
+                        }
+                    }
+                }
+            }
+            fs::remove_dir_all(target)
+        } else {
+            if let Ok(metadata) = target.metadata() {
+                let mut permissions = metadata.permissions();
+                if permissions.readonly() {
+                    #[allow(clippy::permissions_set_readonly_false)]
+                    permissions.set_readonly(false);
+                    let _ = fs::set_permissions(target, permissions);
+                }
+            }
+            fs::remove_file(target)
+        };
+
+        if result.is_ok() {
+            return Ok(());
+        }
+
+        if attempt < 3 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+    }
+
+    if target.is_dir() {
+        fs::remove_dir_all(target).map_err(|e| e.to_string())
+    } else {
+        fs::remove_file(target).map_err(|e| e.to_string())
+    }
+}
+
+pub fn cleanup_failed_install(
+    app_id: &str,
+    remove_install_path: bool,
+) -> Result<(), String> {
     crate::logger::info(
         "cleanup",
         format!(
@@ -853,13 +904,17 @@ pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result
         if !target.exists() {
             continue;
         }
-        let result = if target.is_dir() {
-            fs::remove_dir_all(&target)
-        } else {
-            fs::remove_file(&target)
-        };
-        if let Err(error) = result {
+        if let Err(error) = remove_path_robust(&target) {
             failures.push(format!("{}: {error}", target.display()));
+        }
+    }
+
+    let parent = paths::downloads_dir();
+    if parent.is_dir() {
+        if let Ok(mut entries) = fs::read_dir(&parent) {
+            if entries.next().is_none() {
+                let _ = fs::remove_dir(&parent);
+            }
         }
     }
 
@@ -875,22 +930,30 @@ pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result
 
 pub fn cleanup_package_download(app_id: &str) -> Result<(), String> {
     let target = paths::package_download_dir(app_id);
-    if !target.exists() {
-        return Ok(());
+    if target.exists() {
+        remove_path_robust(&target).map_err(|error| {
+            format!(
+                "No se pudo borrar la carpeta de descarga {}: {error}",
+                target.display()
+            )
+        })?;
+        crate::logger::info(
+            "cleanup",
+            format!(
+                "Carpeta de descarga eliminada: app_id={app_id}, ruta={}",
+                target.display()
+            ),
+        );
     }
-    fs::remove_dir_all(&target).map_err(|error| {
-        format!(
-            "No se pudo borrar la carpeta de descarga {}: {error}",
-            target.display()
-        )
-    })?;
-    crate::logger::info(
-        "cleanup",
-        format!(
-            "Carpeta de descarga eliminada: app_id={app_id}, ruta={}",
-            target.display()
-        ),
-    );
+
+    let parent = paths::downloads_dir();
+    if parent.is_dir() {
+        if let Ok(mut entries) = fs::read_dir(&parent) {
+            if entries.next().is_none() {
+                let _ = fs::remove_dir(&parent);
+            }
+        }
+    }
     Ok(())
 }
 

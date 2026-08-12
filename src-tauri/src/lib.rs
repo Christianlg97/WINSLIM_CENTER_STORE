@@ -724,6 +724,10 @@ fn cancel_download(app: AppHandle, state: State<'_, AppState>, app_id: String) {
         format!("Cancelación solicitada: app_id={app_id}"),
     );
     state.downloads.lock().cancel(&app_id);
+    let task_app_id = app_id.clone();
+    async_runtime::spawn_blocking(move || {
+        let _ = installer::cleanup_package_download(&task_app_id);
+    });
     emit_dl(&app, &state);
 }
 
@@ -744,7 +748,19 @@ fn resume_all(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 fn cancel_all(app: AppHandle, state: State<'_, AppState>) {
     logger::warn("download", "Cancelación global solicitada.");
+    let task_ids: Vec<String> = state
+        .downloads
+        .lock()
+        .snapshots()
+        .into_iter()
+        .map(|t| t.app_id)
+        .collect();
     state.downloads.lock().cancel_all();
+    async_runtime::spawn_blocking(move || {
+        for app_id in task_ids {
+            let _ = installer::cleanup_package_download(&app_id);
+        }
+    });
     emit_dl(&app, &state);
 }
 
@@ -1106,6 +1122,13 @@ async fn install_app(
                 );
                 *app_state.installed.lock() = installed;
                 rebuild_statuses(&app_state);
+
+                if let Err(error) = installer::cleanup_package_download(&app_id_for_task) {
+                    logger::warn(
+                        "cleanup",
+                        format!("Limpieza post-instalación de {app_id_for_task}: {error}"),
+                    );
+                }
 
                 let is_winget = app_entry_for_task
                     .get("source_type")

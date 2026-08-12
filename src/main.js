@@ -4,6 +4,7 @@ const { listen } = window.__TAURI__.event;
 const NAV = [
   { id: "home", label: "Inicio", icon: "🏠", filter: null },
   { id: "featured", label: "Destacados", icon: "🔥", filter: "featured" },
+  { id: "updates", label: "Actualizaciones", icon: "🚀", filter: "__UPDATES__" },
   { id: "games", label: "Juegos", icon: "🎮", filter: "Juegos" },
   { id: "emulators", label: "Emuladores", icon: "🕹️", filter: "Emuladores" },
   { id: "browsers", label: "Navegadores", icon: "🌐", filter: "Navegadores" },
@@ -413,10 +414,15 @@ function installedCount() {
   return Object.values(state.statuses).filter((s) => s.installed).length;
 }
 
+function updatesCount() {
+  return Object.values(state.statuses).filter((s) => s.update_available).length;
+}
+
 function sectionFilter(app) {
   const nav = NAV.find((n) => n.id === state.section);
   if (!nav || nav.filter == null) return true;
   if (nav.filter === "__INSTALLED__") return !!appStatus(app.id).installed;
+  if (nav.filter === "__UPDATES__") return !!appStatus(app.id).update_available;
   if (nav.filter === "featured") return !!app.featured;
   if (app.section !== nav.filter) return false;
   if (state.section === "emulators" && state.consoleFilter !== "all") {
@@ -475,6 +481,7 @@ function renderSidebar() {
       (n) => `
       <button type="button" class="nav-btn ${state.section === n.id ? "active" : ""}" data-nav="${n.id}">
         <span class="nav-ico">${n.icon}</span>${escapeHtml(n.label)}
+        ${n.id === "updates" && updatesCount() > 0 ? `<span class="nav-badge-count">${updatesCount()}</span>` : ""}
       </button>`
     ).join("")}
     <div class="sb-label">ACCIONES</div>
@@ -680,7 +687,26 @@ function renderContent() {
   }
 
   if (!apps.length) {
-    html += `<div class="empty"><h3>Sin resultados</h3><p>Prueba con otro buscador o sección.</p></div>`;
+    if (state.section === "updates") {
+      html += `
+        <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
+          <div class="empty-updates-hero">
+            <div class="empty-updates-badge-container">
+              <div class="empty-updates-logo-wrapper">
+                <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+              </div>
+              <div class="empty-updates-check-badge">✓</div>
+            </div>
+            <h2>Todo tu software está al día</h2>
+            <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
+            <div class="empty-updates-status">
+              <span class="pulse-dot"></span> Todas las apps vigentes
+            </div>
+          </div>
+        </div>`;
+    } else {
+      html += `<div class="empty"><h3>Sin resultados</h3><p>Prueba con otro buscador o sección.</p></div>`;
+    }
   }
 
   const content = document.getElementById("content");
