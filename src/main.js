@@ -107,7 +107,7 @@ const STATE_LABELS = {
 
 const state = {
   catalog: [],
-  appVersion: "0.1.3",
+  appVersion: "1.6.0",
   installed: {},
   statuses: {},
   settings: { theme: "plata", accent: "#c7ced6" },

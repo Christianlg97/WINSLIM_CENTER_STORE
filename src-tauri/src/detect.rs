@@ -234,6 +234,26 @@ fn norm(s: &str) -> String {
         .collect()
 }
 
+fn is_generic_word(s: &str) -> bool {
+    matches!(
+        s,
+        "uninstall"
+            | "uninstaller"
+            | "setup"
+            | "installer"
+            | "install"
+            | "launcher"
+            | "manager"
+            | "utility"
+            | "tool"
+            | "tools"
+            | "app"
+            | "application"
+            | "desinstalador"
+            | "desinstalar"
+    )
+}
+
 fn names_match(catalog_name: &str, display_name: &str) -> bool {
     let a = norm(catalog_name);
     let b = norm(display_name);
@@ -242,6 +262,9 @@ fn names_match(catalog_name: &str, display_name: &str) -> bool {
     }
     if a == b {
         return true;
+    }
+    if is_generic_word(&a) || is_generic_word(&b) {
+        return false;
     }
     // Permit version/product suffixes, but never match a short name in the
     // middle of another product (for example "Code" inside "OpenCode").
