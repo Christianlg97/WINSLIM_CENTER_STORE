@@ -39,17 +39,12 @@ call npm run build
 if errorlevel 1 goto :err_build
 
 echo.
-echo [INFO] Copiando ejecutables e instaladores a la carpeta Build...
-if not exist "%~dp0Build" mkdir "%~dp0Build"
+echo [INFO] Limpiando y copiando únicamente WinSlimCenter.exe a la carpeta Build...
+if exist "%~dp0Build\" rmdir /s /q "%~dp0Build"
+mkdir "%~dp0Build"
 
 if exist "%WINSLIM_TARGET_DIR%\release\WinSlimCenter.exe" (
   copy /y "%WINSLIM_TARGET_DIR%\release\WinSlimCenter.exe" "%~dp0Build\" >nul
-)
-if exist "%WINSLIM_TARGET_DIR%\release\bundle\msi\*.msi" (
-  copy /y "%WINSLIM_TARGET_DIR%\release\bundle\msi\*.msi" "%~dp0Build\" >nul
-)
-if exist "%WINSLIM_TARGET_DIR%\release\bundle\nsis\*.exe" (
-  copy /y "%WINSLIM_TARGET_DIR%\release\bundle\nsis\*.exe" "%~dp0Build\" >nul
 )
 
 echo.

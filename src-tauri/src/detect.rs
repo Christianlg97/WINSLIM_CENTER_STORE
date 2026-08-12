@@ -61,14 +61,29 @@ pub fn scan_start_apps() -> Vec<StartApp> {
     apps
 }
 
+static WINGET_CACHE: parking_lot::Mutex<Option<(std::time::Instant, String)>> =
+    parking_lot::Mutex::new(None);
+
+pub fn clear_winget_cache() {
+    *WINGET_CACHE.lock() = None;
+}
+
 #[cfg(windows)]
 pub fn scan_winget_packages() -> String {
+    {
+        let cache = WINGET_CACHE.lock();
+        if let Some((timestamp, text)) = cache.as_ref() {
+            if timestamp.elapsed() < std::time::Duration::from_secs(3) {
+                return text.clone();
+            }
+        }
+    }
     let args = [
         "list",
         "--accept-source-agreements",
         "--disable-interactivity",
     ];
-    match crate::process::hidden_output("winget.exe", &args) {
+    let result = match crate::process::hidden_output("winget.exe", &args) {
         Ok(output) if output.success() => String::from_utf8_lossy(&output.stdout).to_string(),
         Ok(output) => {
             crate::logger::warn(
@@ -88,7 +103,9 @@ pub fn scan_winget_packages() -> String {
             );
             String::new()
         }
-    }
+    };
+    *WINGET_CACHE.lock() = Some((std::time::Instant::now(), result.clone()));
+    result
 }
 
 #[cfg(not(windows))]

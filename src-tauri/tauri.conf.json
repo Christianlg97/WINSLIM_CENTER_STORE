@@ -22,8 +22,8 @@
     }
   },
   "bundle": {
-    "active": true,
-    "targets": "all",
+    "active": false,
+    "targets": [],
     "resources": ["apps.json"],
     "icon": [
       "icons/128x128@2x.png",

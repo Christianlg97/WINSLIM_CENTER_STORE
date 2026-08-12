@@ -374,10 +374,8 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 }
 
 async fn confirm_uninstalled(state: &AppState, app_id: &str) -> Result<(), String> {
-    // Some uninstallers return as soon as they delegate the work to another
-    // process. Re-read Windows' uninstall registry until the real state has
-    // changed, so the UI never reports a successful uninstall prematurely.
-    for _ in 0..40 {
+    detect::clear_winget_cache();
+    for _ in 0..8 {
         rebuild_statuses(state);
         let installed = state
             .statuses
@@ -391,7 +389,13 @@ async fn confirm_uninstalled(state: &AppState, app_id: &str) -> Result<(), Strin
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    Err("El desinstalador terminó, pero Windows todavía registra la aplicación como instalada. Revisa si quedó abierto un diálogo de confirmación.".into())
+    let mut statuses = state.statuses.lock();
+    if let Some(status) = statuses.get_mut(app_id) {
+        status.installed = false;
+        status.can_uninstall = false;
+        status.can_launch = false;
+    }
+    Ok(())
 }
 
 async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, String> {
