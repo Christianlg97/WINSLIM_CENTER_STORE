@@ -810,31 +810,137 @@ fn select_github_asset_url(assets: &[GhAsset], asset_pattern: Option<&str>) -> O
     None
 }
 
+/// Marks an error caused by GitHub's unauthenticated API quota rather than by a
+/// problem with the package itself, so callers can explain it properly instead
+/// of showing a raw `403 rate limit exceeded`.
+pub const GITHUB_RATE_LIMIT_MARKER: &str = "__WINSLIM_GITHUB_RATE_LIMIT__";
+
+pub fn is_github_rate_limit(error: &str) -> bool {
+    error.contains(GITHUB_RATE_LIMIT_MARKER)
+}
+
+/// Release lookups are cached because the unauthenticated GitHub API allows only
+/// 60 requests per hour per IP. Checking updates for every installed
+/// `github_release` app at startup and again on every refresh used to burn that
+/// quota, after which perfectly valid installations failed with a 403.
+/// Cached lookup: when it was resolved, the asset URL and the release tag.
+type CachedRelease = (std::time::Instant, String, String);
+
+static RELEASE_CACHE: Mutex<Option<HashMap<String, CachedRelease>>> = Mutex::new(None);
+
+const RELEASE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(900);
+
+/// Reads the cache. With `allow_stale` the age check is skipped, which is how an
+/// expired entry can still rescue a lookup once GitHub starts refusing requests:
+/// a slightly old release URL is far more useful than a hard failure.
+fn cached_release(key: &str, allow_stale: bool) -> Option<(String, String)> {
+    let cache = RELEASE_CACHE.lock();
+    let entries = cache.as_ref()?;
+    let (stored_at, url, tag) = entries.get(key)?;
+    (allow_stale || stored_at.elapsed() < RELEASE_CACHE_TTL).then(|| (url.clone(), tag.clone()))
+}
+
+fn store_release(key: &str, url: &str, tag: &str) {
+    let mut cache = RELEASE_CACHE.lock();
+    cache.get_or_insert_with(HashMap::new).insert(
+        key.to_string(),
+        (std::time::Instant::now(), url.to_string(), tag.to_string()),
+    );
+}
+
+/// Turns a GitHub response into a readable error, flagging quota exhaustion.
+fn github_response_error(response: &reqwest::Response) -> Option<String> {
+    let status = response.status();
+    if status.is_success() {
+        return None;
+    }
+    let exhausted = response
+        .headers()
+        .get("x-ratelimit-remaining")
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.trim() == "0");
+    if (status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+        && exhausted
+    {
+        let minutes = response
+            .headers()
+            .get("x-ratelimit-reset")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .and_then(|reset| {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()
+                    .map(|now| reset.saturating_sub(now.as_secs()).div_ceil(60))
+            })
+            .unwrap_or(60);
+        return Some(format!(
+            "{GITHUB_RATE_LIMIT_MARKER}Se alcanzó el límite de consultas de la API pública de GitHub. \
+             Vuelve a intentarlo en unos {minutes} min, o instala esta aplicación desde su web oficial."
+        ));
+    }
+    Some(format!("GitHub respondió {status}"))
+}
+
+async fn fetch_github_json<T: for<'de> Deserialize<'de>>(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<T, String> {
+    let response = client
+        .get(url)
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(error) = github_response_error(&response) {
+        return Err(error);
+    }
+    response.json().await.map_err(|e| e.to_string())
+}
+
 pub async fn github_latest_release_asset(
     repo: &str,
     asset_pattern: Option<&str>,
 ) -> Result<(String, String), String> {
+    let cache_key = format!("{repo}|{}", asset_pattern.unwrap_or_default());
+    if let Some((url, tag)) = cached_release(&cache_key, false) {
+        crate::logger::debug(
+            "github",
+            format!("Versión servida desde caché: repositorio={repo}, versión={tag}"),
+        );
+        return Ok((url, tag));
+    }
+
     crate::logger::info(
         "github",
         format!("Consultando última versión: repositorio={repo}, patrón={asset_pattern:?}"),
     );
-    let api = format!("https://api.github.com/repos/{repo}/releases/latest");
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
 
-    let release: GhRelease = client
-        .get(&api)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+    let latest = fetch_github_json::<GhRelease>(
+        &client,
+        &format!("https://api.github.com/repos/{repo}/releases/latest"),
+    )
+    .await;
+
+    let release = match latest {
+        Ok(release) => release,
+        Err(error) => {
+            if let Some((url, tag)) = cached_release(&cache_key, true) {
+                crate::logger::warn(
+                    "github",
+                    format!(
+                        "GitHub no respondió para {repo} ({error}); se reutiliza la última versión conocida: {tag}"
+                    ),
+                );
+                return Ok((url, tag));
+            }
+            return Err(error);
+        }
+    };
 
     if let Some(url) = select_github_asset_url(&release.assets, asset_pattern) {
         crate::logger::info(
@@ -845,27 +951,32 @@ pub async fn github_latest_release_asset(
                 crate::logger::safe_url(&url)
             ),
         );
+        store_release(&cache_key, &url, &release.tag_name);
         return Ok((url, release.tag_name));
     }
 
     // Some projects publish platform-specific releases independently. If the
     // newest global release has no Windows asset, use the newest release that
-    // actually contains the requested Windows package.
-    let releases_api = format!("https://api.github.com/repos/{repo}/releases?per_page=20");
-    let releases: Vec<GhRelease> = client
-        .get(&releases_api)
-        .header("Accept", "application/vnd.github.v3+json")
-        .send()
-        .await
-        .map_err(|e| e.to_string())?
-        .error_for_status()
-        .map_err(|e| e.to_string())?
-        .json()
-        .await
-        .map_err(|e| e.to_string())?;
+    // actually contains the requested Windows package. This costs a second
+    // request, so it only runs when the first one genuinely had no match.
+    let releases: Vec<GhRelease> = match fetch_github_json(
+        &client,
+        &format!("https://api.github.com/repos/{repo}/releases?per_page=20"),
+    )
+    .await
+    {
+        Ok(releases) => releases,
+        Err(error) => {
+            if let Some((url, tag)) = cached_release(&cache_key, true) {
+                return Ok((url, tag));
+            }
+            return Err(error);
+        }
+    };
 
     for candidate in releases {
         if let Some(url) = select_github_asset_url(&candidate.assets, asset_pattern) {
+            store_release(&cache_key, &url, &candidate.tag_name);
             return Ok((url, candidate.tag_name));
         }
     }

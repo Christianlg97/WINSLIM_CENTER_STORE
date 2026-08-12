@@ -8,6 +8,7 @@ mod store;
 
 use detect::AppStatus;
 use download::{SharedDownloads, TaskSnapshot, TaskState};
+use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
@@ -97,16 +98,20 @@ fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
         5,
     );
     let catalog = state.catalog.lock().clone();
-    let mut installed = state.installed.lock().clone();
-    // Drop center entries whose folder vanished
-    let before = installed.len();
-    installed.retain(|_, info| {
-        info.install_path.is_empty() || PathBuf::from(&info.install_path).exists()
-    });
-    if installed.len() != before {
-        let _ = store::save_installed(&installed);
-        *state.installed.lock() = installed.clone();
-    }
+    // Prune and persist while holding the lock. Cloning first, mutating the
+    // clone and writing it back raced with concurrent installations, which then
+    // lost entries that had been registered in between.
+    let installed = {
+        let mut guard = state.installed.lock();
+        let before = guard.len();
+        guard.retain(|_, info| {
+            info.install_path.is_empty() || PathBuf::from(&info.install_path).exists()
+        });
+        if guard.len() != before {
+            let _ = store::save_installed(&guard);
+        }
+        guard.clone()
+    };
     emit_background_progress(
         app,
         "registry",
@@ -364,6 +369,15 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     if cleaned.is_empty() {
         return Err("URL vacía".into());
     }
+    // The catalog is editable from the UI, so restrict what a `web_url` may hand
+    // to the shell. Without this, an entry could point at `file://` or any other
+    // registered protocol handler.
+    let scheme_allowed = url::Url::parse(cleaned)
+        .map(|parsed| matches!(parsed.scheme(), "http" | "https"))
+        .unwrap_or(false);
+    if !scheme_allowed {
+        return Err("Solo se pueden abrir enlaces http o https.".into());
+    }
     logger::info(
         "open-url",
         format!("Abriendo URL: {}", logger::safe_url(cleaned)),
@@ -373,9 +387,15 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-async fn confirm_uninstalled(state: &AppState, app_id: &str) -> Result<(), String> {
-    detect::clear_winget_cache();
-    for _ in 0..8 {
+/// Waits until Windows stops reporting the application as installed.
+///
+/// This used to force `installed = false` after four seconds and return `Ok`,
+/// so a cancelled or silently failed uninstall was announced as "uninstalled
+/// successfully" and then reappeared on the next refresh. The status is no
+/// longer falsified: if Windows still lists the app, the caller is told.
+async fn confirm_uninstalled(state: &AppState, app_id: &str, name: &str) -> Result<(), String> {
+    detect::clear_detection_caches();
+    for attempt in 1..=20 {
         rebuild_statuses(state);
         let installed = state
             .statuses
@@ -384,21 +404,27 @@ async fn confirm_uninstalled(state: &AppState, app_id: &str) -> Result<(), Strin
             .map(|status| status.installed)
             .unwrap_or(false);
         if !installed {
+            logger::info(
+                "uninstall-verify",
+                format!("Desinstalación confirmada: app_id={app_id}, intento={attempt}"),
+            );
             return Ok(());
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
-    let mut statuses = state.statuses.lock();
-    if let Some(status) = statuses.get_mut(app_id) {
-        status.installed = false;
-        status.can_uninstall = false;
-        status.can_launch = false;
-    }
-    Ok(())
+    logger::warn(
+        "uninstall-verify",
+        format!("Windows sigue informando de que {app_id} está instalada"),
+    );
+    Err(format!(
+        "Se ejecutó la desinstalación, pero Windows sigue informando de que '{name}' está instalada. \
+         Es posible que el desinstalador siga en curso, que requiera reiniciar el equipo o que se cancelara."
+    ))
 }
 
 async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, String> {
+    detect::clear_detection_caches();
     for attempt in 1..=60 {
         rebuild_statuses(state);
         if let Some(status) = state.statuses.lock().get(app_id).cloned() {
@@ -442,6 +468,11 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({ "id": app_id }));
+    let app_name = catalog_entry
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(app_id.as_str())
+        .to_string();
 
     if st.origin == "system" {
         logger::info(
@@ -535,7 +566,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
         .await
         .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
 
-        confirm_uninstalled(&state, &app_id).await?;
+        confirm_uninstalled(&state, &app_id, &app_name).await?;
         let cleanup = async_runtime::spawn_blocking(move || {
             let shortcuts =
                 installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
@@ -567,16 +598,26 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
     let shortcut_target = st.install_path.clone();
     let residual_target = st.install_path.clone();
     let cleanup_entry = catalog_entry;
-    let mut installed = state.installed.lock().clone();
+    let managed_path = state
+        .installed
+        .lock()
+        .get(&app_id)
+        .map(|info| PathBuf::from(&info.install_path))
+        .ok_or("App no instalada")?;
     let uninstall_id = app_id.clone();
-    let updated_installed = async_runtime::spawn_blocking(move || {
-        installer::uninstall_app(&uninstall_id, &mut installed)?;
-        Ok::<_, String>(installed)
+    // The filesystem work runs off the lock (it retries and sleeps), and only the
+    // bookkeeping is done under it.
+    async_runtime::spawn_blocking(move || {
+        installer::remove_managed_install(&uninstall_id, &managed_path)
     })
     .await
     .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
-    *state.installed.lock() = updated_installed;
-    confirm_uninstalled(&state, &app_id).await?;
+    {
+        let mut installed = state.installed.lock();
+        installed.remove(&app_id);
+        store::save_installed(&installed)?;
+    }
+    confirm_uninstalled(&state, &app_id, &app_name).await?;
     let cleanup = async_runtime::spawn_blocking(move || {
         let shortcuts =
             installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
@@ -808,6 +849,59 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
         None
     };
 
+    // Resolve every GitHub release with bounded concurrency instead of one
+    // request after another. The cap keeps the unauthenticated API quota from
+    // being spent in a single burst.
+    let github_targets: Vec<(String, String, Option<String>)> = catalog
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(|v| v.as_str())?;
+            if entry.get("source_type").and_then(|v| v.as_str()) != Some("github_release") {
+                return None;
+            }
+            if !statuses.get(id).map(|st| st.installed).unwrap_or(false) {
+                return None;
+            }
+            let repo = entry.get("github_repo").and_then(|v| v.as_str())?;
+            Some((
+                id.to_string(),
+                repo.to_string(),
+                entry
+                    .get("asset_pattern")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string),
+            ))
+        })
+        .collect();
+
+    let github_lookups: Vec<(String, Result<String, String>)> =
+        futures_util::stream::iter(github_targets)
+            .map(|(id, repo, pattern)| async move {
+                let result = download::github_latest_release_asset(&repo, pattern.as_deref())
+                    .await
+                    .map(|(_url, tag)| tag);
+                (id, result)
+            })
+            .buffer_unordered(6)
+            .collect()
+            .await;
+
+    // A single, explicit note beats one opaque failure per repository.
+    if github_lookups
+        .iter()
+        .any(|(_, result)| result.as_ref().err().is_some_and(|error| download::is_github_rate_limit(error)))
+    {
+        logger::warn(
+            "updates",
+            "Se alcanzó el límite de la API pública de GitHub; algunas versiones no se pudieron comprobar.",
+        );
+    }
+
+    let github_results: HashMap<String, String> = github_lookups
+        .into_iter()
+        .filter_map(|(id, result)| result.ok().map(|tag| (id, tag)))
+        .collect();
+
     for entry in &catalog {
         let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
             continue;
@@ -824,15 +918,10 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
             .unwrap_or("");
         match source {
             "github_release" => {
-                let Some(repo) = entry.get("github_repo").and_then(|v| v.as_str()) else {
-                    continue;
-                };
-                let pattern = entry.get("asset_pattern").and_then(|v| v.as_str());
-                if let Ok((_url, tag)) = download::github_latest_release_asset(repo, pattern).await
-                {
+                if let Some(tag) = github_results.get(id) {
                     st.update_available =
-                        detect::is_newer(&tag, &st.version).unwrap_or(tag != st.version);
-                    st.latest_version = Some(tag);
+                        detect::is_newer(tag, &st.version).unwrap_or(*tag != st.version);
+                    st.latest_version = Some(tag.clone());
                 }
             }
             "winget" => {
@@ -908,15 +997,22 @@ async fn update_center_app(app: AppHandle) -> Result<String, String> {
 
             let exe_dir = paths::exe_dir();
             let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
+            // Wait for this very process to exit instead of guessing three
+            // seconds. With a fixed sleep, a slower shutdown left the files
+            // locked, the copy failed silently and the user was told the update
+            // had succeeded when nothing had changed.
             let script = format!(
                 r#"
-$ErrorActionPreference = 'SilentlyContinue'
-Start-Sleep -Seconds 3
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
 $source = '{}'
 $target = '{}'
 $exe = '{}'
-if (Test-Path $source) {{
-    if (Test-Path $target) {{
+$ownerPid = {}
+try {{ Wait-Process -Id $ownerPid -Timeout 60 -ErrorAction SilentlyContinue }} catch {{ }}
+$copied = $false
+try {{
+    if ((Test-Path $source) -and (Test-Path $target)) {{
         Get-ChildItem -Path $source -Force | ForEach-Object {{
             $dest = Join-Path $target $_.Name
             if ($_.PSIsContainer) {{
@@ -926,23 +1022,32 @@ if (Test-Path $source) {{
                 Copy-Item -Path $_.FullName -Destination $dest -Force
             }}
         }}
+        $copied = $true
     }}
+}} catch {{
+    [void][System.Windows.Forms.MessageBox]::Show(
+        'WinSlimCenter no pudo aplicar la actualizacion: ' + $_.Exception.Message)
+}}
+if (-not $copied) {{
+    [void][System.Windows.Forms.MessageBox]::Show(
+        'WinSlimCenter no pudo aplicar la actualizacion. Se mantiene la version actual.')
 }}
 if (Test-Path $exe) {{
     Start-Process -FilePath $exe -WorkingDirectory $target
 }}
-Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -Recurse -ErrorAction SilentlyContinue
+Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 "#,
                 source_root.to_string_lossy(),
                 exe_dir.to_string_lossy(),
                 exe_path.to_string_lossy(),
-                script_path.to_string_lossy(),
+                std::process::id(),
                 staging_dir.to_string_lossy(),
                 download_path.to_string_lossy(),
                 package_dir.to_string_lossy(),
+                script_path.to_string_lossy(),
             );
             std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
             let mut command = std::process::Command::new("powershell");
@@ -1060,15 +1165,13 @@ async fn install_app(
     async_runtime::spawn(async move {
         let app_state = app_handle.state::<AppState>();
         let downloads = app_state.downloads.clone();
-        let mut installed = app_state.installed.lock().clone();
-        let had_center_install = installed.contains_key(&app_id_for_task);
+        let had_center_install = app_state.installed.lock().contains_key(&app_id_for_task);
         let operation_started = std::time::Instant::now();
         let mut last_logged_progress: Option<u32> = None;
         let mut last_progress_log = std::time::Instant::now();
 
         let result = installer::do_install(
             &app_entry_for_task,
-            &mut installed,
             &flags_for_task,
             force_for_task,
             current_version,
@@ -1118,17 +1221,26 @@ async fn install_app(
         .await;
 
         let result = match result {
-            Ok(changed) => {
-                *app_state.installed.lock() = installed.clone();
-                if changed {
+            Ok(outcome) => {
+                // Apply the registration under the lock and persist from the live
+                // map, so a second installation finishing in parallel cannot
+                // overwrite this entry with its own stale snapshot.
+                if let Some((registered_id, info)) = outcome.registered {
+                    let mut installed = app_state.installed.lock();
+                    installed.insert(registered_id, info);
+                    if let Err(error) = store::save_installed(&installed) {
+                        logger::error("install", format!("No se pudo guardar installed.json: {error}"));
+                    }
+                }
+                if outcome.changed {
                     match confirm_installed(&app_state, &app_id_for_task).await {
-                        Ok(_) => Ok(changed),
+                        Ok(_) => Ok(outcome.changed),
                         Err(error) => {
                             Err(format!("{}{error}", installer::INSTALL_INTERRUPTED_PREFIX))
                         }
                     }
                 } else {
-                    Ok(changed)
+                    Ok(outcome.changed)
                 }
             }
             Err(error) => Err(error),
@@ -1143,7 +1255,6 @@ async fn install_app(
                         operation_started.elapsed().as_millis()
                     ),
                 );
-                *app_state.installed.lock() = installed;
                 rebuild_statuses(&app_state);
 
                 if let Err(error) = installer::cleanup_package_download(&app_id_for_task) {
@@ -1153,11 +1264,14 @@ async fn install_app(
                     );
                 }
 
+                // Only a fresh install opens the app. Doing it after an update
+                // meant every "Actualizar" press reopened a program the user had
+                // not asked to launch.
                 let is_winget = app_entry_for_task
                     .get("source_type")
                     .and_then(|v| v.as_str())
                     == Some("winget");
-                if is_winget {
+                if is_winget && !force_for_task && changed {
                     logger::info(
                         "install",
                         format!("Ejecutando automáticamente tras instalación WinGet: app_id={app_id_for_task}"),
@@ -1215,17 +1329,19 @@ async fn install_app(
                         operation_started.elapsed().as_millis()
                     ),
                 );
-                let cleanup_error = installer::cleanup_failed_install(
-                    &app_id_for_task,
-                    force_for_task || !had_center_install,
-                )
-                .err();
+                // Only wipe the installation folder when there was nothing there
+                // to begin with. On a failed update `do_install` has already put
+                // the previous version back, and deleting it here would undo
+                // exactly the recovery that just happened.
+                let cleanup_error =
+                    installer::cleanup_failed_install(&app_id_for_task, !had_center_install).err();
                 rebuild_statuses(&app_state);
                 let installation_cancelled = installer::is_install_cancelled(&e);
-                let download_cancelled = e == "Cancelado" || e.starts_with("Descarga cancelada");
+                let download_cancelled = e == installer::CANCELLED_MARKER
+                    || e.starts_with("Descarga cancelada");
                 let cancelled = installation_cancelled || download_cancelled;
                 let interrupted = installer::is_install_interrupted(&e);
-                let mut display_error = installer::display_install_error(&e).to_string();
+                let mut display_error = installer::display_install_error(&e);
                 if let Some(cleanup_error) = cleanup_error {
                     logger::error("cleanup", &cleanup_error);
                     display_error.push_str(&format!("\n\n{cleanup_error}"));

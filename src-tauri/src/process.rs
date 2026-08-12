@@ -157,11 +157,26 @@ pub fn launch_as_interactive_user(
     }
 }
 
-/// Runs a console program through Windows Script Host with window style 0.
-/// This is required for packaged console aliases such as winget.exe, which can
-/// still open Windows Terminal despite CREATE_NO_WINDOW on the parent process.
-/// Output and the full exit code are persisted in temporary files and returned
-/// to the caller, preserving diagnostics and fallback decisions.
+/// Programs that keep opening a console window despite CREATE_NO_WINDOW because
+/// Windows resolves them through a Store app execution alias. Only these need
+/// the much slower Windows Script Host detour; everything else is spawned
+/// directly, which avoids five temporary files and two extra processes per call.
+const APP_EXECUTION_ALIASES: [&str; 1] = ["winget.exe"];
+
+fn needs_script_host(program: &str) -> bool {
+    let name = program
+        .rsplit(['\\', '/'])
+        .next()
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    APP_EXECUTION_ALIASES.contains(&name.as_str())
+}
+
+/// Runs a console program without showing a window and captures its output.
+///
+/// Store app execution aliases (winget.exe) go through Windows Script Host with
+/// window style 0, because CREATE_NO_WINDOW alone still lets them pop up Windows
+/// Terminal. Every other program is spawned directly with CREATE_NO_WINDOW.
 pub fn hidden_output(program: &str, args: &[&str]) -> std::io::Result<CapturedOutput> {
     hidden_output_impl(program, args, None)
 }
@@ -172,6 +187,90 @@ pub fn hidden_output_cancelable(
     cancel: &AtomicBool,
 ) -> std::io::Result<CapturedOutput> {
     hidden_output_impl(program, args, Some(cancel))
+}
+
+/// Runs an elevated command through UAC and waits for it to finish, returning
+/// the real exit code. Required by uninstallers registered per-machine, which
+/// fail with ERROR_ELEVATION_REQUIRED / ERROR_ACCESS_DENIED when WinSlimCenter
+/// itself is not elevated.
+pub fn run_elevated_and_wait(
+    executable: &Path,
+    arguments: &str,
+    working_directory: Option<&Path>,
+) -> Result<Option<i32>, String> {
+    #[cfg(windows)]
+    {
+        let escape = |value: &str| value.replace('\'', "''");
+        let mut start_process = format!(
+            "Start-Process -FilePath '{}' -Verb RunAs -Wait -PassThru",
+            escape(&executable.to_string_lossy())
+        );
+        if !arguments.trim().is_empty() {
+            start_process.push_str(&format!(
+                " -ArgumentList '{}'",
+                escape(arguments.trim())
+            ));
+        }
+        // A bare program name such as `MsiExec.exe` has an empty parent, and
+        // PowerShell rejects an empty -WorkingDirectory.
+        if let Some(directory) = working_directory.filter(|path| path.is_dir()) {
+            start_process.push_str(&format!(
+                " -WorkingDirectory '{}'",
+                escape(&directory.to_string_lossy())
+            ));
+        }
+        crate::logger::info(
+            "process-elevated",
+            format!(
+                "Ejecutando con elevación y espera: ejecutable={}, argumentos={arguments}",
+                executable.display()
+            ),
+        );
+        let script = format!(
+            "$ErrorActionPreference='Stop'; try {{ $process = {start_process}; exit $process.ExitCode }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1223 }}"
+        );
+        let mut command = Command::new("powershell.exe");
+        background(&mut command);
+        let output = command
+            .args([
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                &script,
+            ])
+            .output()
+            .map_err(|error| {
+                format!(
+                    "Windows no pudo iniciar la solicitud de elevación para '{}': {error}",
+                    executable.display()
+                )
+            })?;
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let code = output.status.code();
+        crate::logger::info(
+            "process-elevated",
+            format!(
+                "Elevación finalizada: ejecutable={}, código={code:?}, detalle={detail}",
+                executable.display()
+            ),
+        );
+        if code == Some(1223) {
+            return Err(
+                "La solicitud de permisos de administrador fue cancelada o rechazada por el usuario."
+                    .into(),
+            );
+        }
+        Ok(code)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (executable, arguments, working_directory);
+        Err("La ejecución elevada solo está disponible en Windows.".into())
+    }
 }
 
 pub fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
@@ -218,6 +317,64 @@ pub fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
     }
 }
 
+/// Spawns the program straight away with CREATE_NO_WINDOW and captures its
+/// output. Cancellation terminates the whole process tree so child installers
+/// do not survive the parent.
+fn direct_hidden_output(
+    program: &str,
+    args: &[&str],
+    cancel: Option<&AtomicBool>,
+) -> std::io::Result<CapturedOutput> {
+    let mut command = Command::new(program);
+    background(&mut command);
+    let mut child = command
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+
+    let mut cancelled = false;
+    loop {
+        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+            cancelled = true;
+            let _ = terminate_process_tree(child.id());
+            break;
+        }
+        if child.try_wait()?.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let output = child.wait_with_output()?;
+    let mut stderr = output.stderr;
+    let mut code = output.status.code();
+    if cancelled {
+        code = Some(1223);
+        stderr.extend_from_slice(b"Operation cancelled by the user");
+    }
+    crate::logger::debug(
+        "process",
+        format!(
+            "Proceso oculto terminado: programa={program}, código={code:?}, stdout={}, stderr={}",
+            String::from_utf8_lossy(&output.stdout)
+                .chars()
+                .take(4000)
+                .collect::<String>(),
+            String::from_utf8_lossy(&stderr)
+                .chars()
+                .take(4000)
+                .collect::<String>()
+        ),
+    );
+    Ok(CapturedOutput {
+        stdout: output.stdout,
+        stderr,
+        code,
+    })
+}
+
 fn hidden_output_impl(
     program: &str,
     args: &[&str],
@@ -232,6 +389,11 @@ fn hidden_output_impl(
             "process",
             format!("Ejecutando proceso oculto: programa={program}, argumentos={args:?}"),
         );
+
+        if !needs_script_host(program) {
+            return direct_hidden_output(program, args, cancel);
+        }
+
         let unique = format!(
             "winslim-{}-{}",
             std::process::id(),
@@ -240,14 +402,22 @@ fn hidden_output_impl(
                 .unwrap_or_default()
                 .as_nanos()
         );
-        let temp = std::env::temp_dir();
-        let cmd_path = temp.join(format!("{unique}.cmd"));
-        let vbs_path = temp.join(format!("{unique}.vbs"));
-        let stdout_path = temp.join(format!("{unique}.out"));
-        let stderr_path = temp.join(format!("{unique}.err"));
-        let code_path = temp.join(format!("{unique}.code"));
+        // A private per-call directory keeps the generated script out of the
+        // shared %TEMP% namespace, where any other process could swap it between
+        // being written and being executed.
+        let temp = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&temp)?;
+        let cmd_path = temp.join("run.cmd");
+        let vbs_path = temp.join("run.vbs");
+        let stdout_path = temp.join("run.out");
+        let stderr_path = temp.join("run.err");
+        let code_path = temp.join("run.code");
 
-        let quote = |value: &str| format!("\"{}\"", value.replace('"', "\"\""));
+        // `cmd.exe` expands %VAR% inside a batch file, so every literal percent
+        // sign coming from data has to be doubled or the argument is corrupted.
+        let quote = |value: &str| {
+            format!("\"{}\"", value.replace('"', "\"\"").replace('%', "%%"))
+        };
         let mut invocation = quote(program);
         for arg in args {
             invocation.push(' ');
@@ -299,9 +469,7 @@ fn hidden_output_impl(
             stderr.extend_from_slice(b"Operation cancelled by the user");
         }
 
-        for path in [&cmd_path, &vbs_path, &stdout_path, &stderr_path, &code_path] {
-            let _ = fs::remove_file(path);
-        }
+        let _ = fs::remove_dir_all(&temp);
         run_result?;
         crate::logger::debug(
             "process",
@@ -320,27 +488,6 @@ fn hidden_output_impl(
 
     #[cfg(not(windows))]
     {
-        let mut child = Command::new(program)
-            .args(args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()?;
-        loop {
-            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                let _ = child.kill();
-                break;
-            }
-            if child.try_wait()?.is_some() {
-                break;
-            }
-            std::thread::sleep(Duration::from_millis(150));
-        }
-        let output = child.wait_with_output()?;
-        use std::os::unix::process::ExitStatusExt;
-        Ok(CapturedOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            code: output.status.code().or_else(|| output.status.signal()),
-        })
+        direct_hidden_output(program, args, cancel)
     }
 }

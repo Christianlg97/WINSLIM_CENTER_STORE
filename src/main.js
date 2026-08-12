@@ -888,7 +888,7 @@ async function installApp(id, isUpdate = false) {
         state.operationAppId = null;
         closeModal();
         const text = String(e);
-        await refreshStore({ reportErrors: false });
+        await refreshStore({ reportErrors: false, silent: true });
         setStatus(`Error: ${text}`, "var(--red)");
 
         showAlertModal("Error de instalación", text);
@@ -924,6 +924,25 @@ async function uninstallApp(id) {
         `Desinstalando ${app.name}`,
         "Ejecutando la lógica de desinstalación de Windows...",
       );
+      // Some uninstallers open their own window and wait for the user. Without
+      // an escape hatch the modal stayed up forever with no way out, so after a
+      // while it offers to step aside while the uninstaller keeps running.
+      const escapeHatch = setTimeout(() => {
+        const status = document.getElementById("package-operation-status");
+        if (status) {
+          status.textContent =
+            "El desinstalador de Windows sigue abierto. Comprueba si pide confirmación en otra ventana.";
+        }
+        const actions = document.getElementById("package-operation-actions");
+        if (actions && !actions.querySelector("#operation-dismiss")) {
+          actions.innerHTML =
+            '<button type="button" class="btn ghost" id="operation-dismiss">Seguir en segundo plano</button>';
+          actions.querySelector("#operation-dismiss").addEventListener("click", () => {
+            closeModal();
+            setStatus(`${app.name}: desinstalación en curso en segundo plano`, "var(--accent)");
+          });
+        }
+      }, 20000);
       try {
         await invoke("uninstall_app", { appId: id });
         closeModal();
@@ -945,13 +964,22 @@ async function uninstallApp(id) {
         } catch {
           // Conservamos el error original de desinstalación o limpieza.
         }
+        // "Se ejecutó la desinstalación, pero..." means the uninstaller ran and
+        // Windows still lists the app: a warning, not an outright failure.
+        const partial =
+          message.includes("La aplicación se desinstaló") ||
+          message.includes("Se ejecutó la desinstalación");
+        setTransientStatus(
+          partial ? `${app.name}: desinstalación sin confirmar` : `Error al desinstalar ${app.name}`,
+          partial ? "var(--text-medium)" : "var(--red)",
+          6000,
+        );
         showAlertModal(
-          message.includes("La aplicación se desinstaló")
-            ? "Desinstalación completada con advertencias"
-            : "Error al desinstalar",
+          partial ? "Desinstalación completada con advertencias" : "Error al desinstalar",
           message,
         );
       } finally {
+        clearTimeout(escapeHatch);
         delete state.busy[id];
         renderSidebar();
         renderContent();
@@ -1485,33 +1513,53 @@ function closeSyncModal() {
   }, 280);
 }
 
-async function refreshStore({ reportErrors = true } = {}) {
+/**
+ * Refreshes catalog, statuses and available updates.
+ *
+ * The full-screen sync modal belongs to the two moments the user is explicitly
+ * waiting for the store: opening the app and pressing Refrescar. Every other
+ * refresh — after an install, an update or an error — runs in `silent` mode and
+ * reports through the status bar at the bottom, so finishing an operation no
+ * longer throws the startup loading screen back in the user's face.
+ */
+async function refreshStore({ reportErrors = true, silent = false } = {}) {
   const button = document.getElementById("btn-refresh");
   const original = button.innerHTML;
-  button.disabled = true;
-  button.innerHTML = '<span>↻</span> Refrescando...';
-  
-  showSyncModal("Sincronizando Tienda", "Recargando catálogo y escaneando estado del sistema...");
-  updateSyncModal(15, "Recargando catálogo de aplicaciones...");
+  if (!silent) {
+    button.disabled = true;
+    button.innerHTML = '<span>↻</span> Refrescando...';
+    showSyncModal("Sincronizando Tienda", "Recargando catálogo y escaneando estado del sistema...");
+    updateSyncModal(15, "Recargando catálogo de aplicaciones...");
+  }
   setStatus("Recargando aplicaciones y buscando actualizaciones...", "var(--accent)");
-  
+  setProgress(silent ? 15 : 0);
+
   try {
     state.catalog = (await invoke("reload_catalog")) || [];
-    state.resolvedIcons = {};
-    updateSyncModal(40, "Analizando registro y programas instalados...");
+    if (!silent) {
+      // Icon resolution is only redone for an explicit refresh: it is the slow
+      // part and a post-install refresh has no reason to repeat it.
+      state.resolvedIcons = {};
+      updateSyncModal(40, "Analizando registro y programas instalados...");
+    }
+    setProgress(40);
     state.statuses = (await invoke("refresh_statuses")) || {};
-    updateSyncModal(65, "Precargando recursos gráficos e iconos...");
-    await preloadCatalogIcons({ progressStart: 65, progressEnd: 82 });
-    updateSyncModal(85, "Comprobando versiones y actualizaciones...");
+    if (!silent) {
+      updateSyncModal(65, "Precargando recursos gráficos e iconos...");
+      await preloadCatalogIcons({ progressStart: 65, progressEnd: 82 });
+      updateSyncModal(85, "Comprobando versiones y actualizaciones...");
+    }
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
     setProgress(86);
     state.statuses = (await invoke("check_updates")) || state.statuses;
     const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
     renderSidebar();
     renderContent();
-    updateSyncModal(100, "¡Sincronización completada!");
-    await new Promise(r => setTimeout(r, 350));
-    
+    if (!silent) {
+      updateSyncModal(100, "¡Sincronización completada!");
+      await new Promise((r) => setTimeout(r, 350));
+    }
+
     if (updates) {
       setStatus(
         `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
@@ -1524,10 +1572,12 @@ async function refreshStore({ reportErrors = true } = {}) {
     setStatus(`No se pudo refrescar la tienda: ${error}`, "var(--red)");
     if (reportErrors) showAlertModal("Error al refrescar", String(error));
   } finally {
-    closeSyncModal();
+    if (!silent) {
+      closeSyncModal();
+      button.disabled = false;
+      button.innerHTML = original;
+    }
     setProgress(100);
-    button.disabled = false;
-    button.innerHTML = original;
   }
 }
 
@@ -1637,7 +1687,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     searchTimer = setTimeout(renderContent, 180);
   });
   document.getElementById("btn-update").addEventListener("click", updateAppFromGitHub);
-  document.getElementById("btn-refresh").addEventListener("click", refreshStore);
+  // Called without arguments on purpose: the click event must not leak into the
+  // options object, and this is one of the two places allowed to show the modal.
+  document.getElementById("btn-refresh").addEventListener("click", () => refreshStore());
 
   await listen("downloads-changed", (ev) => {
     const previousStates = new Map(state.tasks.map((task) => [task.app_id, task.state]));
@@ -1697,7 +1749,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     } else {
       const app = findApp(app_id);
       const appName = app?.name || app_id;
-      await refreshStore({ reportErrors: false });
+      await refreshStore({ reportErrors: false, silent: true });
       if (cancelled && cancellation_kind === "installation") {
         setTransientStatus(`Instalación cancelada: ${appName}`, "var(--text-muted)", 5000);
         showAlertModal(

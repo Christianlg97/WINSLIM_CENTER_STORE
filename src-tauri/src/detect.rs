@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -20,8 +21,40 @@ pub struct StartApp {
     pub app_id: String,
 }
 
+/// Start Menu entries barely ever change and the PowerShell query behind them
+/// costs one to two seconds. Installation and uninstallation flows poll the
+/// status repeatedly, so without this cache a single install would spawn dozens
+/// of PowerShell processes. `clear_detection_caches` invalidates it whenever a
+/// package operation may have changed the result.
+static START_APPS_CACHE: parking_lot::Mutex<Option<(std::time::Instant, Vec<StartApp>)>> =
+    parking_lot::Mutex::new(None);
+
+const START_APPS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Invalidate every detection cache. Called before confirming that an install
+/// or uninstall actually took effect.
+pub fn clear_detection_caches() {
+    *WINGET_CACHE.lock() = None;
+    *START_APPS_CACHE.lock() = None;
+}
+
 #[cfg(windows)]
 pub fn scan_start_apps() -> Vec<StartApp> {
+    {
+        let cache = START_APPS_CACHE.lock();
+        if let Some((timestamp, apps)) = cache.as_ref() {
+            if timestamp.elapsed() < START_APPS_TTL {
+                return apps.clone();
+            }
+        }
+    }
+    let apps = scan_start_apps_uncached();
+    *START_APPS_CACHE.lock() = Some((std::time::Instant::now(), apps.clone()));
+    apps
+}
+
+#[cfg(windows)]
+fn scan_start_apps_uncached() -> Vec<StartApp> {
     let args = [
         "-NoLogo",
         "-NoProfile",
@@ -64,16 +97,14 @@ pub fn scan_start_apps() -> Vec<StartApp> {
 static WINGET_CACHE: parking_lot::Mutex<Option<(std::time::Instant, String)>> =
     parking_lot::Mutex::new(None);
 
-pub fn clear_winget_cache() {
-    *WINGET_CACHE.lock() = None;
-}
+const WINGET_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(windows)]
 pub fn scan_winget_packages() -> String {
     {
         let cache = WINGET_CACHE.lock();
         if let Some((timestamp, text)) = cache.as_ref() {
-            if timestamp.elapsed() < std::time::Duration::from_secs(3) {
+            if timestamp.elapsed() < WINGET_LIST_TTL {
                 return text.clone();
             }
         }
@@ -398,6 +429,30 @@ pub fn scan_installed_programs() -> Vec<SystemApp> {
     Vec::new()
 }
 
+/// How well a registry entry matches one of the catalog names. Higher is better;
+/// `None` means the names are unrelated.
+fn match_quality(candidate: &str, display_name: &str) -> Option<i32> {
+    if !names_match(candidate, display_name) {
+        return None;
+    }
+    let a = norm(candidate);
+    let b = norm(display_name);
+    Some(if a == b {
+        1_000
+    } else if b.starts_with(&a) {
+        500
+    } else {
+        100
+    })
+}
+
+/// Picks the registry entry that best matches the catalog names.
+///
+/// Windows routinely registers the same product several times (per-user and
+/// per-machine, or with an extra bundled component). Returning the first hit in
+/// registry enumeration order made the chosen `UninstallString` depend on
+/// arbitrary key ordering, so the best match wins instead, and among equally
+/// good matches the one that actually carries an uninstall command.
 pub fn match_system_app(
     catalog_name: &str,
     detect_names: &[String],
@@ -407,14 +462,24 @@ pub fn match_system_app(
     for n in detect_names {
         candidates.push(n.as_str());
     }
-    for app in system {
-        for cand in &candidates {
-            if names_match(cand, &app.display_name) {
-                return Some(app.clone());
-            }
-        }
-    }
-    None
+    system
+        .iter()
+        .filter_map(|app| {
+            candidates
+                .iter()
+                .filter_map(|candidate| match_quality(candidate, &app.display_name))
+                .max()
+                .map(|quality| (app, quality))
+        })
+        .max_by_key(|(app, quality)| {
+            (
+                *quality,
+                i32::from(app.uninstall_string.is_some()),
+                i32::from(!app.install_location.trim().is_empty()),
+                i32::from(!app.display_icon.trim().is_empty()),
+            )
+        })
+        .map(|(app, _)| app.clone())
 }
 
 pub fn detect_names_from_entry(entry: &serde_json::Value) -> Vec<String> {
@@ -526,7 +591,15 @@ pub fn build_statuses(
                     } else {
                         None
                     },
-                    can_uninstall: sys.uninstall_string.is_some() || !launch_path.is_empty(),
+                    // Offering "uninstall" for an entry that has neither a
+                    // registered uninstaller nor a WinGet package would leave
+                    // deleting the folder as the only option, which is not a
+                    // safe thing to do behind the user's back.
+                    can_uninstall: sys.uninstall_string.is_some()
+                        || entry
+                            .get("winget_id")
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| !value.trim().is_empty()),
                     can_launch: !launch_path.is_empty(),
                     uninstall_command: sys.uninstall_string.clone(),
                 },
@@ -675,6 +748,37 @@ mod tests {
             match_start_app(&entry, "Xbox", &apps).unwrap().app_id,
             "xbox!App"
         );
+    }
+
+    fn system_app(display_name: &str, uninstall_string: Option<&str>) -> SystemApp {
+        SystemApp {
+            display_name: display_name.into(),
+            version: String::new(),
+            install_location: String::new(),
+            publisher: String::new(),
+            display_icon: String::new(),
+            uninstall_string: uninstall_string.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn exact_registry_match_wins_over_a_longer_earlier_entry() {
+        let system = vec![
+            system_app("7-Zip 24.08 (x64) Extra Tools", Some("a.exe")),
+            system_app("7-Zip", Some("b.exe")),
+        ];
+        let chosen = match_system_app("7-Zip", &[], &system).unwrap();
+        assert_eq!(chosen.display_name, "7-Zip");
+    }
+
+    #[test]
+    fn entry_with_an_uninstaller_wins_over_an_equally_named_one_without() {
+        let system = vec![
+            system_app("Example App", None),
+            system_app("Example App", Some("unins000.exe")),
+        ];
+        let chosen = match_system_app("Example App", &[], &system).unwrap();
+        assert_eq!(chosen.uninstall_string.as_deref(), Some("unins000.exe"));
     }
 
     #[test]

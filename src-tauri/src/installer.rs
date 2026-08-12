@@ -1,6 +1,6 @@
 use crate::download::{self, DownloadFlags};
 use crate::paths;
-use crate::store::{self, InstalledInfo};
+use crate::store::InstalledInfo;
 use chrono::Local;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -12,6 +12,50 @@ use zip::ZipArchive;
 pub const INSTALL_CANCELLED_PREFIX: &str = "__WINSLIM_INSTALL_CANCELLED__:";
 pub const INSTALL_INTERRUPTED_PREFIX: &str = "__WINSLIM_INSTALL_INTERRUPTED__:";
 pub const ELEVATION_REQUIRED_PREFIX: &str = "__WINSLIM_ELEVATION_REQUIRED__:";
+/// Marks an operation the user aborted, so callers can tell it apart from a
+/// genuine failure without comparing translated message text.
+pub const CANCELLED_MARKER: &str = "Cancelado";
+
+/// WinGet reports outcomes through documented HRESULTs. Relying on those instead
+/// of the localized console text is what keeps the store working on a Windows
+/// that is not in Spanish or English: matching translated strings made
+/// "already up to date" look like a failure, which then triggered a full
+/// re-download through the cURL fallback.
+const WINGET_NO_APPLICABLE_UPDATE: i32 = 0x8A15_002B_u32 as i32;
+const WINGET_NO_INSTALLED_PACKAGE: i32 = 0x8A15_0014_u32 as i32;
+const WINGET_PACKAGE_ALREADY_INSTALLED: i32 = 0x8A15_0061_u32 as i32;
+const WIN32_ERROR_CANCELLED: i32 = 1223;
+
+fn winget_says_already_current(code: Option<i32>, combined_output: &str) -> bool {
+    if matches!(
+        code,
+        Some(WINGET_NO_APPLICABLE_UPDATE) | Some(WINGET_PACKAGE_ALREADY_INSTALLED)
+    ) {
+        return true;
+    }
+    // Text matching stays as a secondary signal only: older WinGet builds do not
+    // always surface the HRESULT through the exit code.
+    let combined = combined_output.to_lowercase();
+    (combined.contains("no se ha encontrado ninguna") && combined.contains("disponible"))
+        || (combined.contains("no hay versiones") && combined.contains("recientes"))
+        || [
+            "no applicable upgrade found",
+            "no available upgrade found",
+            "no newer package versions are available",
+            "no applicable update found",
+        ]
+        .iter()
+        .any(|message| combined.contains(message))
+}
+
+fn winget_says_not_installed(code: Option<i32>, combined_output: &str) -> bool {
+    if code == Some(WINGET_NO_INSTALLED_PACKAGE) {
+        return true;
+    }
+    let combined = combined_output.to_ascii_lowercase();
+    combined.contains("no installed package found")
+        || (combined.contains("no se encontr") && combined.contains("paquete instalado"))
+}
 
 pub fn is_install_cancelled(error: &str) -> bool {
     error.starts_with(INSTALL_CANCELLED_PREFIX)
@@ -21,11 +65,15 @@ pub fn is_install_interrupted(error: &str) -> bool {
     error.starts_with(INSTALL_INTERRUPTED_PREFIX)
 }
 
-pub fn display_install_error(error: &str) -> &str {
+/// Strips the internal markers so the user only ever reads the actual message.
+pub fn display_install_error(error: &str) -> String {
     error
         .strip_prefix(INSTALL_CANCELLED_PREFIX)
         .or_else(|| error.strip_prefix(INSTALL_INTERRUPTED_PREFIX))
         .unwrap_or(error)
+        .replace(download::GITHUB_RATE_LIMIT_MARKER, "")
+        .trim()
+        .to_string()
 }
 
 fn installer_exit_means_cancelled(app: &Value, code: i32) -> bool {
@@ -113,25 +161,17 @@ async fn install_with_winget(
     .map_err(|err| format!("No se pudo iniciar winget: {err}"))?
     .map_err(|err| format!("Windows Package Manager no está disponible: {err}"))?;
 
-    if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) || output.code == Some(1223) {
-        return Err("Cancelado".into());
+    if flags.cancel.load(std::sync::atomic::Ordering::SeqCst)
+        || output.code == Some(WIN32_ERROR_CANCELLED)
+    {
+        return Err(CANCELLED_MARKER.into());
     }
 
     if !output.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
         let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        let combined = format!("{stdout}\n{stderr}").to_lowercase();
-        let already_current = (combined.contains("no se ha encontrado ninguna")
-            && combined.contains("disponible"))
-            || (combined.contains("no hay versiones") && combined.contains("recientes"))
-            || [
-                "no applicable upgrade found",
-                "no available upgrade found",
-                "no newer package versions are available",
-            ]
-            .iter()
-            .any(|message| combined.contains(message));
-        if already_current {
+        let combined = format!("{stdout}\n{stderr}");
+        if winget_says_already_current(output.code, &combined) {
             on_progress(
                 100,
                 "La aplicación ya está en su última versión".into(),
@@ -281,10 +321,8 @@ pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<(), Strin
         return Ok(());
     }
 
-    let combined = format!("{stdout}\n{stderr}").to_ascii_lowercase();
-    if combined.contains("no installed package found")
-        || combined.contains("no se encontr") && combined.contains("paquete instalado")
-    {
+    // Nothing left to remove is a success from the user's point of view.
+    if winget_says_not_installed(output.code, &format!("{stdout}\n{stderr}")) {
         return Ok(());
     }
     Err(format!(
@@ -520,14 +558,43 @@ pub fn install_target_blocked(
     !force_update && resolve_launchable_path(install_path, preferred_executable).is_some()
 }
 
+/// Result of an installation.
+///
+/// `do_install` no longer receives the shared installed-apps map. It used to
+/// take a clone, insert into it and persist that clone, so two concurrent
+/// installations each wrote back their own stale snapshot and the first app
+/// silently disappeared from `installed.json`. The caller now applies
+/// `registered` while holding the lock.
+pub struct InstallOutcome {
+    /// `false` when the package was already at its latest version.
+    pub changed: bool,
+    /// Present only for portable packages that WinSlimCenter manages itself.
+    pub registered: Option<(String, InstalledInfo)>,
+}
+
+impl InstallOutcome {
+    fn unchanged() -> Self {
+        Self {
+            changed: false,
+            registered: None,
+        }
+    }
+
+    fn system_managed() -> Self {
+        Self {
+            changed: true,
+            registered: None,
+        }
+    }
+}
+
 pub async fn do_install(
     app: &Value,
-    installed: &mut HashMap<String, InstalledInfo>,
     flags: &Arc<DownloadFlags>,
     force_update: bool,
     current_version: Option<String>,
     mut on_progress: impl FnMut(u32, String, bool),
-) -> Result<bool, String> {
+) -> Result<InstallOutcome, String> {
     let app_id = app.get("id").and_then(|v| v.as_str()).ok_or("App sin id")?;
     let name = app.get("name").and_then(|v| v.as_str()).unwrap_or(app_id);
     let source_type = app
@@ -567,11 +634,22 @@ pub async fn do_install(
         match install_with_winget(app, force_update, flags, &mut on_progress).await {
             Ok(changed) => {
                 if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
-                    return Err("Cancelado".into());
+                    return Err(CANCELLED_MARKER.into());
                 }
-                return Ok(changed);
+                return Ok(InstallOutcome {
+                    changed,
+                    registered: None,
+                });
             }
             Err(winget_error) => {
+                // A cancellation is not a WinGet failure. Falling through to the
+                // cURL fallback here used to download and run the installer the
+                // user had just aborted, and reported the abort as an error.
+                if flags.cancel.load(std::sync::atomic::Ordering::SeqCst)
+                    || winget_error == CANCELLED_MARKER
+                {
+                    return Err(winget_error);
+                }
                 on_progress(
                     5,
                     "WinGet ha fallado; buscando descarga directa para cURL...".into(),
@@ -599,9 +677,10 @@ pub async fn do_install(
         ));
     }
 
-    if install_path.exists() {
-        fs::remove_dir_all(&install_path).map_err(|e| e.to_string())?;
-    }
+    // The previous installation is deliberately left untouched until the new one
+    // is fully downloaded and extracted. Removing it up front meant a failed
+    // update (a 404, a renamed asset, a dropped connection) destroyed the working
+    // copy the user already had.
     fs::create_dir_all(&download_path).map_err(|e| e.to_string())?;
     crate::logger::info(
         "download",
@@ -639,7 +718,7 @@ pub async fn do_install(
                             format!("{name} ya está en la versión más reciente ({tag})"),
                             false,
                         );
-                        return Ok(false);
+                        return Ok(InstallOutcome::unchanged());
                     }
                     resolved_version = Some(tag);
                     u
@@ -689,7 +768,7 @@ pub async fn do_install(
     };
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("Cancelado".into());
+        return Err(CANCELLED_MARKER.into());
     }
 
     let filename = app
@@ -731,7 +810,7 @@ pub async fn do_install(
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
         let _ = fs::remove_dir_all(&download_path);
-        return Err("Cancelado".into());
+        return Err(CANCELLED_MARKER.into());
     }
 
     on_progress(80, "Extrayendo / copiando archivos...".into(), true);
@@ -769,18 +848,7 @@ pub async fn do_install(
         } else {
             extract_dir.clone()
         };
-        // move src -> install_path
-        if src == extract_dir {
-            fs::rename(&extract_dir, &install_path).or_else(|_| {
-                copy_dir_all(&extract_dir, &install_path)?;
-                fs::remove_dir_all(&extract_dir).map_err(|e| e.to_string())
-            })?;
-        } else {
-            fs::rename(&src, &install_path).or_else(|_| {
-                copy_dir_all(&src, &install_path)?;
-                fs::remove_dir_all(&src).map_err(|e| e.to_string())
-            })?;
-        }
+        swap_into_install_path(&src, &install_path)?;
     } else {
         let ext = dest_file
             .extension()
@@ -793,14 +861,16 @@ pub async fn do_install(
             run_installer_in_background(app, &dest_file, flags)?;
             used_system_installer = true;
         } else {
-            fs::create_dir_all(&install_path).map_err(|e| e.to_string())?;
-            let final_file = install_path.join(&filename);
-            fs::rename(&dest_file, &final_file).map_err(|e| e.to_string())?;
+            let stage_dir = download_path.join("stage");
+            let _ = remove_path_robust(&stage_dir);
+            fs::create_dir_all(&stage_dir).map_err(|e| e.to_string())?;
+            fs::rename(&dest_file, stage_dir.join(&filename)).map_err(|e| e.to_string())?;
+            swap_into_install_path(&stage_dir, &install_path)?;
         }
     }
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
-        return Err("Cancelado".into());
+        return Err(CANCELLED_MARKER.into());
     }
 
     if used_system_installer {
@@ -809,7 +879,7 @@ pub async fn do_install(
         let _ = fs::remove_dir_all(&install_path);
         let _ = fs::remove_dir_all(&download_path);
         on_progress(100, format!("{name} instalado correctamente"), false);
-        return Ok(true);
+        return Ok(InstallOutcome::system_managed());
     }
 
     on_progress(95, "Registrando aplicación...".into(), true);
@@ -836,23 +906,108 @@ pub async fn do_install(
         ),
     );
 
-    installed.insert(
-        app_id.to_string(),
-        InstalledInfo {
-            name: name.to_string(),
-            version,
-            install_path: install_path.to_string_lossy().to_string(),
-            launch_path,
-            source_type: source_type.to_string(),
-            installed_at: Local::now().to_rfc3339(),
-        },
-    );
-    store::save_installed(installed)?;
+    let registered = InstalledInfo {
+        name: name.to_string(),
+        version,
+        install_path: install_path.to_string_lossy().to_string(),
+        launch_path,
+        source_type: source_type.to_string(),
+        installed_at: Local::now().to_rfc3339(),
+    };
 
     let _ = fs::remove_dir_all(&download_path);
 
     on_progress(100, format!("{name} instalado correctamente"), true);
-    Ok(true)
+    Ok(InstallOutcome {
+        changed: true,
+        registered: Some((app_id.to_string(), registered)),
+    })
+}
+
+/// Moves a directory, falling back to a recursive copy when source and
+/// destination live on different volumes (staging happens under Downloads while
+/// installations live under LOCALAPPDATA, which may be a different drive).
+fn move_directory(src: &Path, dst: &Path) -> Result<(), String> {
+    if let Some(parent) = dst.parent() {
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    if fs::rename(src, dst).is_ok() {
+        return Ok(());
+    }
+    copy_dir_all(src, dst)?;
+    let _ = remove_path_robust(src);
+    Ok(())
+}
+
+/// Replaces `install_path` with freshly staged content, keeping the previous
+/// installation recoverable until the new one is in place.
+///
+/// An update that fails halfway used to leave the user with nothing, because the
+/// old folder was deleted before the download even started.
+fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), String> {
+    let backup_path = install_path.with_file_name(format!(
+        "{}.winslim-backup",
+        install_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("package")
+    ));
+    let had_previous = install_path.exists();
+    if had_previous {
+        let _ = remove_path_robust(&backup_path);
+        fs::rename(install_path, &backup_path).map_err(|error| {
+            format!(
+                "No se pudo apartar la instalación anterior de {}: {error}",
+                install_path.display()
+            )
+        })?;
+        crate::logger::info(
+            "installer",
+            format!(
+                "Instalación anterior apartada: {} -> {}",
+                install_path.display(),
+                backup_path.display()
+            ),
+        );
+    }
+
+    match move_directory(staged, install_path) {
+        Ok(()) => {
+            if had_previous {
+                let _ = remove_path_robust(&backup_path);
+            }
+            Ok(())
+        }
+        Err(error) => {
+            let _ = remove_path_robust(install_path);
+            if had_previous {
+                if fs::rename(&backup_path, install_path).is_ok() {
+                    crate::logger::warn(
+                        "installer",
+                        format!(
+                            "Instalación restaurada tras un fallo de actualización: {}",
+                            install_path.display()
+                        ),
+                    );
+                    return Err(format!(
+                        "{error}. Se restauró la versión que ya tenías instalada."
+                    ));
+                }
+                crate::logger::error(
+                    "installer",
+                    format!(
+                        "No se pudo restaurar la copia de seguridad: {}",
+                        backup_path.display()
+                    ),
+                );
+                return Err(format!(
+                    "{error}. La versión anterior quedó guardada en {}",
+                    backup_path.display()
+                ));
+            }
+            Err(error)
+        }
+    }
 }
 
 /// Remove download and staging artifacts left by a cancelled or failed
@@ -1045,25 +1200,43 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn uninstall_app(
-    app_id: &str,
-    installed: &mut HashMap<String, InstalledInfo>,
-) -> Result<(), String> {
-    let info = installed.get(app_id).ok_or("App no instalada")?.clone();
-    let path = PathBuf::from(&info.install_path);
+/// Deletes the folder of an application WinSlimCenter installed itself.
+///
+/// Only touches the filesystem: the caller updates `installed.json` while
+/// holding the state lock, so a concurrent installation cannot be erased by a
+/// stale snapshot being written back.
+pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), String> {
     crate::logger::info(
         "uninstall",
         format!(
             "Eliminando instalación administrada: app_id={app_id}, ruta={}",
-            path.display()
+            install_path.display()
         ),
     );
-    if path.exists() {
-        fs::remove_dir_all(&path).map_err(|e| e.to_string())?;
+    if !install_path.exists() {
+        return Ok(());
     }
-    installed.remove(app_id);
-    store::save_installed(installed)?;
-    Ok(())
+    // `remove_path_robust` clears read-only attributes and retries, which matters
+    // when the application was running a moment ago and Windows has not released
+    // every handle yet. A raw `remove_dir_all` failed halfway and left a
+    // half-deleted folder that was still listed as installed.
+    remove_path_robust(install_path).map_err(|error| {
+        format!(
+            "No se pudo borrar {}: {error}. Cierra la aplicación e inténtalo de nuevo.",
+            install_path.display()
+        )
+    })
+}
+
+/// Windows error codes that mean "this uninstaller needs administrator rights",
+/// as opposed to "this uninstaller failed".
+fn exit_code_requires_elevation(code: Option<i32>) -> bool {
+    matches!(
+        code,
+        // ERROR_ACCESS_DENIED, ERROR_ELEVATION_REQUIRED,
+        // ERROR_INSTALL_FAILURE and ERROR_INSTALL_SERVICE_FAILURE.
+        Some(5) | Some(740) | Some(1603) | Some(1601)
+    )
 }
 
 pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
@@ -1082,7 +1255,13 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
             }
         }
         let effective_lower = effective.to_ascii_lowercase();
-        if !effective_lower.contains("/quiet") && !effective_lower.contains("/qn") {
+        // `/q` and `/qb` are valid silent switches too; appending `/qn` on top of
+        // them produced a command with two conflicting UI levels.
+        let already_silent = ["/quiet", "/qn", "/qb", "/q ", "-quiet", "-qn"]
+            .iter()
+            .any(|flag| effective_lower.contains(flag))
+            || effective_lower.ends_with("/q");
+        if !already_silent {
             effective.push_str(" /qn /norestart");
         }
     }
@@ -1109,30 +1288,140 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
         ),
     );
 
+    // 1605 / 1614: the product is already gone. 1641 / 3010: a reboot is pending.
     let accepted_exit = status.success()
         || (is_msi
             && matches!(
                 status.code(),
                 Some(1605) | Some(1614) | Some(1641) | Some(3010)
             ));
-    if !accepted_exit {
+    if accepted_exit {
+        return Ok(());
+    }
+
+    // Per-machine uninstallers refuse to run without administrator rights. The
+    // installer side already asks for UAC on ERROR_ELEVATION_REQUIRED, so the
+    // uninstaller does the same instead of dropping straight to the folder
+    // fallback, which is far more destructive.
+    if exit_code_requires_elevation(status.code()) {
+        crate::logger::warn(
+            "uninstall-process",
+            format!(
+                "El desinstalador requiere elevación (código {:?}); reintentando con UAC",
+                status.code()
+            ),
+        );
+        let (executable, arguments) = split_registered_command(&effective)?;
+        let elevated_code = crate::process::run_elevated_and_wait(
+            &executable,
+            &arguments,
+            executable.parent(),
+        )?;
+        let elevated_ok = elevated_code == Some(0)
+            || (is_msi
+                && matches!(
+                    elevated_code,
+                    Some(1605) | Some(1614) | Some(1641) | Some(3010)
+                ));
+        if elevated_ok {
+            return Ok(());
+        }
         return Err(format!(
-            "El desinstalador terminó con el código {}",
-            status
-                .code()
+            "El desinstalador terminó con el código {} incluso con permisos de administrador",
+            elevated_code
                 .map(|code| code.to_string())
                 .unwrap_or_else(|| "desconocido".into())
         ));
     }
-    Ok(())
+
+    Err(format!(
+        "El desinstalador terminó con el código {}",
+        status
+            .code()
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "desconocido".into())
+    ))
+}
+
+fn normalized_path_key(path: &Path) -> String {
+    path.to_string_lossy()
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .to_ascii_lowercase()
+}
+
+/// Directory names that are shared between programs or owned by Windows.
+///
+/// These are checked against *every* segment of the path, not just the last one:
+/// `C:\Program Files\Common Files\Vendor` is as unsafe to delete as
+/// `C:\Program Files\Common Files` itself, even though its own name looks like
+/// an ordinary application folder.
+const SHARED_DIRECTORY_NAMES: [&str; 8] = [
+    "common files",
+    "windowsapps",
+    "microsoft shared",
+    "package cache",
+    "temp",
+    "system32",
+    "syswow64",
+    "windows",
+];
+
+fn contains_shared_directory_segment(path: &Path) -> bool {
+    path.components().any(|component| {
+        component
+            .as_os_str()
+            .to_str()
+            .map(|value| SHARED_DIRECTORY_NAMES.contains(&value.to_ascii_lowercase().as_str()))
+            .unwrap_or(false)
+    })
+}
+
+/// Roots under which an application may legitimately keep its own folder.
+fn allowed_installation_roots() -> Vec<PathBuf> {
+    let mut roots = vec![paths::app_dir()];
+    for variable in [
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+        "LOCALAPPDATA",
+        "APPDATA",
+    ] {
+        if let Ok(value) = std::env::var(variable) {
+            let path = PathBuf::from(value);
+            if path.is_absolute() {
+                if variable == "LOCALAPPDATA" {
+                    roots.push(path.join("Programs"));
+                }
+                roots.push(path);
+            }
+        }
+    }
+    roots
+}
+
+/// `true` when the path is inside the Windows directory, which is off limits in
+/// its entirety rather than just at its root.
+fn is_inside_windows_directory(path: &Path) -> bool {
+    let Ok(system_root) = std::env::var("SystemRoot") else {
+        return false;
+    };
+    let root = normalized_path_key(Path::new(&system_root));
+    let candidate = normalized_path_key(path);
+    candidate == root || candidate.starts_with(&format!("{root}\\"))
 }
 
 fn is_protected_installation_root(path: &Path) -> bool {
-    let candidate = path
-        .to_string_lossy()
-        .trim_end_matches(['\\', '/'])
-        .to_ascii_lowercase();
+    let candidate = normalized_path_key(path);
     if candidate.is_empty() || path.parent().is_none() {
+        return true;
+    }
+    // A bare drive such as `C:` normalizes to two characters and has no parent
+    // segment left to identify an application.
+    if candidate.len() <= 2 {
+        return true;
+    }
+    if is_inside_windows_directory(path) {
         return true;
     }
 
@@ -1143,18 +1432,69 @@ fn is_protected_installation_root(path: &Path) -> bool {
         "ProgramFiles(x86)",
         "ProgramData",
         "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "PUBLIC",
     ] {
         if let Ok(value) = std::env::var(variable) {
-            protected.push(value.trim_end_matches(['\\', '/']).to_ascii_lowercase());
+            protected.push(normalized_path_key(Path::new(&value)));
         }
     }
-    protected.push(
-        paths::app_dir()
-            .to_string_lossy()
-            .trim_end_matches(['\\', '/'])
-            .to_ascii_lowercase(),
-    );
+    protected.push(normalized_path_key(&paths::app_dir()));
     protected.iter().any(|root| root == &candidate)
+}
+
+/// Decides whether `install_dir` can be deleted wholesale as one application's
+/// private folder.
+///
+/// The previous behaviour was an unconditional `remove_dir_all` on the parent of
+/// whatever executable the registry happened to advertise as `DisplayIcon`. When
+/// that pointed into a shared location the fallback would take the whole
+/// directory with it, so anything that is not unambiguously a single
+/// application's own folder is now refused.
+fn validate_removable_install_dir(install_dir: &Path) -> Result<(), String> {
+    if !install_dir.is_absolute() {
+        return Err(format!(
+            "La ruta de instalación no es absoluta: {}",
+            install_dir.display()
+        ));
+    }
+    if is_protected_installation_root(install_dir) {
+        return Err(format!(
+            "Se bloqueó el acceso a una carpeta general protegida: {}",
+            install_dir.display()
+        ));
+    }
+    if contains_shared_directory_segment(install_dir) {
+        return Err(format!(
+            "Se bloqueó el borrado de una carpeta compartida del sistema: {}",
+            install_dir.display()
+        ));
+    }
+    let roots = allowed_installation_roots();
+    let target = normalized_path_key(install_dir);
+    // A root itself is a container for many programs, never one program's folder.
+    // `%LOCALAPPDATA%\Programs` must be rejected even though it also sits below
+    // `%LOCALAPPDATA%`, which is a root as well.
+    if roots
+        .iter()
+        .any(|root| normalized_path_key(root) == target)
+    {
+        return Err(format!(
+            "Se bloqueó el acceso a una carpeta general protegida: {}",
+            install_dir.display()
+        ));
+    }
+    let inside_allowed_root = roots
+        .iter()
+        .any(|root| install_dir.starts_with(root) && install_dir != root);
+    if !inside_allowed_root {
+        return Err(format!(
+            "La carpeta {} no está en una ubicación de programas reconocida; WinSlimCenter no la borrará.",
+            install_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 fn find_typical_uninstaller(install_dir: &Path) -> Option<PathBuf> {
@@ -1194,12 +1534,9 @@ pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
         return Err("La carpeta de instalación ya no existe".into());
     }
 
-    if is_protected_installation_root(&install_dir) {
-        return Err(format!(
-            "Se bloqueó el acceso a una carpeta general protegida: {}",
-            install_dir.display()
-        ));
-    }
+    // Validate before doing anything: running an `unins*.exe` found inside a
+    // shared directory is just as wrong as deleting that directory.
+    validate_removable_install_dir(&install_dir)?;
 
     if let Some(uninstaller) = find_typical_uninstaller(&install_dir) {
         crate::logger::info(
@@ -1235,7 +1572,7 @@ pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
             install_dir.display()
         ),
     );
-    fs::remove_dir_all(&install_dir).map_err(|err| {
+    remove_path_robust(&install_dir).map_err(|err| {
         format!(
             "No se encontró desinstalador y tampoco se pudo borrar {}: {err}",
             install_dir.display()
@@ -1952,6 +2289,100 @@ mod tests {
         assert_eq!(prefer_x64_executable(&arm), Some(x64));
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn shared_and_system_directories_are_never_removable() {
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        let program_files =
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+
+        for blocked in [
+            PathBuf::from(&system_root),
+            PathBuf::from(&system_root).join("System32"),
+            PathBuf::from(&system_root).join("System32").join("drivers"),
+            PathBuf::from(&program_files),
+            PathBuf::from(&program_files).join("Common Files"),
+            PathBuf::from(&program_files).join("Common Files").join("Vendor"),
+            PathBuf::from(r"D:\Portable\App"),
+        ] {
+            assert!(
+                validate_removable_install_dir(&blocked).is_err(),
+                "debería bloquearse: {}",
+                blocked.display()
+            );
+        }
+    }
+
+    #[test]
+    fn a_real_application_folder_is_still_removable() {
+        let program_files =
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let target = PathBuf::from(program_files).join("Example App");
+        assert!(validate_removable_install_dir(&target).is_ok());
+
+        let managed = paths::app_dir().join("example_app");
+        assert!(validate_removable_install_dir(&managed).is_ok());
+
+        // Per-user installs (Obsidian, VS Code, Discord...) live here and must
+        // keep working, even though `Programs` is itself an allowed root.
+        if let Ok(local) = std::env::var("LOCALAPPDATA") {
+            let per_user = PathBuf::from(&local).join("Programs").join("Example App");
+            assert!(validate_removable_install_dir(&per_user).is_ok());
+            assert!(
+                validate_removable_install_dir(&PathBuf::from(&local).join("Programs")).is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn winget_exit_codes_are_read_without_relying_on_the_console_language() {
+        // 0x8A15002B: no applicable update found.
+        assert!(winget_says_already_current(
+            Some(0x8A15_002B_u32 as i32),
+            "Ein völlig unbekannter deutscher Text"
+        ));
+        // 0x8A150014: no installed package found.
+        assert!(winget_says_not_installed(
+            Some(0x8A15_0014_u32 as i32),
+            "texte français inconnu"
+        ));
+        assert!(!winget_says_already_current(Some(1), "something broke"));
+        assert!(!winget_says_not_installed(Some(1), "something broke"));
+    }
+
+    #[test]
+    fn already_silent_msi_commands_do_not_get_a_second_ui_switch() {
+        let quiet = r#"MsiExec.exe /X{1234} /qb"#.to_ascii_lowercase();
+        let already_silent = ["/quiet", "/qn", "/qb", "/q ", "-quiet", "-qn"]
+            .iter()
+            .any(|flag| quiet.contains(flag));
+        assert!(already_silent);
+    }
+
+    #[test]
+    fn a_failed_update_restores_the_previous_installation() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-swap-test-{}-{}",
+            std::process::id(),
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let install_path = root.join("app");
+        let staged = root.join("staged");
+        fs::create_dir_all(install_path.join("data")).unwrap();
+        fs::write(install_path.join("app.exe"), b"old version").unwrap();
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("app.exe"), b"new version").unwrap();
+
+        swap_into_install_path(&staged, &install_path).unwrap();
+        assert_eq!(
+            fs::read(install_path.join("app.exe")).unwrap(),
+            b"new version"
+        );
+        // The old tree is gone, so nothing from the previous version lingers.
+        assert!(!install_path.join("data").exists());
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

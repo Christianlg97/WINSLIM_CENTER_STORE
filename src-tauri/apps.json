@@ -3707,8 +3707,9 @@
     "accent_color": "#f59e0b",
     "launch_executable": "LosslessScaling.exe",
     "known_launch_paths": [
-      "C:\\\\Program Files\\\\Lossless Scaling\\\\LosslessScaling.exe",
-      "C:\\\\Program Files (x86)\\\\Lossless Scaling\\\\LosslessScaling.exe"
+      "C:\\Program Files\\Lossless Scaling\\LosslessScaling.exe",
+      "C:\\Program Files (x86)\\Lossless Scaling\\LosslessScaling.exe",
+      "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Lossless Scaling\\LosslessScaling.exe"
     ]
   },
   {
