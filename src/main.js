@@ -1517,9 +1517,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     await clientLog("info", "command", "Comando /logs ejecutado desde la barra de búsqueda.");
     try {
       const path = await invoke("open_logs");
-      setStatus(`Registro abierto: ${path}`, "var(--green)");
+      setTransientStatus(`Registro abierto: ${path}`, "var(--green)", 10000);
     } catch (error) {
-      setStatus(`No se pudo abrir el registro: ${error}`, "var(--red)");
+      setTransientStatus(`No se pudo abrir el registro: ${error}`, "var(--red)", 10000);
       showAlertModal("Error al abrir los logs", String(error));
     } finally {
       searchInput.value = "";

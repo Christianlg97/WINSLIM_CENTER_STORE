@@ -454,7 +454,7 @@ pub fn run_installer_in_background(
 
     let exit_code = status.code();
     let accepted_exit =
-        status.success() || (ext == "msi" && matches!(exit_code, Some(1641) | Some(3010)));
+        status.success() || matches!(exit_code, Some(1641) | Some(3010));
     if !accepted_exit {
         if exit_code.is_some_and(|code| installer_exit_means_cancelled(app, code)) {
             return Err(format!(

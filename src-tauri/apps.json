@@ -2383,6 +2383,32 @@
     ]
   },
   {
+    "id": "rockstar_games_launcher",
+    "name": "Rockstar Games Launcher",
+    "description": "Plataforma oficial de Rockstar Games para descargar, actualizar y jugar a sus títulos en Windows.",
+    "version": "latest",
+    "author": "Rockstar Games",
+    "category": "Juegos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Rockstar.RockstarGamesLauncher",
+    "winget_source": "winget",
+    "installer_args": [
+      "/S"
+    ],
+    "icon_url": "https://cdn.simpleicons.org/rockstargames/FFC600",
+    "icon_background": "#000000",
+    "icon_padding": 6,
+    "accent_color": "#ffc600",
+    "detect_names": [
+      "Rockstar Games Launcher",
+      "Rockstar Games Service",
+      "RockstarGamesLauncher"
+    ],
+    "launch_executable": "Launcher.exe"
+  },
+  {
     "id": "emu_86box",
     "name": "86Box",
     "description": "Emulador de sistemas IBM PC y compatibles.",
@@ -2710,8 +2736,9 @@
     "detect_names": [
       "SharpEmu"
     ],
-    "icon_background": "#ffffff",
-    "icon_padding": 4,
+    "icon_background": "#121826",
+    "icon_padding": 6,
+    "accent_color": "#3b82f6",
     "icon_fit": "contain",
     "console_tags": [
       "Sharp"
@@ -2751,7 +2778,10 @@
     "source_type": "wget",
     "download_url": "https://easyrpg.org/downloads/player/latest/easyrpg-player-latest-windows-x64.zip",
     "download_filename": "easyrpg-player-latest-windows-x64.zip",
-    "icon_url": "https://raw.githubusercontent.com/EasyRPG/Player/master/resources/logo.png",
+    "icon_url": "https://cdn.simpleicons.org/easyrpg/41B883",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#41b883",
     "console_tags": [
       "RPG Maker 2000/2003",
       "PC"
@@ -3481,13 +3511,14 @@
   {
     "id": "vmware_workstation",
     "name": "VMware Workstation Pro",
-    "description": "Hipervisor de escritorio oficial de VMware. Broadcom requiere acceder a su portal para obtener la versión vigente de Windows.",
+    "description": "Hipervisor de escritorio potente para crear y ejecutar máquinas virtuales en Windows.",
     "version": "latest",
     "author": "VMware by Broadcom",
     "category": "Virtualización",
     "section": "Utilidades",
-    "source_type": "web",
-    "web_url": "https://support.broadcom.com/group/ecx/productdownloads?subfamily=VMware%20Workstation%20Pro&freeDownloads=true",
+    "source_type": "wget",
+    "download_url": "https://download2283.mediafire.com/a2yqh8yd9j4gBrYPClByhNUd01zWiJ4RJrbaSGuPeNHVMxC4wswRRoaZ_od5NQrKugXDefCxz0QhMp17M4Ebwk_jnrKhGo7tXErtyESU8lGpPPZ9HMu8dWlzDCUhRxFwO6MWggCD_YzGuoLodwIVG0OM18V8Qv2ozlgQL6Tl5omw4A/q8owl7ye260vftg/VMware-Workstation-Full-26H1.exe",
+    "download_filename": "VMware-Workstation-Full-26H1.exe",
     "icon_url": "https://cdn.simpleicons.org/vmware/607078",
     "icon_background": "#ffffff",
     "icon_padding": 7,
@@ -3496,6 +3527,7 @@
       "VMware Workstation",
       "VMware Workstation Pro"
     ],
+    "launch_executable": "vmware.exe",
     "featured": false
   },
   {
