@@ -1,0 +1,24 @@
+# Rust / Cargo build outputs
+target/
+src-tauri/target/
+cargo-target/
+**/*.rs.bk
+
+# Node & Frontend dependencies / build outputs
+node_modules/
+dist/
+build/
+Build/
+
+# Tauri generated files
+src-tauri/gen/
+
+# OS and IDE temporary files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vs/
+.vscode/
+.idea/
+*.suo
+*.user
