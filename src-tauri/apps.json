@@ -31,6 +31,7 @@
     "featured": true,
     "source_type": "wget",
     "download_url": "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
+    "winget_id": "Valve.Steam",
     "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/steam.png",
     "accent_color": "#1b2838",
     "detect_names": [
@@ -48,6 +49,7 @@
     "featured": true,
     "source_type": "wget",
     "download_url": "https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64",
+    "winget_id": "Discord.Discord",
     "icon_url": "https://cdn.simpleicons.org/discord/white",
     "accent_color": "#5865F2",
     "detect_names": [
@@ -64,6 +66,7 @@
     "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe",
+    "winget_id": "Ubisoft.Connect",
     "icon_url": "https://cdn.simpleicons.org/ubisoft/white",
     "accent_color": "#0059d6",
     "detect_names": [
@@ -101,6 +104,7 @@
     "featured": false,
     "source_type": "wget",
     "download_url": "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi",
+    "winget_id": "EpicGames.EpicGamesLauncher",
     "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/epic-games.png",
     "accent_color": "#313131",
     "detect_names": [
@@ -155,6 +159,7 @@
     "source_type": "github_release",
     "github_repo": "peazip/PeaZip",
     "asset_pattern": "peazip-*.WIN64.exe",
+    "winget_id": "Giorgiotani.Peazip",
     "accent_color": "#2f7aa7",
     "icon_url": "https://raw.githubusercontent.com/peazip/PeaZip/HEAD/peazip-sources/res/share/icons/peazip.ico",
     "featured": false
@@ -169,6 +174,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://www.bandisoft.com/bandizip/dl.php?win",
+    "winget_id": "Bandisoft.Bandizip",
     "accent_color": "#1976d2",
     "icon_url": "https://www.bandisoft.com/favicon.ico",
     "featured": false
@@ -221,6 +227,7 @@
     "section": "Desarrollo",
     "source_type": "wget",
     "download_url": "https://c2rsetup.officeapps.live.com/c2r/downloadVS.aspx?sku=community&channel=Release&version=VS2022&source=VSLandingPage&cid=2030:b4e058af4d2b4b69a6c4a6ec38e3d988",
+    "winget_id": "Microsoft.VisualStudio.2022.Community",
     "accent_color": "#5c2d91",
     "icon_url": "https://visualstudio.microsoft.com/wp-content/uploads/2021/10/Product-Icon.svg",
     "featured": false
@@ -236,6 +243,7 @@
     "source_type": "github_release",
     "github_repo": "git-for-windows/git",
     "asset_pattern": "Git-*-64-bit.exe",
+    "winget_id": "Git.Git",
     "accent_color": "#f05032",
     "icon_url": "https://cdn.simpleicons.org/git/white",
     "featured": false
@@ -250,6 +258,7 @@
     "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe",
+    "winget_id": "ElectronicArts.EADesktop",
     "icon_url": "https://cdn.simpleicons.org/ea/white",
     "accent_color": "#cc0000",
     "featured": false
@@ -296,6 +305,7 @@
     "source_type": "github_release",
     "github_repo": "brave/brave-browser",
     "asset_pattern": "BraveBrowserStandaloneSetup*.exe",
+    "winget_id": "Brave.Brave",
     "accent_color": "#fb542b",
     "icon_url": "https://cdn.simpleicons.org/brave/white"
   },
@@ -309,6 +319,7 @@
     "section": "Navegadores",
     "source_type": "wget",
     "download_url": "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-D564-463C-AFF1-A69D9E530F96%7D%26iid%3D%7B00000000-0000-0000-0000-000000000000%7D%26lang%3Des%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dprefers%26ap%3Dx64-stable-statsdef_1%26installdataindex%3Dempty/update2/installers/ChromeSetup.exe",
+    "winget_id": "Google.Chrome",
     "accent_color": "#4285F4",
     "icon_url": "https://cdn.simpleicons.org/googlechrome/white",
     "featured": false
@@ -323,6 +334,7 @@
     "section": "Navegadores",
     "source_type": "wget",
     "download_url": "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=es-ES",
+    "winget_id": "Mozilla.Firefox",
     "accent_color": "#ff7139",
     "icon_url": "https://cdn.simpleicons.org/firefox/white",
     "featured": false
@@ -353,6 +365,7 @@
     "source_type": "github_release",
     "github_repo": "notepad-plus-plus/notepad-plus-plus",
     "asset_pattern": "npp.*.Installer.x64.exe",
+    "winget_id": "Notepad++.Notepad++",
     "accent_color": "#008000",
     "icon_url": "https://cdn.simpleicons.org/notepadplusplus/white",
     "featured": false
@@ -369,6 +382,7 @@
     "source_type": "github_release",
     "github_repo": "obsproject/obs-studio",
     "asset_pattern": "OBS-Studio-*-Windows-x64-Installer.exe",
+    "winget_id": "OBSProject.OBSStudio",
     "accent_color": "#302e31",
     "icon_url": "https://cdn.simpleicons.org/obsstudio/white"
   },
@@ -382,6 +396,7 @@
     "section": "Multimedia",
     "source_type": "wget",
     "download_url": "https://download.scdn.co/SpotifySetup.exe",
+    "winget_id": "Spotify.Spotify",
     "accent_color": "#1db954",
     "detect_names": [
       "Spotify"
@@ -419,6 +434,7 @@
     "source_type": "github_release",
     "github_repo": "clsid2/mpc-hc",
     "asset_pattern": "MPC-HC.*x64.exe",
+    "winget_id": "clsid2.mpc-hc",
     "accent_color": "#ffcc00",
     "icon_url": "https://raw.githubusercontent.com/clsid2/mpc-hc/develop/src/mpc-hc/res/icon.ico",
     "featured": false
@@ -434,6 +450,7 @@
     "source_type": "github_release",
     "github_repo": "audacity/audacity",
     "asset_pattern": "audacity-win-*-64bit.exe",
+    "winget_id": "Audacity.Audacity",
     "accent_color": "#0079c1",
     "icon_url": "https://cdn.simpleicons.org/audacity/white",
     "featured": false
@@ -449,6 +466,7 @@
     "source_type": "github_release",
     "github_repo": "ONLYOFFICE/DesktopEditors",
     "asset_pattern": "DesktopEditors_x64.exe",
+    "winget_id": "ONLYOFFICE.DesktopEditors",
     "accent_color": "#444444",
     "icon_url": "https://cdn.simpleicons.org/onlyoffice/white",
     "featured": false
@@ -464,6 +482,7 @@
     "source_type": "github_release",
     "github_repo": "obsidianmd/obsidian-releases",
     "asset_pattern": "Obsidian-*.exe",
+    "winget_id": "Obsidian.Obsidian",
     "accent_color": "#7c3aed",
     "icon_url": "https://cdn.simpleicons.org/obsidian/white",
     "featured": false
@@ -516,6 +535,7 @@
     "section": "Social y Comunicación",
     "source_type": "wget",
     "download_url": "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=es-ES",
+    "winget_id": "Mozilla.Thunderbird",
     "accent_color": "#0a84ff",
     "icon_url": "https://cdn.simpleicons.org/thunderbird/white",
     "featured": false
@@ -667,6 +687,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://download.anydesk.com/AnyDesk.exe",
+    "winget_id": "AnyDesk.AnyDesk",
     "accent_color": "#ef4035",
     "icon_url": "https://cdn.simpleicons.org/anydesk/white",
     "featured": false
@@ -683,6 +704,7 @@
     "source_type": "github_release",
     "github_repo": "microsoft/PowerToys",
     "asset_pattern": "PowerToysSetup-*-x64.exe",
+    "winget_id": "Microsoft.PowerToys",
     "accent_color": "#f25022",
     "icon_url": "https://raw.githubusercontent.com/microsoft/PowerToys/HEAD/doc/images/icons/PowerToys%20icon/PNG/2160x2160.png"
   },
@@ -727,6 +749,7 @@
     "source_type": "github_release",
     "github_repo": "balena-io/etcher",
     "asset_pattern": "balenaEtcher-*.Setup.exe",
+    "winget_id": "Balena.Etcher",
     "accent_color": "#20beff",
     "icon_url": "https://raw.githubusercontent.com/balena-io/etcher/HEAD/assets/iconset/512x512.png",
     "featured": false
@@ -742,6 +765,7 @@
     "source_type": "github_release",
     "github_repo": "pbatard/rufus",
     "asset_pattern": "rufus-*.exe",
+    "winget_id": "Rufus.Rufus",
     "accent_color": "#e52320",
     "icon_url": "https://rufus.ie/pics/rufus-128.png",
     "featured": false
@@ -757,6 +781,7 @@
     "source_type": "github_release",
     "github_repo": "HandBrake/HandBrake",
     "asset_pattern": "HandBrake-*-x86_64-Win_GUI.exe",
+    "winget_id": "HandBrake.HandBrake",
     "accent_color": "#333333",
     "icon_url": "https://raw.githubusercontent.com/HandBrake/HandBrake/master/win/CS/HandBrakeWPF/Views/Images/logo128.png",
     "featured": false
@@ -772,6 +797,7 @@
     "source_type": "github_release",
     "github_repo": "ShareX/ShareX",
     "asset_pattern": "ShareX-*-setup-x64.exe",
+    "winget_id": "ShareX.ShareX",
     "accent_color": "#d22630",
     "icon_url": "https://cdn.simpleicons.org/sharex/white",
     "featured": false
@@ -787,6 +813,7 @@
     "source_type": "github_release",
     "github_repo": "greenshot/greenshot",
     "asset_pattern": "Greenshot-INSTALLER-*.exe",
+    "winget_id": "Greenshot.Greenshot",
     "accent_color": "#80c342",
     "icon_url": "https://getgreenshot.org/favicon.ico",
     "featured": false
@@ -802,6 +829,7 @@
     "source_type": "github_release",
     "github_repo": "flameshot-org/flameshot",
     "asset_pattern": "Flameshot-*-win64.msi",
+    "winget_id": "Flameshot.Flameshot",
     "accent_color": "#ff4444",
     "icon_url": "https://raw.githubusercontent.com/flameshot-org/flameshot/master/data/img/app/flameshot.svg",
     "featured": false
@@ -816,6 +844,7 @@
     "section": "Desarrollo",
     "source_type": "wget",
     "download_url": "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
+    "winget_id": "Docker.DockerDesktop",
     "accent_color": "#0db7ed",
     "icon_url": "https://cdn.simpleicons.org/docker/white",
     "featured": false
@@ -830,6 +859,7 @@
     "section": "Desarrollo",
     "source_type": "wget",
     "download_url": "https://dl.pstmn.io/download/latest/win64",
+    "winget_id": "Postman.Postman",
     "accent_color": "#ff6c37",
     "icon_url": "https://cdn.simpleicons.org/postman/white",
     "featured": false
@@ -845,6 +875,7 @@
     "source_type": "github_release",
     "github_repo": "dbeaver/dbeaver",
     "asset_pattern": "dbeaver-ce-*-windows-x86_64.exe",
+    "winget_id": "DBeaver.DBeaver.Community",
     "accent_color": "#382923",
     "icon_url": "https://cdn.simpleicons.org/dbeaver/white",
     "featured": false
@@ -860,6 +891,7 @@
     "source_type": "github_release",
     "github_repo": "Kong/insomnia",
     "asset_pattern": "Insomnia.Core-nsis-*.exe",
+    "winget_id": "Insomnia.Insomnia",
     "accent_color": "#4000bf",
     "icon_url": "https://cdn.simpleicons.org/insomnia/white",
     "featured": false
@@ -972,6 +1004,7 @@
     "source_type": "github_release",
     "github_repo": "hrydgard/ppsspp",
     "asset_pattern": "PPSSPP-v*-Windows-x64.zip",
+    "winget_id": "PPSSPPTeam.PPSSPP",
     "icon_url": "https://raw.githubusercontent.com/hrydgard/ppsspp/master/icons/hicolor/512x512/apps/ppsspp.png",
     "accent_color": "#4f46e5",
     "console_tags": [
@@ -990,6 +1023,7 @@
     "source_type": "github_release",
     "github_repo": "cemu-project/Cemu",
     "asset_pattern": "cemu-*-windows-x64.zip",
+    "winget_id": "Cemu.Cemu",
     "accent_color": "#0f766e",
     "icon_url": "https://cemu.info/favicon.ico",
     "console_tags": [
@@ -1043,6 +1077,7 @@
     "source_type": "github_release",
     "github_repo": "mgba-emu/mgba",
     "asset_pattern": "mGBA-*-win64-installer.exe",
+    "winget_id": "JeffreyPfau.mGBA",
     "accent_color": "#16a34a",
     "icon_url": "https://raw.githubusercontent.com/mgba-emu/mgba/master/res/mgba-256.png",
     "console_tags": [
@@ -1066,6 +1101,7 @@
     "source_type": "github_release",
     "github_repo": "xemu-project/xemu",
     "asset_pattern": "xemu-*-windows-x86_64.zip",
+    "winget_id": "xemu-project.xemu",
     "accent_color": "#ea580c",
     "icon_url": "https://xemu.app/favicon.ico",
     "console_tags": [
@@ -1084,6 +1120,7 @@
     "source_type": "github_release",
     "github_repo": "PCSX2/pcsx2",
     "asset_pattern": "PCSX2-*-windows-x64-installer.exe",
+    "winget_id": "PCSX2Team.PCSX2",
     "accent_color": "#f59e0b",
     "icon_url": "https://raw.githubusercontent.com/PCSX2/pcsx2/master/bin/resources/icons/AppIconLarge.png",
     "console_tags": [
@@ -1143,6 +1180,7 @@
     "source_type": "github_release",
     "github_repo": "seerge/g-helper",
     "asset_pattern": "GHelper.exe",
+    "winget_id": "seerge.g-helper",
     "icon_url": "assets/g-helper.ico",
     "icon_background": "#0b5fa5",
     "icon_padding": 4,
@@ -1286,6 +1324,7 @@
     "source_type": "github_release",
     "github_repo": "Alex313031/Thorium-Win",
     "asset_pattern": "thorium_AVX2_*.zip",
+    "winget_id": "Alex313031.Thorium.AVX2",
     "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
     "accent_color": "#2563eb",
     "launch_executable": "thorium.exe",
@@ -1318,6 +1357,7 @@
     "source_type": "github_release",
     "github_repo": "Alex313031/Thorium-Win",
     "asset_pattern": "thorium_SSE4_*.zip",
+    "winget_id": "Alex313031.Thorium",
     "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
     "accent_color": "#2563eb",
     "launch_executable": "thorium.exe",
@@ -1349,6 +1389,7 @@
     "section": "Navegadores",
     "source_type": "wget",
     "download_url": "https://www.slimjet.com/release/sjtsetup_x64.exe",
+    "winget_id": "FlashPeak.Slimjet",
     "icon_url": "https://www.slimjet.com/favicon.ico",
     "accent_color": "#059669",
     "featured": false
@@ -1379,6 +1420,7 @@
     "source_type": "github_release",
     "github_repo": "imputnet/helium-windows",
     "asset_pattern": "Helium_*_x64-installer.exe",
+    "winget_id": "ImputNet.Helium",
     "icon_url": "https://raw.githubusercontent.com/imputnet/helium/main/resources/branding/app_icon/raw.png",
     "accent_color": "#3854d8",
     "detect_names": [
@@ -1487,6 +1529,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://downloads.ntlite.com/files/NTLite_setup_x64.exe",
+    "winget_id": "Nlitesoft.NTLite",
     "icon_url": "https://www.ntlite.com/favicon.ico",
     "accent_color": "#0369a1",
     "featured": false
@@ -1501,6 +1544,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://www.autohotkey.com/download/ahk-v2.exe",
+    "winget_id": "AutoHotkey.AutoHotkey",
     "icon_url": "https://cdn.simpleicons.org/autohotkey/white",
     "accent_color": "#334155",
     "featured": false
@@ -1515,6 +1559,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe",
+    "winget_id": "Google.GoogleDrive",
     "icon_url": "https://cdn.simpleicons.org/googledrive/white",
     "accent_color": "#15803d",
     "featured": false
@@ -1529,6 +1574,7 @@
     "section": "Utilidades",
     "source_type": "wget",
     "download_url": "https://mega.nz/MEGAsyncSetup64.exe",
+    "winget_id": "Mega.MEGASync",
     "icon_url": "https://cdn.simpleicons.org/mega/white",
     "accent_color": "#dc2626",
     "featured": false
@@ -1543,6 +1589,7 @@
     "section": "Utilidades",
     "source_type": "github_release",
     "github_repo": "winsiderss/systeminformer",
+    "winget_id": "WinsiderSS.SystemInformer",
     "icon_url": "https://raw.githubusercontent.com/winsiderss/systeminformer/master/SystemInformer/SystemInformer.ico",
     "accent_color": "#4338ca",
     "featured": false
@@ -1972,6 +2019,7 @@
     "source_type": "github_release",
     "github_repo": "nim-lang/nightlies",
     "asset_pattern": "windows_x64.zip",
+    "winget_id": "nim.nim",
     "icon_url": "https://cdn.simpleicons.org/nim/white",
     "detect_names": [
       "Nim"
@@ -2166,6 +2214,7 @@
     "source_type": "wget",
     "download_url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-26.7.0-windows-x86-64bit.msi",
     "download_filename": "mysql-shell-26.7.0-windows-x86-64bit.msi",
+    "winget_id": "Oracle.MySQLShell",
     "icon_url": "https://cdn.simpleicons.org/mysql/white",
     "launch_executable": "mysqlsh.exe",
     "detect_names": [
@@ -2803,6 +2852,7 @@
     "source_type": "github_release",
     "github_repo": "stella-emu/stella",
     "asset_pattern": "Stella-*-windows.zip",
+    "winget_id": "TheStellaTeam.Stella",
     "icon_url": "https://raw.githubusercontent.com/stella-emu/stella/HEAD/src/common/stella-128x128.png",
     "detect_names": [
       "Stella"
@@ -2861,6 +2911,7 @@
     "source_type": "github_release",
     "github_repo": "elm/compiler",
     "asset_pattern": "installer-for-windows.exe",
+    "winget_id": "EvanCzaplicki.Elm",
     "icon_url": "https://raw.githubusercontent.com/elm/compiler/HEAD/installers/win/logo.ico",
     "detect_names": [
       "Elm"
@@ -3518,6 +3569,7 @@
     "section": "Utilidades",
     "source_type": "web",
     "web_url": "https://www.intel.com/content/www/us/en/download/17881/intel-extreme-tuning-utility-intel-xtu.html",
+    "winget_id": "Intel.IntelExtremeTuningUtility",
     "icon_url": "https://cdn.simpleicons.org/intel/0071C5",
     "icon_background": "#ffffff",
     "icon_padding": 7,
@@ -3794,6 +3846,7 @@
     "source_type": "github_release",
     "github_repo": "LIARMP/SameBoy",
     "asset_pattern": "sameboy_win_*.zip",
+    "winget_id": "LIJI32.SameBoy",
     "icon_url": "https://cdn.simpleicons.org/retroarch/3399FF",
     "detect_names": [
       "SameBoy"

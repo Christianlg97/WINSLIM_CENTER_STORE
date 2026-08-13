@@ -120,6 +120,8 @@ const state = {
   busy: {},
   resolvedIcons: {},
   projectSlogan: chooseProjectSlogan(),
+  scanningUpdates: false,
+  lastUpdateScan: null,
 };
 
 let statusResetTimer = null;
@@ -410,6 +412,84 @@ function appStatus(id) {
   );
 }
 
+/**
+ * The rescan control, shared by the empty-state card and the section toolbar.
+ *
+ * It reuses the same stroked refresh glyph as the top bar's Refrescar button —
+ * it is the same gesture — and the store's own busy vocabulary (`disabled` plus
+ * `aria-busy`), so it breathes and drops its hover sheen exactly like every
+ * other button that is working.
+ */
+function scanUpdatesButtonHtml({ hero = false } = {}) {
+  const scanning = state.scanningUpdates;
+  const size = hero ? 16 : 14;
+  const icon = `
+    <svg class="btn-svg-icon scan-icon" width="${size}" height="${size}" viewBox="0 0 24 24"
+      fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"
+      stroke-linejoin="round" aria-hidden="true">
+      <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+      <path d="M3 3v5h5" />
+      <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+      <path d="M16 16h5v5" />
+    </svg>`;
+  const cls = hero ? "btn primary empty-updates-scan" : "btn ghost updates-toolbar-scan";
+  return `
+    <button type="button" class="${cls}" id="btn-scan-updates"
+      ${scanning ? 'disabled aria-busy="true"' : ""}
+      title="Comparar tus aplicaciones instaladas con el repositorio de WinGet">
+      ${icon}<span>${scanning ? "Consultando WinGet…" : "Buscar actualizaciones"}</span>
+    </button>`;
+}
+
+function lastScanLabel() {
+  if (state.scanningUpdates) return "Consultando WinGet...";
+  if (!state.lastUpdateScan) return "Todas las apps vigentes";
+  const time = state.lastUpdateScan.toLocaleTimeString("es-ES", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `Última comprobación con WinGet · ${time}`;
+}
+
+/**
+ * Explicit "look for updates now" pass.
+ *
+ * Detection runs first so that apps installed or removed since the last scan are
+ * taken into account, and only then does the backend ask WinGet — otherwise the
+ * scan would compare against a stale list of installed packages.
+ */
+async function scanForUpdates() {
+  if (state.scanningUpdates) return;
+  state.scanningUpdates = true;
+  renderContent();
+  setStatus("Consultando WinGet en busca de actualizaciones...", "var(--accent)");
+  setProgress(30);
+  try {
+    state.statuses = (await invoke("refresh_statuses")) || state.statuses;
+    setProgress(65);
+    state.statuses = (await invoke("check_updates")) || state.statuses;
+    state.lastUpdateScan = new Date();
+    const updates = updatesCount();
+    clientLog("info", "updates-scan", { updates });
+    if (updates) {
+      setStatus(
+        `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
+        "var(--accent)",
+      );
+    } else {
+      setTransientStatus("WinGet no reporta actualizaciones pendientes.", "var(--green)", 5000);
+    }
+  } catch (error) {
+    setTransientStatus(`No se pudo comprobar con WinGet: ${error}`, "var(--red)", 8000);
+    clientLog("warn", "updates-scan", String(error?.stack || error));
+  } finally {
+    state.scanningUpdates = false;
+    setProgress(100);
+    renderSidebar();
+    renderContent();
+  }
+}
+
 function installedCount() {
   return Object.values(state.statuses).filter((s) => s.installed).length;
 }
@@ -637,6 +717,16 @@ function renderContent() {
       <span>${apps.length} aplicaciones</span>
     </div>`;
 
+  // With pending updates on screen the empty-state card is not rendered, so the
+  // rescan action needs its own place to live.
+  if (state.section === "updates" && apps.length) {
+    html += `
+      <div class="updates-toolbar">
+        <span class="updates-toolbar-note">${escapeHtml(lastScanLabel())}</span>
+        ${scanUpdatesButtonHtml()}
+      </div>`;
+  }
+
   if (state.section === "emulators") {
     const preferredOrder = [
       "PS1", "PS2", "PS3", "PSP", "Xbox", "Xbox 360", "GameCube", "Wii", "Wii U",
@@ -688,6 +778,7 @@ function renderContent() {
 
   if (!apps.length) {
     if (state.section === "updates") {
+      const scanning = state.scanningUpdates;
       html += `
         <div class="empty-updates-wrap">
           <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
@@ -700,8 +791,14 @@ function renderContent() {
               </div>
               <h2>Todo tu software está al día</h2>
               <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
+              ${scanUpdatesButtonHtml({ hero: true })}
+              <p class="empty-updates-hint">${
+                scanning
+                  ? "Comparando las versiones instaladas con el repositorio de WinGet."
+                  : "Consulta WinGet en busca de versiones nuevas de tus aplicaciones instaladas."
+              }</p>
               <div class="empty-updates-status">
-                <span class="pulse-dot"></span> Todas las apps vigentes
+                <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
               </div>
             </div>
           </div>
@@ -719,6 +816,8 @@ function renderContent() {
       renderContent();
     });
   });
+  const scanButton = content.querySelector("#btn-scan-updates");
+  if (scanButton) scanButton.addEventListener("click", () => void scanForUpdates());
   bindAppActions(content);
 }
 
@@ -1554,6 +1653,7 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
     setProgress(86);
     state.statuses = (await invoke("check_updates")) || state.statuses;
+    state.lastUpdateScan = new Date();
     const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
     renderSidebar();
     renderContent();
@@ -1608,6 +1708,7 @@ async function finishStartupInBackground() {
     
     try {
       state.statuses = (await invoke("check_updates")) || state.statuses;
+      state.lastUpdateScan = new Date();
       renderSidebar();
       renderContent();
       const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
@@ -1733,12 +1834,15 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (ok) {
       await refreshInstalledFromBootstrap();
       const app = findApp(app_id);
-      if (is_update) {
-        try {
-          state.statuses = (await invoke("check_updates")) || state.statuses;
-        } catch (error) {
-          console.error("No se pudo verificar el estado tras actualizar", error);
-        }
+      // Both a fresh install and an update leave the backend with statuses
+      // rebuilt from the registry alone. Re-verifying is what keeps the Updates
+      // badge honest: skipping it after a plain install left the catalog's own
+      // guess on screen and announced updates that did not exist.
+      try {
+        state.statuses = (await invoke("check_updates")) || state.statuses;
+        state.lastUpdateScan = new Date();
+      } catch (error) {
+        clientLog("warn", "post-install-updates", String(error?.stack || error));
       }
       renderSidebar();
       renderContent();

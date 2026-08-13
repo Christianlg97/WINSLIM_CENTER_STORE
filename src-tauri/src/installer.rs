@@ -420,17 +420,31 @@ async fn winget_installer_url(app: &Value) -> Result<String, String> {
     ))
 }
 
+/// Asks WinGet for everything it considers upgradable.
+///
+/// `--include-unknown` is what makes the scan comparable to a dedicated package
+/// manager front-end: without it WinGet silently drops every package whose
+/// installed version it cannot read from the registry, which is most portable
+/// and self-updating apps. `--include-pinned` surfaces the packages the user (or
+/// WinGet itself) pinned, which are listed apart and would otherwise look like
+/// "nothing to do".
 pub async fn winget_available_updates() -> Result<String, String> {
     let output = tokio::task::spawn_blocking(move || {
-        crate::process::hidden_output(
-            "winget.exe",
-            &[
-                "list",
-                "--upgrade-available",
-                "--accept-source-agreements",
-                "--disable-interactivity",
-            ],
-        )
+        let base = [
+            "upgrade",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+            "--include-unknown",
+        ];
+        let mut full = base.to_vec();
+        full.push("--include-pinned");
+        // `--include-pinned` is newer than `--include-unknown`; an older WinGet
+        // rejects the whole command rather than ignoring the flag, so the scan
+        // retries without it instead of reporting "WinGet unavailable".
+        match crate::process::hidden_output("winget.exe", &full) {
+            Ok(result) if result.success() => Ok(result),
+            Ok(_) | Err(_) => crate::process::hidden_output("winget.exe", &base),
+        }
     })
     .await
     .map_err(|err| format!("No se pudo consultar winget: {err}"))?
@@ -547,23 +561,138 @@ pub fn uninstall_system_app_as_user(uninstall_command: &str) -> Result<(), Strin
     crate::process::launch_as_interactive_user(&executable, &arguments, executable.parent())
 }
 
-pub fn winget_update_versions(output: &str, package_id: &str) -> Option<(String, String)> {
-    for line in output.lines() {
-        let columns = line.split_whitespace().collect::<Vec<_>>();
-        let Some(id_index) = columns
-            .iter()
-            .position(|column| column.eq_ignore_ascii_case(package_id))
-        else {
-            continue;
-        };
-        if columns.len() > id_index + 2 {
-            return Some((
-                columns[id_index + 1].to_string(),
-                columns[id_index + 2].to_string(),
-            ));
+/// One upgradable package as reported by `winget upgrade`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WingetUpgrade {
+    pub id: String,
+    pub installed: String,
+    pub available: String,
+    pub source: String,
+    /// WinGet shrinks cells that do not fit the console width and marks them
+    /// with an ellipsis. A clipped identifier can still be matched by prefix.
+    pub id_truncated: bool,
+}
+
+impl WingetUpgrade {
+    pub fn matches(&self, package_id: &str) -> bool {
+        if !self.id_truncated {
+            return self.id.eq_ignore_ascii_case(package_id);
+        }
+        let prefix: String = package_id.chars().take(self.id.chars().count()).collect();
+        prefix.chars().count() == self.id.chars().count() && prefix.eq_ignore_ascii_case(&self.id)
+    }
+}
+
+/// Trailing character WinGet appends to a cell it had to shorten.
+const WINGET_ELLIPSIS: char = '…';
+
+/// Start offset, in characters, of every column of a WinGet table header.
+///
+/// The table is fixed-width: each header label begins exactly where its column
+/// begins. Splitting rows on whitespace instead — the previous approach — could
+/// not tell a product name containing spaces from the next column, and broke
+/// outright whenever a cell was empty.
+fn winget_column_starts(header: &[char]) -> Vec<usize> {
+    let mut starts = Vec::new();
+    let mut in_gap = true;
+    for (index, ch) in header.iter().enumerate() {
+        if ch.is_whitespace() {
+            in_gap = true;
+        } else {
+            if in_gap {
+                starts.push(index);
+            }
+            in_gap = false;
         }
     }
-    None
+    starts
+}
+
+fn winget_is_separator(line: &[char]) -> bool {
+    let trimmed: Vec<char> = line.iter().copied().filter(|c| !c.is_whitespace()).collect();
+    trimmed.len() >= 4 && trimmed.iter().all(|c| *c == '-')
+}
+
+fn winget_cell(line: &[char], start: usize, end: Option<usize>) -> String {
+    if start >= line.len() {
+        return String::new();
+    }
+    let stop = end.unwrap_or(line.len()).min(line.len());
+    if stop <= start {
+        return String::new();
+    }
+    line[start..stop].iter().collect::<String>().trim().to_string()
+}
+
+/// Parses the output of `winget upgrade` into structured rows.
+///
+/// WinGet prints one table per section — the regular upgrades and, below it,
+/// the packages that require explicit targeting — each with its own header and
+/// dashed rule. Both are parsed: a pinned or explicitly-targeted package still
+/// has an update waiting, and hiding it is how a store ends up claiming
+/// everything is current when it is not.
+pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
+    let lines: Vec<Vec<char>> = output
+        .lines()
+        // Progress rendering leaves carriage returns behind; only the final
+        // segment of a line holds the text WinGet meant to leave on screen.
+        .map(|line| line.rsplit('\r').next().unwrap_or(line).chars().collect())
+        .collect();
+
+    let mut upgrades: Vec<WingetUpgrade> = Vec::new();
+    let mut columns: Option<Vec<usize>> = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        if winget_is_separator(line) {
+            // The header is the line just above the dashed rule.
+            columns = index
+                .checked_sub(1)
+                .map(|header| winget_column_starts(&lines[header]))
+                .filter(|starts| starts.len() >= 4);
+            continue;
+        }
+        let Some(starts) = columns.as_ref() else {
+            continue;
+        };
+        if line.iter().all(|c| c.is_whitespace()) {
+            columns = None;
+            continue;
+        }
+
+        // Columns are always Name, Id, Version, Available, Source; matching by
+        // position keeps the parser independent of the console language.
+        let id = winget_cell(line, starts[1], starts.get(2).copied());
+        let installed = winget_cell(line, starts[2], starts.get(3).copied());
+        let available = winget_cell(line, starts[3], starts.get(4).copied());
+        let source = starts
+            .get(4)
+            .map(|start| winget_cell(line, *start, starts.get(5).copied()))
+            .unwrap_or_default();
+
+        // Summary lines ("N upgrades available.") and prose reuse the table
+        // width but never produce a bare identifier plus a target version.
+        if id.is_empty() || id.contains(char::is_whitespace) || available.is_empty() {
+            continue;
+        }
+        let id_truncated = id.ends_with(WINGET_ELLIPSIS);
+        upgrades.push(WingetUpgrade {
+            id: id.trim_end_matches(WINGET_ELLIPSIS).to_string(),
+            installed,
+            available,
+            source,
+            id_truncated,
+        });
+    }
+
+    upgrades
+}
+
+/// Installed and available versions WinGet reports for `package_id`, if any.
+pub fn winget_update_versions(output: &str, package_id: &str) -> Option<(String, String)> {
+    parse_winget_upgrades(output)
+        .into_iter()
+        .find(|upgrade| upgrade.matches(package_id))
+        .map(|upgrade| (upgrade.installed, upgrade.available))
 }
 
 pub fn run_installer_in_background(
@@ -2643,6 +2772,73 @@ mod tests {
                 validate_removable_install_dir(&PathBuf::from(&local).join("Programs")).is_err()
             );
         }
+    }
+
+    /// Real Spanish output, including the summary line and the second table
+    /// WinGet prints for packages that need explicit targeting.
+    const WINGET_UPGRADE_ES: &str = concat!(
+        "Nombre         Id                   Versión        Disponible     Origen\n",
+        "-------------------------------------------------------------------------\n",
+        "Docker Desktop Docker.DockerDesktop 4.84.0         4.86.0         winget\n",
+        "Google Chrome  Google.Chrome        151.0.7922.109 151.0.7922.138 winget\n",
+        "UniGetUI       XPFFTQ032PTPHF       2026.2.6       2026.2.7       msstore\n",
+        "3 actualizaciones disponibles.\n",
+        "\n",
+        "Los siguientes paquetes tienen una actualización disponible, pero requieren",
+        " una segmentación explícita para la actualización:\n",
+        "Nombre       Id            Versión Disponible Origen\n",
+        "-----------------------------------------------------\n",
+        "Visual Studio Microsoft.VS  17.14.0 17.15.0    winget\n",
+    );
+
+    #[test]
+    fn winget_upgrade_table_is_parsed_by_column_not_by_spaces() {
+        let upgrades = parse_winget_upgrades(WINGET_UPGRADE_ES);
+        let ids: Vec<&str> = upgrades.iter().map(|u| u.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "Docker.DockerDesktop",
+                "Google.Chrome",
+                "XPFFTQ032PTPHF",
+                "Microsoft.VS"
+            ],
+            "las apps con espacios en el nombre y la segunda tabla deben leerse"
+        );
+        let chrome = &upgrades[1];
+        assert_eq!(chrome.installed, "151.0.7922.109");
+        assert_eq!(chrome.available, "151.0.7922.138");
+        assert_eq!(chrome.source, "winget");
+    }
+
+    #[test]
+    fn the_summary_line_is_not_mistaken_for_a_package() {
+        assert!(parse_winget_upgrades(WINGET_UPGRADE_ES)
+            .iter()
+            .all(|upgrade| !upgrade.id.contains("actualizaciones")));
+    }
+
+    #[test]
+    fn versions_are_looked_up_ignoring_the_identifier_case() {
+        assert_eq!(
+            winget_update_versions(WINGET_UPGRADE_ES, "google.chrome"),
+            Some(("151.0.7922.109".into(), "151.0.7922.138".into()))
+        );
+        assert_eq!(winget_update_versions(WINGET_UPGRADE_ES, "Mozilla.Firefox"), None);
+    }
+
+    #[test]
+    fn an_identifier_clipped_by_the_console_width_still_matches() {
+        let clipped = concat!(
+            "Nombre    Id                        Versión Disponible Origen\n",
+            "-----------------------------------------------------------\n",
+            "PowerToys Microsoft.PowerToys.Mac…  0.7.0   0.8.0      winget\n",
+        );
+        let upgrades = parse_winget_upgrades(clipped);
+        assert_eq!(upgrades.len(), 1);
+        assert!(upgrades[0].id_truncated);
+        assert!(upgrades[0].matches("Microsoft.PowerToys.MachineWide"));
+        assert!(!upgrades[0].matches("Microsoft.PowerToys"));
     }
 
     #[test]

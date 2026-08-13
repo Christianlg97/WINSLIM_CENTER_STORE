@@ -333,8 +333,12 @@ pub fn is_newer(remote: &str, local: &str) -> Option<bool> {
     };
     let rv = parse(r);
     let lv = parse(l);
+    // A tag with no numbers at all ("nightly", "LTS", "stable") carries no
+    // ordering information. Reporting "newer" just because the two strings
+    // differ invented updates that never existed, so the answer is "unknown"
+    // and each caller decides what to do with it.
     if rv.is_empty() || lv.is_empty() {
-        return if rl != ll { Some(true) } else { Some(false) };
+        return None;
     }
     let n = rv.len().max(lv.len());
     for i in 0..n {
@@ -348,6 +352,32 @@ pub fn is_newer(remote: &str, local: &str) -> Option<bool> {
         }
     }
     Some(false)
+}
+
+/// Whether the catalog's `version` field is precise enough to be compared with
+/// what Windows reports for an installed program.
+///
+/// Most entries carry a marketing label rather than a release number: `latest`,
+/// `LTS`, `nightly`, or a product year such as `2022`. Comparing those against a
+/// real version produced nonsense — `2022` parses as a single component and beat
+/// Visual Studio's `17.14`, flagging a permanent phantom update. Only a dotted
+/// number with at least two components describes an actual release.
+fn catalog_version_is_comparable(catalog_version: &str) -> bool {
+    let numbers = catalog_version
+        .trim()
+        .trim_start_matches('v')
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .count();
+    catalog_version.contains('.') && numbers >= 2
+}
+
+/// Update flag derived purely from the catalog, used while the authoritative
+/// WinGet / GitHub check has not run yet. It stays silent unless the catalog
+/// really pins a release number newer than the installed one.
+fn catalog_update_available(catalog_version: &str, installed_version: &str) -> bool {
+    catalog_version_is_comparable(catalog_version)
+        && is_newer(catalog_version, installed_version).unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -526,7 +556,7 @@ pub fn build_statuses(
                     .filter(|path| path.is_file())
                     .and_then(|path| crate::installer::prefer_x64_executable(&path))
                     .or_else(|| crate::installer::resolve_launchable_path(&install_path, None));
-                let update = is_newer(catalog_version, &info.version).unwrap_or(false);
+                let update = catalog_update_available(catalog_version, &info.version);
                 map.insert(
                     id.to_string(),
                     AppStatus {
@@ -555,7 +585,7 @@ pub fn build_statuses(
             } else {
                 sys.version.clone()
             };
-            let update = is_newer(catalog_version, &ver).unwrap_or(false);
+            let update = catalog_update_available(catalog_version, &ver);
             let preferred_executable = entry
                 .get("launch_executable")
                 .and_then(|value| value.as_str());
@@ -729,6 +759,27 @@ mod tests {
         // The parser must reject missing files, but it must not panic or mistake
         // the icon index for part of the path.
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn a_tag_without_numbers_cannot_be_ordered() {
+        // "Node.js LTS" against the installed 24.19.0 used to answer "newer",
+        // which lit up the Updates badge for an app that had nothing pending.
+        assert_eq!(is_newer("LTS", "24.19.0"), None);
+        assert_eq!(is_newer("nightly", "1.2.3"), None);
+    }
+
+    #[test]
+    fn only_a_real_release_number_drives_the_catalog_update_flag() {
+        // Product years and marketing labels describe an edition, not a release.
+        assert!(!catalog_update_available("2022", "17.14.0"));
+        assert!(!catalog_update_available("LTS", "24.19.0"));
+        assert!(!catalog_update_available("latest", "1.0.0"));
+        assert!(!catalog_update_available("nightly", "0.9"));
+        // A pinned release number is still honoured in both directions.
+        assert!(catalog_update_available("2.1.0", "2.0.9"));
+        assert!(!catalog_update_available("2.1.0", "2.1.0"));
+        assert!(!catalog_update_available("2.1.0", "3.0.0"));
     }
 
     #[test]

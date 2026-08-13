@@ -139,8 +139,27 @@ fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
         "Actualizando botones, rutas y estados de instalación...",
         78,
     );
-    let statuses =
+    let mut statuses =
         detect::build_statuses(&catalog, &installed, &system, &start_apps, &winget_packages);
+    // `build_statuses` only knows what the catalog and the registry say; it
+    // cannot repeat the WinGet and GitHub queries. Rebuilding after an install
+    // therefore used to throw away the verified result of the last
+    // `check_updates` and fall back to a guess, which is how finishing an
+    // install lit up the Updates badge for an app that had nothing pending.
+    // Anything still installed at the very same version keeps its verified
+    // answer; a version change invalidates it and the next check decides.
+    {
+        let previous = state.statuses.lock();
+        for (app_id, status) in statuses.iter_mut() {
+            let Some(old) = previous.get(app_id) else {
+                continue;
+            };
+            if status.installed && old.installed && status.version == old.version {
+                status.update_available = old.update_available;
+                status.latest_version = old.latest_version.clone();
+            }
+        }
+    }
     logger::info(
         "status",
         format!(
@@ -850,17 +869,40 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
     logger::info("updates", "Comprobando actualizaciones.");
     let catalog = state.catalog.lock().clone();
     let mut statuses = state.statuses.lock().clone();
-    let has_installed_winget_app = catalog.iter().any(|entry| {
-        let id = entry.get("id").and_then(|value| value.as_str());
-        let is_winget = entry.get("source_type").and_then(|value| value.as_str()) == Some("winget");
-        is_winget
-            && id
+    // The scan used to be skipped unless a `source_type: winget` app was
+    // installed. Most of the catalog ships a `winget_id` while installing from
+    // its own download URL, and WinGet knows about those packages just the
+    // same, so the scan now runs whenever anything with an identifier is
+    // present — that is the difference between "0 updates" and the three
+    // upgrades WinGet was already reporting on the command line.
+    let has_identified_install = catalog.iter().any(|entry| {
+        let has_winget_id = entry
+            .get("winget_id")
+            .and_then(|value| value.as_str())
+            .is_some_and(|value| !value.trim().is_empty());
+        has_winget_id
+            && entry
+                .get("id")
+                .and_then(|value| value.as_str())
                 .and_then(|value| statuses.get(value))
                 .map(|status| status.installed)
                 .unwrap_or(false)
     });
-    let winget_updates = if has_installed_winget_app {
-        installer::winget_available_updates().await.ok()
+    let winget_upgrades = if has_identified_install {
+        match installer::winget_available_updates().await {
+            Ok(output) => {
+                let parsed = installer::parse_winget_upgrades(&output);
+                logger::info(
+                    "updates",
+                    format!("WinGet reporta {} paquete(s) actualizable(s).", parsed.len()),
+                );
+                Some(parsed)
+            }
+            Err(error) => {
+                logger::warn("updates", format!("No se pudo consultar WinGet: {error}"));
+                None
+            }
+        }
     } else {
         None
     };
@@ -928,36 +970,37 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
         if !st.installed {
             continue;
         }
-        let source = entry
-            .get("source_type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        match source {
-            "github_release" => {
-                if let Some(tag) = github_results.get(id) {
-                    st.update_available =
-                        detect::is_newer(tag, &st.version).unwrap_or(*tag != st.version);
-                    st.latest_version = Some(tag.clone());
-                }
-            }
-            "winget" => {
-                if let (Some(output), Some(package_id)) = (
-                    winget_updates.as_deref(),
-                    entry.get("winget_id").and_then(|value| value.as_str()),
-                ) {
-                    let versions = installer::winget_update_versions(output, package_id);
-                    st.update_available = versions.is_some();
-                    if let Some((installed, available)) = versions {
-                        if st.version.is_empty() || st.version.eq_ignore_ascii_case("latest") {
-                            st.version = installed;
-                        }
-                        st.latest_version = Some(available);
-                    } else {
-                        st.latest_version = None;
+        // A GitHub-released app is updated from its release feed, so when that
+        // lookup succeeds it is the authority on its own version. WinGet answers
+        // for everything else, including the GitHub entries whose lookup failed
+        // because the public API quota ran out.
+        if let Some(tag) = github_results.get(id) {
+            st.update_available = detect::is_newer(tag, &st.version).unwrap_or(*tag != st.version);
+            st.latest_version = Some(tag.clone());
+            continue;
+        }
+
+        let package_id = entry
+            .get("winget_id")
+            .and_then(|value| value.as_str())
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if let (Some(upgrades), Some(package_id)) = (winget_upgrades.as_deref(), package_id) {
+            let hit = upgrades.iter().find(|upgrade| upgrade.matches(package_id));
+            st.update_available = hit.is_some();
+            match hit {
+                Some(upgrade) => {
+                    // WinGet knows the real installed version even when the
+                    // catalog only carries a placeholder such as "latest".
+                    if !upgrade.installed.is_empty()
+                        && (st.version.is_empty() || st.version.eq_ignore_ascii_case("latest"))
+                    {
+                        st.version = upgrade.installed.clone();
                     }
+                    st.latest_version = Some(upgrade.available.clone());
                 }
+                None => st.latest_version = None,
             }
-            _ => {}
         }
     }
 
