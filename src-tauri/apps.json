@@ -1621,6 +1621,11 @@
     "download_url": "https://download01.logi.com/web/ftp/pub/techsupport/gaming/lghub_installer.exe",
     "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/logitech.png",
     "accent_color": "#00b4ec",
+    "detect_names": [
+      "Logitech G HUB",
+      "LGHUB"
+    ],
+    "launch_executable": "lghub.exe",
     "featured": false
   },
   {

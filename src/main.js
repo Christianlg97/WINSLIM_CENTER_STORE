@@ -1003,9 +1003,12 @@ async function uninstallApp(id) {
   if (!app) return;
   const st = appStatus(id);
   if (!st.can_uninstall) {
+    // Only packaged applications reach this point. Sending everyone to the
+    // Control Panel was advice that could not be followed: an application whose
+    // uninstall entry is gone does not appear there at all.
     showAlertModal(
-      "No se puede desinstalar",
-      "Esta aplicación está instalada en el sistema. Puedes desinstalarla desde el panel de control de Windows."
+      "La gestiona Windows",
+      "Esta aplicación está empaquetada y solo Windows puede quitarla. Ve a Configuración > Aplicaciones > Aplicaciones instaladas y desinstálala desde ahí."
     );
     return;
   }

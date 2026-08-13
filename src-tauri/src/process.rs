@@ -273,6 +273,48 @@ pub fn run_elevated_and_wait(
     }
 }
 
+/// Runs a program registered by Windows and waits for it, without a console
+/// window and without a shell in the middle.
+///
+/// The argument tail is handed to Windows verbatim because the registry stores
+/// it already quoted the way Windows expects. Routing it through `cmd /C` used
+/// to corrupt it: Rust escapes an inner quote as `\"`, which is C runtime
+/// syntax that the `cmd` parser does not understand, so every uninstaller whose
+/// path contains a space died instantly with "no se reconoce como un comando
+/// interno o externo".
+///
+/// Neither stream is piped, so the wait ends when the program itself ends: a
+/// setup that leaves a helper running in the background can no longer hold the
+/// call open by keeping an inherited pipe alive.
+pub fn run_hidden_and_wait(
+    executable: &Path,
+    arguments: &str,
+    working_directory: Option<&Path>,
+) -> std::io::Result<Option<i32>> {
+    let mut command = Command::new(executable);
+    background(&mut command);
+    let arguments = arguments.trim();
+    if !arguments.is_empty() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.raw_arg(arguments);
+        }
+        #[cfg(not(windows))]
+        command.args(arguments.split_whitespace());
+    }
+    // A bare program name such as `MsiExec.exe` has an empty parent.
+    if let Some(directory) = working_directory.filter(|path| path.is_dir()) {
+        command.current_dir(directory);
+    }
+    let status = command
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    Ok(status.code())
+}
+
 pub fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
     crate::logger::warn(
         "process",
@@ -320,11 +362,20 @@ pub fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
 /// Spawns the program straight away with CREATE_NO_WINDOW and captures its
 /// output. Cancellation terminates the whole process tree so child installers
 /// do not survive the parent.
+///
+/// Both pipes are drained by their own thread from the moment the process
+/// starts. A Windows pipe holds about 4 KB, and a program that fills it blocks
+/// on its next write: waiting for the process to exit before reading deadlocked
+/// WinSlimCenter for ever against anything talkative — the Start Menu shortcut
+/// sweep alone writes some 70 KB, which is why every uninstall that reached the
+/// cleanup stage hung with the spinner still turning.
 fn direct_hidden_output(
     program: &str,
     args: &[&str],
     cancel: Option<&AtomicBool>,
 ) -> std::io::Result<CapturedOutput> {
+    use std::io::Read;
+
     let mut command = Command::new(program);
     background(&mut command);
     let mut child = command
@@ -333,6 +384,28 @@ fn direct_hidden_output(
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()?;
+
+    let drain = |stream: Option<Box<dyn Read + Send>>| {
+        stream.map(|mut stream| {
+            std::thread::spawn(move || {
+                let mut buffer = Vec::new();
+                let _ = stream.read_to_end(&mut buffer);
+                buffer
+            })
+        })
+    };
+    let stdout_reader = drain(
+        child
+            .stdout
+            .take()
+            .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+    );
+    let stderr_reader = drain(
+        child
+            .stderr
+            .take()
+            .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
+    );
 
     let mut cancelled = false;
     loop {
@@ -347,9 +420,21 @@ fn direct_hidden_output(
         std::thread::sleep(Duration::from_millis(100));
     }
 
-    let output = child.wait_with_output()?;
+    let status = child.wait()?;
+    // The readers end on their own once the process closes its side of the pipe,
+    // which killing the tree also guarantees.
+    let collect = |reader: Option<std::thread::JoinHandle<Vec<u8>>>| {
+        reader
+            .map(|handle| handle.join().unwrap_or_default())
+            .unwrap_or_default()
+    };
+    let output = CapturedOutput {
+        stdout: collect(stdout_reader),
+        stderr: collect(stderr_reader),
+        code: status.code(),
+    };
     let mut stderr = output.stderr;
-    let mut code = output.status.code();
+    let mut code = output.code;
     if cancelled {
         code = Some(1223);
         stderr.extend_from_slice(b"Operation cancelled by the user");
@@ -373,6 +458,60 @@ fn direct_hidden_output(
         stderr,
         code,
     })
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use std::sync::mpsc;
+
+    #[test]
+    fn a_talkative_hidden_process_does_not_deadlock_on_its_own_output() {
+        // Far more than the ~4 KB a Windows pipe holds: this is the shape of the
+        // Start Menu sweep that used to freeze every uninstall.
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let captured = hidden_output(
+                "powershell.exe",
+                &[
+                    "-NoLogo",
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "1..4000 | ForEach-Object { 'x' * 40 }",
+                ],
+            );
+            let _ = sender.send(captured.map(|output| output.stdout.len()));
+        });
+
+        let captured = receiver
+            .recv_timeout(Duration::from_secs(120))
+            .expect("la captura se quedó bloqueada esperando a un proceso que no puede escribir")
+            .expect("no se pudo ejecutar powershell");
+        assert!(captured > 100_000, "solo se capturaron {captured} bytes");
+    }
+
+    #[test]
+    fn a_registered_uninstaller_whose_path_has_spaces_really_runs() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-uninstall-test-{}",
+            std::process::id()
+        ));
+        let directory = root.join("carpeta con espacios");
+        std::fs::create_dir_all(&directory).unwrap();
+        // A real executable, because Windows resolves batch files by other rules.
+        let uninstaller = directory.join("unins000.exe");
+        std::fs::copy(r"C:\Windows\System32\cmd.exe", &uninstaller).unwrap();
+
+        let code = run_hidden_and_wait(&uninstaller, "/C exit 7", uninstaller.parent()).unwrap();
+
+        assert_eq!(
+            code,
+            Some(7),
+            "el desinstalador registrado no llegó a ejecutarse"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 fn hidden_output_impl(

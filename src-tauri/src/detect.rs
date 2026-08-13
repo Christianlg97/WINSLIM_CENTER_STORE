@@ -664,10 +664,16 @@ pub fn build_statuses(
                     install_path: launch_target,
                     update_available: false,
                     latest_version: None,
-                    can_uninstall: entry
-                        .get("winget_id")
-                        .and_then(|value| value.as_str())
-                        .is_some(),
+                    // A desktop program listed in the Start Menu is held there by
+                    // a shortcut and its own folder, both of which the store can
+                    // remove. Refusing used to leave the only visible trace of a
+                    // half-finished uninstall with no way to clear it, and sent
+                    // the user to a Control Panel entry that no longer existed.
+                    can_uninstall: !is_packaged_start_app(&start_app.app_id)
+                        || entry
+                            .get("winget_id")
+                            .and_then(|value| value.as_str())
+                            .is_some(),
                     can_launch: true,
                     uninstall_command: None,
                     install_location: None,
@@ -732,6 +738,22 @@ fn installed_winget_version(entry: &serde_json::Value, output: &str) -> Option<S
 /// listing them after the file is gone — several of this machine's entries point
 /// into the recycle bin. Such an entry describes something Windows can no longer
 /// open, so it cannot be evidence that a program is installed.
+/// `true` when the Start Menu entry belongs to a packaged application, which
+/// only Windows can remove.
+///
+/// Those are identified by an AUMID — `Package_publisher!App`, or a bare
+/// identifier such as `com.electron.notion`. An ordinary desktop program is
+/// listed under the path of its executable instead, either absolute or relative
+/// to a known folder (`{6D809377-…}\vendor\app.exe`), so what keeps it in the
+/// Start Menu is a shortcut: a leftover the store can clean up like any other.
+pub fn is_packaged_start_app(app_id: &str) -> bool {
+    let trimmed = app_id.trim();
+    let desktop_entry = (trimmed.starts_with('{')
+        || std::path::Path::new(trimmed).is_absolute())
+        && trimmed.to_ascii_lowercase().ends_with(".exe");
+    !desktop_entry
+}
+
 fn start_app_still_exists(app: &StartApp) -> bool {
     let path = std::path::Path::new(app.app_id.trim());
     !path.is_absolute() || path.is_file()
@@ -880,6 +902,18 @@ mod tests {
         ];
         let chosen = match_system_app("Example App", &[], &system).unwrap();
         assert_eq!(chosen.uninstall_string.as_deref(), Some("unins000.exe"));
+    }
+
+    #[test]
+    fn a_desktop_program_left_in_the_start_menu_can_still_be_cleaned_up() {
+        // What Get-StartApps reports for an ordinary program: a path under a
+        // known folder, not the AUMID of something Windows owns.
+        assert!(!is_packaged_start_app(
+            r"{6D809377-6AF0-444B-8957-A3773F02200E}\LGHUB\system_tray\lghub_system_tray.exe"
+        ));
+        assert!(is_packaged_start_app(
+            "Microsoft.WindowsStore_8wekyb3d8bbwe!App"
+        ));
     }
 
     #[test]

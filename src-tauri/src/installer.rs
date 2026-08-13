@@ -1301,6 +1301,107 @@ fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), Stri
 /// Remove download and staging artifacts left by a cancelled or failed
 /// installation. Successful system installers and portable apps already clean
 /// these paths in `do_install`.
+/// Shuts down what the application is still running from inside the folder that
+/// is about to disappear, and reports how many pieces were retired.
+///
+/// A real setup closes its own program before removing it. The folder fallback
+/// has no setup to do that, so without this step the deletion dies on the one
+/// file the program still holds open and the interface shows a raw "the file is
+/// in use" error about something the store could perfectly well have closed.
+/// Only processes whose executable lives inside the folder, and services whose
+/// registered binary does, are touched: nothing outside the application being
+/// removed can match.
+#[cfg(windows)]
+fn retire_running_components(install_dir: &Path) -> usize {
+    let script = r#"$ErrorActionPreference='SilentlyContinue';
+Get-CimInstance Win32_Service | ForEach-Object { [Console]::Out.WriteLine('S|' + $_.Name + '|' + $_.PathName) };
+Get-CimInstance Win32_Process | ForEach-Object { [Console]::Out.WriteLine('P|' + $_.ProcessId + '|' + $_.ExecutablePath) };"#;
+    let Ok(output) = crate::process::hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ],
+    ) else {
+        return 0;
+    };
+
+    let root = format!("{}\\", normalized_path_key(install_dir));
+    let mut services = Vec::new();
+    let mut processes = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let mut fields = line.splitn(3, '|');
+        let (Some(kind), Some(id), Some(location)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let location = location.trim();
+        if location.is_empty() {
+            continue;
+        }
+        // A service registers a whole command line, arguments included; only the
+        // program it starts says where the service lives.
+        let program = split_registered_command(location)
+            .map(|(executable, _)| executable)
+            .unwrap_or_else(|_| PathBuf::from(location));
+        if !normalized_path_key(&program).starts_with(&root) {
+            continue;
+        }
+        match kind {
+            "S" => services.push(id.trim().to_string()),
+            "P" => {
+                if let Ok(pid) = id.trim().parse::<u32>() {
+                    processes.push(pid);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut retired = 0;
+    // Services first: one of them restarting the program is exactly what would
+    // put a file back in use right after it was closed.
+    for name in services {
+        crate::logger::info(
+            "uninstall-fallback",
+            format!("Deteniendo el servicio {name}, que se ejecuta desde la carpeta a eliminar"),
+        );
+        let _ = crate::process::hidden_output("sc.exe", &["stop", name.as_str()]);
+        match crate::process::hidden_output("sc.exe", &["delete", name.as_str()]) {
+            Ok(result) if result.success() => retired += 1,
+            outcome => crate::logger::warn(
+                "uninstall-fallback",
+                format!(
+                    "No se pudo eliminar el servicio {name}: {}",
+                    outcome
+                        .map(|result| String::from_utf8_lossy(&result.stderr).trim().to_string())
+                        .unwrap_or_else(|error| error.to_string())
+                ),
+            ),
+        }
+    }
+    for pid in processes {
+        crate::logger::info(
+            "uninstall-fallback",
+            format!("Cerrando el proceso {pid}, que se ejecuta desde la carpeta a eliminar"),
+        );
+        if crate::process::terminate_process_tree(pid).is_ok() {
+            retired += 1;
+        }
+    }
+    retired
+}
+
+#[cfg(not(windows))]
+fn retire_running_components(_install_dir: &Path) -> usize {
+    0
+}
+
 fn remove_path_robust(target: &Path) -> Result<(), String> {
     if !target.exists() {
         return Ok(());
@@ -1337,16 +1438,47 @@ fn remove_path_robust(target: &Path) -> Result<(), String> {
             return Ok(());
         }
 
+        // Only after the straightforward attempt has failed, so the ordinary
+        // cleanups that always succeed never pay for the search.
+        let mut settling = std::time::Duration::from_millis(150);
+        if attempt == 0 && target.is_dir() {
+            let retired = retire_running_components(target);
+            if retired > 0 {
+                crate::logger::info(
+                    "uninstall-fallback",
+                    format!(
+                        "Se cerraron {retired} componentes que mantenían archivos abiertos en {}",
+                        target.display()
+                    ),
+                );
+                // Stopping a service is a request, not an instant event: Windows
+                // still has to let the process go before its files are free.
+                settling = std::time::Duration::from_secs(2);
+            }
+        }
+
         if attempt < 3 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(settling);
         }
     }
 
-    if target.is_dir() {
-        fs::remove_dir_all(target).map_err(|e| e.to_string())
+    let outcome = if target.is_dir() {
+        fs::remove_dir_all(target)
     } else {
-        fs::remove_file(target).map_err(|e| e.to_string())
-    }
+        fs::remove_file(target)
+    };
+    // Windows reports this as a bare "the process cannot access the file",
+    // which told the user nothing about what to do next.
+    outcome.map_err(|error| {
+        if error.raw_os_error() == Some(32) {
+            format!(
+                "Windows no dejó eliminar {} porque algo lo tiene abierto. Cierra el programa (y sus iconos junto al reloj) y vuelve a intentarlo.",
+                target.display()
+            )
+        } else {
+            format!("No se pudo eliminar {}: {error}", target.display())
+        }
+    })
 }
 
 pub fn cleanup_failed_install(
@@ -1557,36 +1689,41 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
             effective.push_str(" /qn /norestart");
         }
     }
-    crate::logger::info(
-        "uninstall-process",
-        format!("Ejecutando comando registrado: msi={is_msi}, comando={effective}"),
-    );
-
-    let mut command = std::process::Command::new("cmd");
-    crate::process::background(&mut command);
-    let output = command
-        .args(["/C", effective.as_str()])
-        .stdin(std::process::Stdio::null())
-        .output()
-        .map_err(|e| format!("No se pudo ejecutar el comando de desinstalación: {e}"))?;
-    let status = output.status;
+    // The command is split and launched directly instead of being handed to
+    // `cmd /C`: the shell mangles the quotes Windows registered around paths
+    // with spaces, and every uninstaller behind one of those was failing before
+    // it ever started.
+    let (executable, arguments) = split_registered_command(&effective)?;
     crate::logger::info(
         "uninstall-process",
         format!(
-            "Comando registrado finalizado: código={:?}, stdout={}, stderr={}",
-            status.code(),
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim()
+            "Ejecutando comando registrado: msi={is_msi}, ejecutable={}, argumentos={arguments}",
+            executable.display()
         ),
     );
 
+    let code = match crate::process::run_hidden_and_wait(&executable, &arguments, executable.parent())
+    {
+        Ok(code) => code,
+        // Windows refuses to even start a per-machine uninstaller from a process
+        // that is not elevated. The retry below already knows how to ask for UAC,
+        // so the refusal is carried as the exit code it corresponds to.
+        Err(error) if error.raw_os_error() == Some(740) => Some(740),
+        Err(error) => {
+            return Err(format!(
+                "No se pudo ejecutar el desinstalador '{}': {error}",
+                executable.display()
+            ))
+        }
+    };
+    crate::logger::info(
+        "uninstall-process",
+        format!("Comando registrado finalizado: código={code:?}"),
+    );
+
     // 1605 / 1614: the product is already gone. 1641 / 3010: a reboot is pending.
-    let accepted_exit = status.success()
-        || (is_msi
-            && matches!(
-                status.code(),
-                Some(1605) | Some(1614) | Some(1641) | Some(3010)
-            ));
+    let accepted_exit = code == Some(0)
+        || (is_msi && matches!(code, Some(1605) | Some(1614) | Some(1641) | Some(3010)));
     if accepted_exit {
         return Ok(());
     }
@@ -1595,15 +1732,11 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
     // installer side already asks for UAC on ERROR_ELEVATION_REQUIRED, so the
     // uninstaller does the same instead of dropping straight to the folder
     // fallback, which is far more destructive.
-    if exit_code_requires_elevation(status.code()) {
+    if exit_code_requires_elevation(code) {
         crate::logger::warn(
             "uninstall-process",
-            format!(
-                "El desinstalador requiere elevación (código {:?}); reintentando con UAC",
-                status.code()
-            ),
+            format!("El desinstalador requiere elevación (código {code:?}); reintentando con UAC"),
         );
-        let (executable, arguments) = split_registered_command(&effective)?;
         let elevated_code = crate::process::run_elevated_and_wait(
             &executable,
             &arguments,
@@ -1628,9 +1761,7 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
 
     Err(format!(
         "El desinstalador terminó con el código {}",
-        status
-            .code()
-            .map(|code| code.to_string())
+        code.map(|code| code.to_string())
             .unwrap_or_else(|| "desconocido".into())
     ))
 }
@@ -1640,6 +1771,24 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
 /// `AppStatus::install_path` doubles as the launch target, so for packaged apps
 /// it carries a shell moniker (`shell:AppsFolder\...`) instead of a directory.
 /// Every routine that touches the disk has to reject those.
+/// `true` only for the shell monikers that really belong to a packaged
+/// application: `shell:AppsFolder\Package_publisher!App`.
+///
+/// The Start Menu lists ordinary programs under the same moniker with a path
+/// instead (`shell:AppsFolder\{KnownFolder}\vendor\app.exe`), and those are as
+/// removable as any other installed program.
+pub fn is_packaged_app_target(path: &Path) -> bool {
+    let value = path.to_string_lossy();
+    let trimmed = value.trim();
+    if !trimmed.to_ascii_lowercase().starts_with("shell:") {
+        return false;
+    }
+    // The identifier is everything after `shell:AppsFolder\`. A desktop program
+    // spells it as a path under a known folder; a packaged one as an AUMID.
+    let identifier = trimmed.split_once('\\').map(|(_, rest)| rest).unwrap_or("");
+    crate::detect::is_packaged_start_app(identifier)
+}
+
 pub fn is_filesystem_target(path: &Path) -> bool {
     let value = path.to_string_lossy();
     let trimmed = value.trim();
@@ -1848,16 +1997,27 @@ pub fn uninstall_from_install_path(
     install_path: &Path,
     identity: &crate::residue::AppIdentity,
 ) -> Result<PathBuf, String> {
-    if !install_path.as_os_str().is_empty() && !is_filesystem_target(install_path) {
+    // `install_path` doubles as the launch target, so an application listed in
+    // the Start Menu arrives here as a `shell:AppsFolder\…` moniker. Only an
+    // AUMID belongs to a packaged application Windows owns; the rest are
+    // ordinary programs whose folder simply still has to be found, and treating
+    // those as untouchable was what left a half-removed program on screen with
+    // no way to finish the job.
+    if is_packaged_app_target(install_path) {
         return Err(format!(
             "'{}' es una aplicación empaquetada de Windows: solo puede desinstalarse desde WinGet o desde Configuración de Windows.",
             install_path.display()
         ));
     }
+    let indexed = if is_filesystem_target(install_path) {
+        install_path
+    } else {
+        Path::new("")
+    };
     // Resolving and validating happens before anything is touched: running an
     // `unins*.exe` found inside a shared directory is just as wrong as deleting
     // that directory.
-    let install_dir = crate::residue::removable_install_dir(install_path, identity)
+    let install_dir = crate::residue::removable_install_dir(indexed, identity)
         .map_err(|reasons| reasons.join(" "))?;
 
     if let Some(uninstaller) = find_typical_uninstaller(&install_dir) {
@@ -1892,6 +2052,19 @@ pub fn uninstall_from_install_path(
         return Ok(install_dir);
     }
 
+    // A program Windows still has a working uninstaller for is not ours to
+    // delete. Its setup also owns services, drivers and registry state that
+    // deleting files leaves orphaned and unremovable, which is exactly how a
+    // failed uninstall of a device manager ended up as a half-empty folder with
+    // its background service still running.
+    if let Some(registered) = identity.registered_uninstaller() {
+        return Err(format!(
+            "'{}' tiene su propio desinstalador ({}) y no llegó a completarse. No se borra la carpeta: hacerlo dejaría servicios y controladores instalados que ya nadie podría quitar.",
+            install_dir.display(),
+            registered.display()
+        ));
+    }
+
     crate::logger::warn(
         "uninstall-fallback",
         format!(
@@ -1899,12 +2072,9 @@ pub fn uninstall_from_install_path(
             install_dir.display()
         ),
     );
-    remove_path_robust(&install_dir).map_err(|err| {
-        format!(
-            "No se encontró desinstalador y tampoco se pudo borrar {}: {err}",
-            install_dir.display()
-        )
-    })?;
+    // The message is already written for the person reading it: repeating the
+    // internal "no se encontró desinstalador" here only buried it.
+    remove_path_robust(&install_dir)?;
     // Deleting the files is not enough: the uninstall entry, the `App Paths`
     // alias, the shortcut and the PATH entry all keep telling the system — and
     // the store, which reads those very sources — that the program is still
@@ -1968,8 +2138,10 @@ $prefix=$targetDir.TrimEnd('\')+'\';
 $shell=New-Object -ComObject WScript.Shell;
 $removed=0;
 $failures=@();
+$parents=@{{}};
 Get-ChildItem -LiteralPath @({roots_literal}) -Filter '*.lnk' -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {{
   $link=$_.FullName;
+  $holder=$_.DirectoryName;
   $resolved=$null;
   try {{
     $shortcut=$shell.CreateShortcut($link);
@@ -1981,9 +2153,22 @@ Get-ChildItem -LiteralPath @({roots_literal}) -Filter '*.lnk' -File -Recurse -Er
   if($null -ne $resolved){{
     $belongs=($resolved -ieq $target) -or $resolved.StartsWith($prefix,[StringComparison]::OrdinalIgnoreCase);
     if($belongs){{
-      try {{ Remove-Item -LiteralPath $link -Force -ErrorAction Stop; $removed++ }}
+      try {{ Remove-Item -LiteralPath $link -Force -ErrorAction Stop; $removed++; $parents[$holder]=$true }}
       catch {{ $failures += ($link + ': ' + $_.Exception.Message) }}
     }}
+  }}
+}};
+# An application published under a folder of its own leaves that folder behind
+# once its shortcut is gone, and an empty entry in the Start Menu is one more
+# leftover. The roots themselves — and the Programs folder Windows owns — are
+# never candidates, however empty they happen to be.
+$roots=@({roots_literal}) | ForEach-Object {{ $_.TrimEnd('\') }};
+foreach($holder in $parents.Keys){{
+  $clean=$holder.TrimEnd('\');
+  if($roots -icontains $clean){{ continue }};
+  if([IO.Path]::GetFileName($clean) -ieq 'Programs'){{ continue }};
+  if($null -eq (Get-ChildItem -LiteralPath $clean -Force -ErrorAction SilentlyContinue)){{
+    try {{ Remove-Item -LiteralPath $clean -Force -ErrorAction Stop }} catch {{}}
   }}
 }};
 if($failures.Count -gt 0){{[Console]::Error.WriteLine(($failures -join [Environment]::NewLine)); exit 2}};
@@ -2670,6 +2855,38 @@ mod tests {
         assert!(!is_installer_artifact(Path::new("winslim-terminal.exe")));
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn a_folder_held_open_by_its_own_program_is_still_removed() {
+        let directory =
+            std::env::temp_dir().join(format!("winslimcenter-locked-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&directory);
+        fs::create_dir_all(&directory).unwrap();
+        let program = directory.join("ejemplo.exe");
+        fs::copy(r"C:\Windows\System32\cmd.exe", &program).unwrap();
+
+        let mut child = std::process::Command::new(&program)
+            .args(["/C", "ping -n 30 127.0.0.1"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // Windows will not delete the image of a running program: this is the
+        // sharing violation the user used to be shown raw.
+        assert!(
+            fs::remove_dir_all(&directory).is_err(),
+            "un ejecutable en marcha debería impedir el borrado"
+        );
+
+        remove_path_robust(&directory).unwrap();
+
+        assert!(!directory.exists(), "la carpeta debería haberse eliminado");
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
     #[test]
     fn a_zip_that_only_wraps_a_setup_is_installed_through_it() {
         let test_dir =
@@ -2847,6 +3064,12 @@ mod tests {
         // Notion and other packaged apps are identified like this.
         let packaged = Path::new(r"shell:AppsFolder\com.electron.notion");
         assert!(!is_filesystem_target(packaged));
+        assert!(is_packaged_app_target(packaged));
+        // A desktop program the Start Menu lists by path is not one of them: it
+        // is held there by a shortcut the store has to be able to clear.
+        assert!(!is_packaged_app_target(Path::new(
+            r"shell:AppsFolder\{6D809377-6AF0-444B-8957-A3773F02200E}\LGHUB\system_tray\lghub_system_tray.exe"
+        )));
         // Cleaning shortcuts must be a no-op rather than a PowerShell exception.
         assert_eq!(cleanup_shortcuts_for_install_target(packaged), Ok(0));
         // And the folder fallback must refuse it instead of guessing a path.

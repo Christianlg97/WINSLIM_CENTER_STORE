@@ -5,6 +5,7 @@ mod logger;
 mod paths;
 mod process;
 mod residue;
+mod start_menu;
 mod store;
 
 use detect::AppStatus;
@@ -19,6 +20,14 @@ use std::sync::Arc;
 use store::{InstalledInfo, Settings};
 use tauri::async_runtime;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+/// The Start Menu folder the store publishes itself under. Its own folder, and
+/// not a loose shortcut, because that is the shape Open-Shell lists.
+const CENTER_START_MENU_FOLDER: &str = "WinSlimCenter";
+
+/// The one catalog application the store also publishes in the Start Menu: it
+/// ships the terminal, so it is the only one it is entitled to advertise.
+const TERMINAL_APP_ID: &str = "winslim_terminal";
 
 pub struct AppState {
     pub catalog_path: Mutex<PathBuf>,
@@ -578,8 +587,12 @@ async fn finish_uninstall(
     Ok(if attempted.is_empty() {
         format!("{app_name} se desinstaló correctamente del equipo.")
     } else {
+        // Reached both when the program was never here and when an earlier
+        // uninstall already removed it and only its marks survived. Saying "no
+        // estaba instalada" was wrong in the second case, which is the one the
+        // user sees right after uninstalling something.
         format!(
-            "{app_name} no estaba instalada en el equipo. Se ha limpiado el registro que la daba por instalada, así que vuelve a aparecer como disponible para instalar."
+            "Ya no queda nada de {app_name} en el equipo. Solo seguían ahí las marcas que la daban por instalada y se han limpiado, así que vuelve a aparecer como disponible para instalar."
         )
     })
 }
@@ -1426,6 +1439,38 @@ async fn install_app(
                     );
                 }
 
+                // The terminal the store ships gets the same Start Menu folder
+                // the store gives itself, so Open-Shell indexes it and finds it
+                // by name. Republished on every install because an update can
+                // leave the executable somewhere new. No other application is
+                // advertised this way: their own installers own that decision.
+                if app_id_for_task == TERMINAL_APP_ID {
+                    let published = app_state
+                        .installed
+                        .lock()
+                        .get(&app_id_for_task)
+                        .and_then(|info| info.launch_path.clone())
+                        .map(PathBuf::from);
+                    match published {
+                        Some(executable) => {
+                            let name = app_entry_for_task
+                                .get("name")
+                                .and_then(|value| value.as_str())
+                                .unwrap_or(TERMINAL_APP_ID)
+                                .to_string();
+                            std::thread::spawn(move || {
+                                start_menu::republish(&name, &name, &executable);
+                            });
+                        }
+                        None => logger::warn(
+                            "start-menu",
+                            format!(
+                                "{app_id_for_task} quedó instalada sin ejecutable resuelto; no se publica en el menú Inicio"
+                            ),
+                        ),
+                    }
+                }
+
                 // Only a fresh install opens the app. Doing it after an update
                 // meant every "Actualizar" press reopened a program the user had
                 // not asked to launch.
@@ -1596,6 +1641,20 @@ pub fn run() {
             );
             logger::info("startup", format!("Catálogo: {}", catalog_path.display()));
             logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::app_dir().display()));
+
+            // Open-Shell only finds what has a shortcut under `shell:programs`,
+            // so the store leaves one there the first time it runs. It goes on a
+            // thread of its own because writing it costs a PowerShell process,
+            // and the first window must not wait for that.
+            if let Ok(executable) = std::env::current_exe() {
+                std::thread::spawn(move || {
+                    start_menu::publish_if_missing(
+                        CENTER_START_MENU_FOLDER,
+                        CENTER_START_MENU_FOLDER,
+                        &executable,
+                    );
+                });
+            }
             app.manage(AppState {
                 catalog_path: Mutex::new(catalog_path),
                 catalog: Mutex::new(catalog),

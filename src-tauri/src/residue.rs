@@ -79,7 +79,7 @@ impl AppIdentity {
     /// application, when that command really is a program on disk. `MsiExec.exe`
     /// and friends live in the Windows directory and say nothing about where the
     /// application is.
-    fn registered_uninstaller(&self) -> Option<PathBuf> {
+    pub fn registered_uninstaller(&self) -> Option<PathBuf> {
         let (executable, _) =
             installer::split_registered_command(self.uninstall_command.as_deref()?).ok()?;
         executable.is_file().then_some(executable)
