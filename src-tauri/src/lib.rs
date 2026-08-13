@@ -976,7 +976,10 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
     Ok(statuses)
 }
 
-const GITHUB_LATEST_URL: &str = "https://github.com/tiranosaurio73/WINSLIM_CENTER/releases/download/latest/WINSLIMCENTER_latest.zip";
+/// Build published by the store's own repository, under the rolling `latest`
+/// tag. The archive holds `WinSlimCenter.exe` at its root, which is what the
+/// update script below expects to copy over the installation directory.
+const GITHUB_LATEST_URL: &str = "https://github.com/Christianlg97/WINSLIM_CENTER_STORE/releases/download/latest/WINSLIMCENTER_latest.zip";
 
 #[tauri::command]
 async fn update_center_app(app: AppHandle) -> Result<String, String> {
