@@ -689,18 +689,20 @@ function renderContent() {
   if (!apps.length) {
     if (state.section === "updates") {
       html += `
-        <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
-          <div class="empty-updates-hero">
-            <div class="empty-updates-badge-container">
-              <div class="empty-updates-logo-wrapper">
-                <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+        <div class="empty-updates-wrap">
+          <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
+            <div class="empty-updates-hero">
+              <div class="empty-updates-badge-container">
+                <div class="empty-updates-logo-wrapper">
+                  <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+                </div>
+                <div class="empty-updates-check-badge">✓</div>
               </div>
-              <div class="empty-updates-check-badge">✓</div>
-            </div>
-            <h2>Todo tu software está al día</h2>
-            <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
-            <div class="empty-updates-status">
-              <span class="pulse-dot"></span> Todas las apps vigentes
+              <h2>Todo tu software está al día</h2>
+              <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
+              <div class="empty-updates-status">
+                <span class="pulse-dot"></span> Todas las apps vigentes
+              </div>
             </div>
           </div>
         </div>`;

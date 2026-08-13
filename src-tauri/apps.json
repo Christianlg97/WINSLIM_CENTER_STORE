@@ -1252,7 +1252,7 @@
     "category": "Desarrollo",
     "section": "Desarrollo",
     "source_type": "winget",
-    "icon_url": "https://huggingface.co/moonshotai/Kimi-K2.5/resolve/main/figures/kimi-logo.png",
+    "icon_url": "https://cdn.simpleicons.org/kimi/white",
     "icon_background": "#000000",
     "icon_padding": 6,
     "accent_color": "#8b5cf6",

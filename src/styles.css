@@ -362,6 +362,16 @@ textarea {
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
+/* Fills the height left under the page title so the card lands in the optical
+   centre of the view. Without it the card sat at the top with a large void
+   underneath, because #content is a plain scrolling block. */
+.empty-updates-wrap {
+  min-height: calc(100% - 48px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .empty-updates-card {
   position: relative;
   display: flex;
@@ -371,10 +381,10 @@ textarea {
   text-align: center;
   max-width: 540px;
   width: 100%;
-  margin: 40px auto;
+  margin: 0 auto;
   padding: 36px 28px;
   border-radius: 20px;
-  background: linear-gradient(145deg, #22252a 0%, #1a1c20 60%, #151619 100%);
+  background: linear-gradient(145deg, var(--bg-card) 0%, var(--bg-app) 60%, var(--bg-sidebar) 100%);
   border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border) 75%);
   box-shadow: var(--shadow);
   overflow: hidden;
@@ -1461,9 +1471,12 @@ textarea {
   display: grid;
   place-items: center;
   padding: 24px;
-  background: rgba(8, 10, 16, 0.84);
-  backdrop-filter: blur(16px) saturate(180%);
-  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  /* Neutral black like .modal-backdrop. The previous value was blue-tinted and
+     `saturate(180%)` amplified every colour behind the blur, which is why the
+     loading screen looked like a different application than the store. */
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   animation: syncModalFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -1485,8 +1498,11 @@ textarea {
   position: relative;
   width: min(460px, calc(100vw - 40px));
   padding: 32px 28px 28px;
-  background: linear-gradient(145deg, rgba(28, 30, 42, 0.94) 0%, rgba(18, 20, 29, 0.96) 100%);
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  /* Same neutral greys as the store cards: --bg-card over --bg-app. Keeps the
+     subtle depth of the original gradient without introducing a navy tint that
+     exists nowhere else in the interface. */
+  background: linear-gradient(145deg, var(--bg-card) 0%, var(--bg-app) 100%);
+  border: 1px solid var(--border);
   border-radius: 24px;
   box-shadow: 
     0 24px 60px rgba(0, 0, 0, 0.7),
@@ -1532,10 +1548,17 @@ textarea {
 .sync-logo-wrapper {
   width: 68px;
   height: 68px;
-  border-radius: 20px;
-  background: rgba(15, 18, 26, 0.9);
-  border: 1px solid rgba(255, 255, 255, 0.14);
-  padding: 10px;
+  /* Concentric with the ring. As a 20px-radius square its corners reached 39.8px
+     from the centre against the ring's 42px inner edge -- a 2.2px gap at the
+     diagonals versus 8px at the sides, which is what looked cramped and uneven.
+     A circle keeps that clearance at a uniform 8px all the way round. */
+  border-radius: 50%;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  /* The logo asset is cropped tight (the glyph fills 81.7% of its canvas), so
+     this padding sizes the mark: 68px - 2px border - 2x8px leaves a 50px image
+     box, drawing the glyph at ~41px, about 60% of the badge. */
+  padding: 8px;
   display: flex;
   align-items: center;
   justify-content: center;
