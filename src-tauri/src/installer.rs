@@ -1129,7 +1129,14 @@ pub async fn do_install(
         } else {
             extract_dir.clone()
         };
-        swap_into_install_path(&src, &install_path)?;
+        match wrapped_installer(app, &src)? {
+            Some(installer) => {
+                on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
+                run_installer_in_background(app, &installer, flags)?;
+                used_system_installer = true;
+            }
+            None => swap_into_install_path(&src, &install_path)?,
+        }
     } else {
         let ext = dest_file
             .extension()
@@ -2344,6 +2351,81 @@ fn is_installer_artifact(path: &Path) -> bool {
         || name.ends_with("updater.exe")
 }
 
+/// The setup program an extracted archive only existed to carry, if any.
+///
+/// Several packages are published zipped because the hosting service refuses
+/// `.exe` uploads. Copying such an archive into the portable applications folder
+/// would leave a setup that never runs, so the installer inside is executed just
+/// like a directly downloaded one.
+///
+/// `installer_in_archive` in the catalog states that the archive is a wrapper:
+/// `true` picks the executable found inside, a string names it explicitly. An
+/// archive that is only a lone recognizable setup is detected without the field.
+/// Declaring the field and shipping no installer is an error, because installing
+/// the leftovers as if they were the application is worse than failing.
+fn wrapped_installer(app: &Value, extracted: &Path) -> Result<Option<PathBuf>, String> {
+    let declared = app.get("installer_in_archive");
+    let declared_name = declared
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(relative) = declared_name {
+        let candidate = extracted.join(relative);
+        if candidate.is_file() {
+            return Ok(Some(candidate));
+        }
+        crate::logger::warn(
+            "installer",
+            format!(
+                "El archivo comprimido no contiene {relative}; buscando el instalador dentro de {}",
+                extracted.display()
+            ),
+        );
+    }
+    let wrapper_declared = declared_name.is_some() || declared.and_then(Value::as_bool) == Some(true);
+
+    let entries: Vec<PathBuf> = fs::read_dir(extracted)
+        .map_err(|error| format!("No se pudo leer el paquete extraído: {error}"))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .collect();
+    let mut executables = entries.iter().filter(|path| {
+        path.is_file()
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .map(|value| value.eq_ignore_ascii_case("exe") || value.eq_ignore_ascii_case("msi"))
+                .unwrap_or(false)
+    });
+    // A single executable is what a wrapper contains; several of them belong to a
+    // portable application that happens to ship its own tools.
+    let installer = executables
+        .next()
+        .filter(|_| executables.next().is_none())
+        .cloned();
+    // Without the catalog saying so, only an archive holding nothing but that one
+    // setup counts: a portable application shipping folders beside its launcher
+    // must keep being extracted.
+    let looks_like_wrapper = |installer: &Path| {
+        !entries.iter().any(|path| path.is_dir())
+            && (is_installer_artifact(installer)
+                || detect_installer_family(installer) != InstallerFamily::Unknown)
+    };
+
+    match installer {
+        Some(installer) if wrapper_declared || looks_like_wrapper(&installer) => {
+            Ok(Some(installer))
+        }
+        _ if wrapper_declared => Err(format!(
+            "El archivo descargado no contiene el instalador esperado{}",
+            declared_name
+                .map(|relative| format!(" ({relative})"))
+                .unwrap_or_default()
+        )),
+        _ => Ok(None),
+    }
+}
+
 pub fn resolve_launchable_path(
     install_path: &Path,
     preferred_executable: Option<&str>,
@@ -2586,6 +2668,50 @@ mod tests {
         assert!(is_installer_artifact(Path::new("package.msi")));
         assert!(!is_installer_artifact(Path::new("opencode.exe")));
         assert!(!is_installer_artifact(Path::new("winslim-terminal.exe")));
+    }
+
+    #[test]
+    fn a_zip_that_only_wraps_a_setup_is_installed_through_it() {
+        let test_dir =
+            std::env::temp_dir().join(format!("winslimcenter-wrapper-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+
+        // Recognized by its name, without the catalog saying anything.
+        let setup = test_dir.join("LosslessScaling_3.2.2_Setup.exe");
+        fs::write(&setup, []).unwrap();
+        assert_eq!(wrapped_installer(&json!({}), &test_dir).unwrap(), Some(setup));
+
+        // A neutrally named setup needs the catalog to declare the wrapper.
+        let renamed = test_dir.join("LosslessScaling_3.2.2_Setup.exe");
+        let neutral = test_dir.join("VMware-Workstation-Full-26H1.exe");
+        fs::rename(&renamed, &neutral).unwrap();
+        assert_eq!(wrapped_installer(&json!({}), &test_dir).unwrap(), None);
+        assert_eq!(
+            wrapped_installer(&json!({ "installer_in_archive": true }), &test_dir).unwrap(),
+            Some(neutral)
+        );
+
+        // A portable application keeps being extracted instead of executed.
+        fs::create_dir_all(test_dir.join("data")).unwrap();
+        assert_eq!(wrapped_installer(&json!({}), &test_dir).unwrap(), None);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn a_declared_wrapper_without_an_installer_fails_instead_of_installing_leftovers() {
+        let test_dir = std::env::temp_dir()
+            .join(format!("winslimcenter-wrapper-empty-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&test_dir);
+        fs::create_dir_all(&test_dir).unwrap();
+        fs::write(test_dir.join("readme.txt"), []).unwrap();
+
+        let error = wrapped_installer(&json!({ "installer_in_archive": "setup.exe" }), &test_dir)
+            .unwrap_err();
+        assert!(error.contains("setup.exe"), "{error}");
+
+        fs::remove_dir_all(test_dir).unwrap();
     }
 
     #[test]

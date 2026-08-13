@@ -3591,8 +3591,9 @@
     "category": "Virtualización",
     "section": "Utilidades",
     "source_type": "wget",
-    "download_url": "https://download2283.mediafire.com/a2yqh8yd9j4gBrYPClByhNUd01zWiJ4RJrbaSGuPeNHVMxC4wswRRoaZ_od5NQrKugXDefCxz0QhMp17M4Ebwk_jnrKhGo7tXErtyESU8lGpPPZ9HMu8dWlzDCUhRxFwO6MWggCD_YzGuoLodwIVG0OM18V8Qv2ozlgQL6Tl5omw4A/q8owl7ye260vftg/VMware-Workstation-Full-26H1.exe",
-    "download_filename": "VMware-Workstation-Full-26H1.exe",
+    "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/VMware-Workstation-Full-26H1.zip",
+    "download_filename": "VMware-Workstation-Full-26H1.zip",
+    "installer_in_archive": true,
     "icon_url": "https://cdn.simpleicons.org/vmware/607078",
     "icon_background": "#ffffff",
     "icon_padding": 7,
@@ -3625,13 +3626,15 @@
   {
     "id": "aseprite",
     "name": "Aseprite",
-    "description": "Editor profesional de pixel art y animación. El instalador oficial firmado se obtiene tras comprarlo en uno de sus distribuidores autorizados.",
+    "description": "Editor profesional de pixel art y animación.",
     "version": "latest",
     "author": "Igara Studio",
     "category": "Imagen y diseño",
     "section": "Multimedia",
-    "source_type": "web",
-    "web_url": "https://www.aseprite.org/download/",
+    "source_type": "wget",
+    "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/Aseprite-1.3.18.2-Setup.zip",
+    "download_filename": "Aseprite-1.3.18.2-Setup.zip",
+    "installer_in_archive": true,
     "icon_url": "https://cdn.simpleicons.org/aseprite/7D929E",
     "icon_background": "#ffffff",
     "icon_padding": 6,
@@ -3639,6 +3642,7 @@
     "detect_names": [
       "Aseprite"
     ],
+    "launch_executable": "Aseprite.exe",
     "featured": false
   },
   {
@@ -3769,13 +3773,14 @@
     "section": "Juegos",
     "featured": false,
     "source_type": "wget",
-    "download_url": "https://download1320.mediafire.com/jrwulunln3tg4IXPzzhRCVp3gU01SIn-_GHJL8io18A-aitfE1sbVnOu8njjfHYZlyQ3G29959lRPtTKtJvuMElLGTJIeBFNtMwZAvZjRHWSki2bz933WMEOFNt4iA60BAOZOcVvTFO26pWKmryRPBFZxHbGTxMquesD7rw9jixOcw/cwxu3qg50s92z7m/LosslessScaling_3.2.2_Setup.exe",
+    "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/LosslessScaling_3.2.2_Setup.zip",
     "icon_url": "https://cdn.cloudflare.steamstatic.com/steam/apps/993090/logo.png",
     "detect_names": [
       "Lossless Scaling",
       "LosslessScaling"
     ],
-    "download_filename": "LosslessScaling_3.2.2_Setup.exe",
+    "download_filename": "LosslessScaling_3.2.2_Setup.zip",
+    "installer_in_archive": true,
     "icon_background": "#141824",
     "icon_padding": 2,
     "accent_color": "#f59e0b",

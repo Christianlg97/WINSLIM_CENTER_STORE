@@ -49,7 +49,7 @@ Combina la seguridad y velocidad de **Rust** en el backend con la flexibilidad d
 
 ### 📦 Gestión Multiorigen de Aplicaciones
 - **WinGet Engine (`winget.exe`)**: Integración completa con Windows Package Manager para instalaciones y actualizaciones silenciosas.
-- **Descargas Directas (`wget`)**: Descarga e instalación asistida de ejecutables (`.exe`) e instaladores MSI (`.msi`).
+- **Descargas Directas (`wget`)**: Descarga e instalación asistida de ejecutables (`.exe`) e instaladores MSI (`.msi`). Cuando el instalador viaja comprimido, `installer_in_archive` indica que el `.zip` es solo un envoltorio y se ejecuta el setup que contiene en lugar de tratarlo como portable.
 - **GitHub Release Sync**: Resolución dinámica de activos desde repositorios de código abierto de GitHub.
 - **Lanzadores y Enlaces Web**: Enlaces hacia instaladores web oficiales y tiendas secundarias.
 
