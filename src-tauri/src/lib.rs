@@ -393,9 +393,21 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 /// so a cancelled or silently failed uninstall was announced as "uninstalled
 /// successfully" and then reappeared on the next refresh. The status is no
 /// longer falsified: if Windows still lists the app, the caller is told.
+/// How often a confirmation probe pays for a full rescan of the cached detection
+/// sources.
+///
+/// The registry is always read fresh, so registry-detected apps are confirmed on
+/// the first cheap probe. Packaged apps (Start Menu entries) and WinGet-only
+/// packages live behind caches, and polling them without invalidation just re-read
+/// the same stale answer for the whole loop — which reported a perfectly
+/// successful uninstall as "Windows still says it is installed".
+const DETECTION_RESCAN_EVERY: u32 = 3;
+
 async fn confirm_uninstalled(state: &AppState, app_id: &str, name: &str) -> Result<(), String> {
-    detect::clear_detection_caches();
-    for attempt in 1..=20 {
+    for attempt in 1..=12 {
+        if attempt % DETECTION_RESCAN_EVERY == 1 {
+            detect::clear_detection_caches();
+        }
         rebuild_statuses(state);
         let installed = state
             .statuses
@@ -424,8 +436,12 @@ async fn confirm_uninstalled(state: &AppState, app_id: &str, name: &str) -> Resu
 }
 
 async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, String> {
-    detect::clear_detection_caches();
     for attempt in 1..=60 {
+        // Same reasoning as `confirm_uninstalled`: a newly installed packaged app
+        // will not show up until the Start Menu cache is dropped.
+        if attempt % DETECTION_RESCAN_EVERY == 1 {
+            detect::clear_detection_caches();
+        }
         rebuild_statuses(state);
         if let Some(status) = state.statuses.lock().get(app_id).cloned() {
             if status.installed {

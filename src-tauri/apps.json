@@ -2392,7 +2392,7 @@
     "section": "Juegos",
     "featured": false,
     "source_type": "winget",
-    "winget_id": "Rockstar.RockstarGamesLauncher",
+    "winget_id": "RockstarGames.Launcher",
     "winget_source": "winget",
     "installer_args": [
       "/S"
@@ -3095,6 +3095,28 @@
     "featured": false
   },
   {
+    "id": "speedtest_ookla",
+    "name": "Speedtest by Ookla",
+    "description": "Mide la velocidad real de tu conexión: descarga, subida, latencia y pérdida de paquetes contra servidores cercanos.",
+    "version": "latest",
+    "author": "Ookla",
+    "category": "Benchmark y diagnóstico",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "Ookla.Speedtest.Desktop",
+    "winget_source": "winget",
+    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/ookla-speedtest.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#0b0a1a",
+    "detect_names": [
+      "Speedtest by Ookla",
+      "Ookla Speedtest",
+      "Speedtest"
+    ],
+    "featured": false
+  },
+  {
     "id": "nvidia_control_panel",
     "name": "NVIDIA Control Panel",
     "description": "Panel oficial para gestionar pantalla, configuración 3D, vídeo y opciones específicas de las GPU NVIDIA.",
@@ -3675,7 +3697,7 @@
     "section": "Juegos",
     "featured": false,
     "source_type": "winget",
-    "winget_id": "ModOrganizer2.ModOrganizer2",
+    "winget_id": "ModOrganizer2.modorganizer",
     "winget_source": "winget",
     "icon_url": "https://raw.githubusercontent.com/ModOrganizer2/modorganizer/master/src/resources/mo_icon.png",
     "detect_names": [
@@ -3744,9 +3766,10 @@
     "category": "Emuladores",
     "section": "Emuladores",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "flycast.flycast",
-    "winget_source": "winget",
+    "source_type": "github_release",
+    "github_repo": "flyinghead/flycast",
+    "asset_pattern": "flycast-win64-*.zip",
+    "launch_executable": "flycast.exe",
     "icon_url": "https://raw.githubusercontent.com/flyinghead/flycast/master/shell/windows/flycast.ico",
     "detect_names": [
       "Flycast"
@@ -3816,9 +3839,8 @@
     "category": "Emuladores",
     "section": "Emuladores",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "XuanZhi.LDPlayer",
-    "winget_source": "winget",
+    "source_type": "web",
+    "web_url": "https://www.ldplayer.net/",
     "icon_url": "https://cdn.simpleicons.org/android/3DDC84",
     "icon_background": "#181818",
     "icon_padding": 6,
@@ -3879,7 +3901,7 @@
     "section": "Utilidades",
     "featured": false,
     "source_type": "winget",
-    "winget_id": "VSRevoGroup.RevoUninstaller",
+    "winget_id": "RevoUninstaller.RevoUninstaller",
     "winget_source": "winget",
     "icon_url": "https://www.revouninstaller.com/favicon.ico",
     "detect_names": [
@@ -3977,9 +3999,8 @@
     "category": "Multimedia",
     "section": "Multimedia",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "BlackmagicDesign.DaVinciResolve",
-    "winget_source": "winget",
+    "source_type": "web",
+    "web_url": "https://www.blackmagicdesign.com/support/family/davinci-resolve-and-fusion",
     "icon_url": "https://cdn.simpleicons.org/davinciresolve/000000",
     "icon_background": "#ffffff",
     "icon_padding": 4,
@@ -4092,9 +4113,8 @@
     "category": "Desarrollo",
     "section": "Desarrollo",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "TimKosse.FileZillaClient",
-    "winget_source": "winget",
+    "source_type": "web",
+    "web_url": "https://filezilla-project.org/download.php?type=client",
     "icon_url": "https://cdn.simpleicons.org/filezilla/BF0000",
     "detect_names": [
       "FileZilla"

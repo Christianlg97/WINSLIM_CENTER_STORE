@@ -922,7 +922,7 @@ async function uninstallApp(id) {
       showBackgroundOperationModal(
         app,
         `Desinstalando ${app.name}`,
-        "Ejecutando la lógica de desinstalación de Windows...",
+        "Ejecutando lógica de desinstalación del programa...",
       );
       // Some uninstallers open their own window and wait for the user. Without
       // an escape hatch the modal stayed up forever with no way out, so after a
@@ -1751,13 +1751,13 @@ window.addEventListener("DOMContentLoaded", async () => {
       const appName = app?.name || app_id;
       await refreshStore({ reportErrors: false, silent: true });
       if (cancelled && cancellation_kind === "installation") {
-        setTransientStatus(`Instalación cancelada: ${appName}`, "var(--text-muted)", 5000);
+        setTransientStatus(`Instalación cancelada: ${appName}`, "var(--text-light)", 5000);
         showAlertModal(
           "Instalación cancelada",
           String(error || "La instalación fue cancelada por el usuario."),
         );
       } else if (cancelled) {
-        setTransientStatus(`Descarga cancelada: ${appName}`, "var(--text-muted)", 5000);
+        setTransientStatus(`Descarga cancelada: ${appName}`, "var(--text-light)", 5000);
       } else if (interrupted) {
         setTransientStatus(`Instalación interrumpida: ${appName}`, "var(--text-medium)", 5000);
         showAlertModal(

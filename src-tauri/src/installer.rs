@@ -76,11 +76,123 @@ pub fn display_install_error(error: &str) -> String {
         .to_string()
 }
 
-fn installer_exit_means_cancelled(app: &Value, code: i32) -> bool {
-    // Windows Installer: ERROR_INSTALL_USEREXIT (1602). Win32: ERROR_CANCELLED
-    // (1223). Some bootstrapper APIs return HRESULT_FROM_WIN32(1602).
-    const STANDARD_CANCEL_CODES: [i32; 3] = [1602, 1223, -2_147_023_294];
-    STANDARD_CANCEL_CODES.contains(&code)
+/// The installer technology a downloaded setup file was built with.
+///
+/// Exit codes are only meaningful once this is known: `2` means "the user
+/// pressed Cancel" to Inno Setup but "the installer could not start" to almost
+/// everyone else, and `1` means cancellation to NSIS while being a generic
+/// failure elsewhere. Reporting those numbers raw is what produced the useless
+/// "El instalador terminó con el código 2" message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstallerFamily {
+    WindowsInstaller,
+    /// WiX Burn bootstrapper (a .exe wrapping one or more MSI packages).
+    Burn,
+    InnoSetup,
+    Nsis,
+    InstallShield,
+    Unknown,
+}
+
+impl InstallerFamily {
+    fn label(self) -> &'static str {
+        match self {
+            InstallerFamily::WindowsInstaller => "Windows Installer",
+            InstallerFamily::Burn => "el instalador de Windows",
+            InstallerFamily::InnoSetup => "Inno Setup",
+            InstallerFamily::Nsis => "NSIS",
+            InstallerFamily::InstallShield => "InstallShield",
+            InstallerFamily::Unknown => "el instalador",
+        }
+    }
+
+    /// Exit codes that this technology documents as "the user aborted".
+    fn cancel_exit_codes(self) -> &'static [i32] {
+        match self {
+            // ERROR_INSTALL_USEREXIT (1602) and ERROR_CANCELLED (1223), plus the
+            // HRESULT_FROM_WIN32 forms bootstrappers return: 0x80070642, 0x800704C7.
+            InstallerFamily::WindowsInstaller
+            | InstallerFamily::Burn
+            | InstallerFamily::InstallShield => {
+                &[1602, 1223, -2_147_023_294, -2_147_023_673]
+            }
+            // 2: cancelled in the wizard before installing, or answered No to a
+            // prompt. 5: cancelled during installation, or Abort on a retry box.
+            // 6: the setup process was terminated.
+            InstallerFamily::InnoSetup => &[2, 5, 6, 1602, 1223, -2_147_023_294],
+            // NSIS returns 1 when the user quits the wizard.
+            InstallerFamily::Nsis => &[1, 1602, 1223],
+            InstallerFamily::Unknown => &[1602, 1223, -2_147_023_294, -2_147_023_673],
+        }
+    }
+}
+
+/// Byte markers left in the setup executable by each installer builder.
+///
+/// Detection reads a prefix of the file: the PE section table, the NSIS first
+/// header and the Inno Setup loader data all live near the start, well before
+/// the compressed payload that makes these files large.
+fn detect_installer_family(installer_path: &Path) -> InstallerFamily {
+    use std::io::Read;
+
+    let extension = installer_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
+    if extension.eq_ignore_ascii_case("msi") {
+        return InstallerFamily::WindowsInstaller;
+    }
+
+    const SCAN_BYTES: usize = 8 * 1024 * 1024;
+    let Ok(mut file) = fs::File::open(installer_path) else {
+        return InstallerFamily::Unknown;
+    };
+    let mut buffer = Vec::new();
+    if file
+        .by_ref()
+        .take(SCAN_BYTES as u64)
+        .read_to_end(&mut buffer)
+        .is_err()
+    {
+        return InstallerFamily::Unknown;
+    }
+
+    let contains = |needle: &[u8]| {
+        buffer
+            .windows(needle.len())
+            .any(|window| window == needle)
+    };
+    // Version resources are UTF-16LE, so the same word is looked for both ways.
+    let contains_text = |needle: &str| {
+        if contains(needle.as_bytes()) {
+            return true;
+        }
+        let wide: Vec<u8> = needle
+            .bytes()
+            .flat_map(|byte| [byte, 0])
+            .collect();
+        contains(&wide)
+    };
+
+    // `.wixburn` is a real PE section name, so it is checked before the generic
+    // MSI hints a bundle would also match.
+    if contains(b".wixburn") {
+        return InstallerFamily::Burn;
+    }
+    if contains_text("Inno Setup") || contains(b"rDlPtS02") {
+        return InstallerFamily::InnoSetup;
+    }
+    if contains(b"NullsoftInst") || contains_text("Nullsoft Install System") {
+        return InstallerFamily::Nsis;
+    }
+    if contains_text("InstallShield") {
+        return InstallerFamily::InstallShield;
+    }
+    InstallerFamily::Unknown
+}
+
+fn installer_exit_means_cancelled(app: &Value, family: InstallerFamily, code: i32) -> bool {
+    family.cancel_exit_codes().contains(&code)
         || app
             .get("installer_cancel_exit_codes")
             .and_then(Value::as_array)
@@ -89,6 +201,54 @@ fn installer_exit_means_cancelled(app: &Value, code: i32) -> bool {
                     .iter()
                     .any(|item| item.as_i64() == Some(i64::from(code)))
             })
+}
+
+/// Turns an installer's exit code into an outcome the interface can explain.
+///
+/// Shared by the normal and the elevated paths so a cancelled UAC-requiring
+/// setup is reported the same way as a cancelled ordinary one.
+fn interpret_installer_exit(
+    app: &Value,
+    family: InstallerFamily,
+    exit_code: Option<i32>,
+) -> Result<(), String> {
+    // 1641 and 3010 both mean "installed, a reboot is pending".
+    if exit_code == Some(0) || matches!(exit_code, Some(1641) | Some(3010)) {
+        return Ok(());
+    }
+
+    let name = app
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("la aplicación");
+
+    if exit_code.is_some_and(|code| installer_exit_means_cancelled(app, family, code)) {
+        crate::logger::info(
+            "installer",
+            format!("Cancelación detectada: tecnología={family:?}, código={exit_code:?}"),
+        );
+        return Err(format!(
+            "{INSTALL_CANCELLED_PREFIX}Cancelaste la instalación de {name} en el asistente de {}. No se ha instalado nada.",
+            family.label()
+        ));
+    }
+
+    // Exit code 1 stays ambiguous for technologies that do not document it as
+    // cancellation: plenty of installers use it for genuine failures. NSIS is the
+    // exception and is handled above through its own code table.
+    if exit_code == Some(1) {
+        return Err(format!(
+            "{INSTALL_INTERRUPTED_PREFIX}El instalador de {name} se cerró sin completar la instalación (código 1). Puede que lo cancelaras o que el propio instalador fallara."
+        ));
+    }
+
+    Err(format!(
+        "El instalador de {name} terminó con el código {} ({}).",
+        exit_code
+            .map(|code| code.to_string())
+            .unwrap_or_else(|| "desconocido".into()),
+        family.label()
+    ))
 }
 
 fn app_installer_args(app: &Value, installer_path: &Path) -> Vec<String> {
@@ -433,10 +593,11 @@ pub fn run_installer_in_background(
         _ => return Ok(()),
     };
 
+    let family = detect_installer_family(installer_path);
     crate::logger::info(
         "installer",
         format!(
-            "Ejecutando instalador: ruta={}, tipo={ext}, argumentos={args:?}",
+            "Ejecutando instalador: ruta={}, tipo={ext}, tecnología={family:?}, argumentos={args:?}",
             installer_path.display()
         ),
     );
@@ -465,12 +626,25 @@ pub fn run_installer_in_background(
                     "installer",
                     format!("Solicitando elevación UAC para instalador: {}", installer_path.display()),
                 );
-                crate::process::launch_elevated(installer_path)?;
+                // Waiting for the elevated process keeps its exit code, so a
+                // wizard cancelled after the UAC prompt is reported as a
+                // cancellation instead of an unexplained "not installed".
+                let elevated_code = crate::process::run_elevated_and_wait(
+                    installer_path,
+                    &args.join(" "),
+                    installer_path.parent(),
+                )
+                .map_err(|error| {
+                    format!("{INSTALL_CANCELLED_PREFIX}{error}")
+                })?;
                 crate::logger::info(
                     "installer",
-                    format!("Instalador elevado iniciado correctamente: {}", installer_path.display()),
+                    format!(
+                        "Instalador elevado finalizado: ruta={}, código={elevated_code:?}",
+                        installer_path.display()
+                    ),
                 );
-                return Ok(());
+                return interpret_installer_exit(app, family, elevated_code);
             }
             return Err(format!("No se pudo lanzar el instalador: {e}"));
         }
@@ -513,41 +687,14 @@ pub fn run_installer_in_background(
     };
 
     let exit_code = status.code();
-    let accepted_exit =
-        status.success() || matches!(exit_code, Some(1641) | Some(3010));
-    if !accepted_exit {
-        if exit_code.is_some_and(|code| installer_exit_means_cancelled(app, code)) {
-            return Err(format!(
-                "{INSTALL_CANCELLED_PREFIX}La instalación fue cancelada por el usuario."
-            ));
-        }
-
-        // Exit code 1 is deliberately not treated as cancellation globally:
-        // many installers use it for genuine failures. Packages which really
-        // use it for user cancellation must opt in through the catalog field.
-        if exit_code == Some(1) {
-            return Err(format!(
-                "{INSTALL_INTERRUPTED_PREFIX}El instalador se cerró con el código 1. La instalación no se completó, pero ese código por sí solo no confirma que el usuario la cancelara."
-            ));
-        }
-
-        return Err(format!(
-            "El instalador terminó con el código {}",
-            exit_code
-                .map(|code| code.to_string())
-                .unwrap_or_else(|| "desconocido".into())
-        ));
-    }
-
     crate::logger::info(
         "installer",
         format!(
-            "Instalador finalizado: ruta={}, código={exit_code:?}",
+            "Instalador finalizado: ruta={}, código={exit_code:?}, tecnología={family:?}",
             installer_path.display()
         ),
     );
-
-    Ok(())
+    interpret_installer_exit(app, family, exit_code)
 }
 
 pub fn install_target_blocked(
@@ -1343,6 +1490,23 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
     ))
 }
 
+/// `true` only for real, absolute filesystem paths.
+///
+/// `AppStatus::install_path` doubles as the launch target, so for packaged apps
+/// it carries a shell moniker (`shell:AppsFolder\...`) instead of a directory.
+/// Every routine that touches the disk has to reject those.
+fn is_filesystem_target(path: &Path) -> bool {
+    let value = path.to_string_lossy();
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.to_ascii_lowercase().starts_with("shell:") {
+        return false;
+    }
+    path.is_absolute()
+}
+
 fn normalized_path_key(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
@@ -1521,6 +1685,12 @@ fn find_typical_uninstaller(install_dir: &Path) -> Option<PathBuf> {
 }
 
 pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
+    if !is_filesystem_target(install_path) {
+        return Err(format!(
+            "'{}' es una aplicación empaquetada de Windows: solo puede desinstalarse desde WinGet o desde Configuración de Windows.",
+            install_path.display()
+        ));
+    }
     let install_dir = if install_path.is_file() {
         install_path
             .parent()
@@ -1590,6 +1760,18 @@ pub fn cleanup_shortcuts_for_install_target(install_path: &Path) -> Result<usize
 
     let target = install_path.to_string_lossy().trim().to_string();
     if target.is_empty() {
+        return Ok(0);
+    }
+    // Packaged applications are identified by a shell moniker such as
+    // `shell:AppsFolder\com.electron.notion`, not by a directory. Handing that to
+    // `[IO.Path]::GetFullPath` threw a NotSupportedException and turned a
+    // perfectly successful uninstall into an error dialog. Windows owns those
+    // Start Menu entries and removes them itself, so there is nothing to do.
+    if !is_filesystem_target(install_path) {
+        crate::logger::debug(
+            "cleanup-shortcuts",
+            format!("Destino no perteneciente al sistema de archivos; se omite: {target}"),
+        );
         return Ok(0);
     }
 
@@ -1713,7 +1895,11 @@ pub fn cleanup_declared_residual_paths(app: &Value, install_path: &Path) -> Resu
     let Some(items) = app.get("residual_paths").and_then(Value::as_array) else {
         return Ok(0);
     };
-    let install_dir = if install_path.is_file() {
+    // A shell moniker is not a directory, so `{install_dir}` cannot be expanded
+    // from it and no residual path can be anchored to it.
+    let install_dir = if !is_filesystem_target(install_path) {
+        Path::new("")
+    } else if install_path.is_file() {
         install_path.parent().unwrap_or(install_path)
     } else {
         install_path
@@ -2289,6 +2475,130 @@ mod tests {
         assert_eq!(prefer_x64_executable(&arm), Some(x64));
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn each_installer_technology_reports_its_own_cancel_codes() {
+        let app = json!({ "name": "Ejemplo" });
+
+        // Inno Setup: 2 = cancelled in the wizard, 5 = cancelled while installing.
+        for code in [2, 5, 6] {
+            let error =
+                interpret_installer_exit(&app, InstallerFamily::InnoSetup, Some(code)).unwrap_err();
+            assert!(is_install_cancelled(&error), "Inno {code} debería ser cancelación");
+            assert!(error.contains("Cancelaste la instalación de Ejemplo"));
+            assert!(!display_install_error(&error).contains("código"));
+        }
+
+        // NSIS uses 1 for the same thing.
+        let nsis = interpret_installer_exit(&app, InstallerFamily::Nsis, Some(1)).unwrap_err();
+        assert!(is_install_cancelled(&nsis));
+
+        // Windows Installer / Burn: 1602, 1223 and their HRESULT forms.
+        for code in [1602, 1223, -2_147_023_294, -2_147_023_673] {
+            assert!(is_install_cancelled(
+                &interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(code))
+                    .unwrap_err()
+            ));
+        }
+
+        // The same code 2 is NOT a cancellation for an unknown technology.
+        let unknown = interpret_installer_exit(&app, InstallerFamily::Unknown, Some(2)).unwrap_err();
+        assert!(!is_install_cancelled(&unknown));
+        assert!(!is_install_interrupted(&unknown));
+    }
+
+    #[test]
+    fn successful_and_reboot_pending_exits_are_accepted() {
+        let app = json!({ "name": "Ejemplo" });
+        for code in [0, 1641, 3010] {
+            assert!(interpret_installer_exit(&app, InstallerFamily::InnoSetup, Some(code)).is_ok());
+        }
+    }
+
+    #[test]
+    fn the_catalog_can_still_declare_extra_cancel_codes() {
+        let app = json!({ "name": "mGBA", "installer_cancel_exit_codes": [1] });
+        let error =
+            interpret_installer_exit(&app, InstallerFamily::Unknown, Some(1)).unwrap_err();
+        assert!(is_install_cancelled(&error));
+    }
+
+    #[test]
+    fn installer_technology_is_recognized_from_its_binary_markers() {
+        let test_dir = std::env::temp_dir()
+            .join(format!("winslimcenter-family-test-{}", std::process::id()));
+        fs::create_dir_all(&test_dir).unwrap();
+
+        let write = |name: &str, marker: &[u8]| {
+            let path = test_dir.join(name);
+            let mut bytes = b"MZ".to_vec();
+            bytes.extend_from_slice(&[0_u8; 512]);
+            bytes.extend_from_slice(marker);
+            bytes.extend_from_slice(&[0_u8; 512]);
+            fs::write(&path, bytes).unwrap();
+            path
+        };
+
+        assert_eq!(
+            detect_installer_family(&write("inno.exe", b"Inno Setup")),
+            InstallerFamily::InnoSetup
+        );
+        assert_eq!(
+            detect_installer_family(&write("nsis.exe", b"NullsoftInst")),
+            InstallerFamily::Nsis
+        );
+        assert_eq!(
+            detect_installer_family(&write("burn.exe", b".wixburn")),
+            InstallerFamily::Burn
+        );
+        assert_eq!(
+            detect_installer_family(&write("ishield.exe", b"InstallShield")),
+            InstallerFamily::InstallShield
+        );
+        assert_eq!(
+            detect_installer_family(&write("plain.exe", b"nothing to see")),
+            InstallerFamily::Unknown
+        );
+        // An .msi never needs marker scanning.
+        assert_eq!(
+            detect_installer_family(&write("package.msi", b"")),
+            InstallerFamily::WindowsInstaller
+        );
+
+        // Version resources store the name as UTF-16LE.
+        let wide: Vec<u8> = "Inno Setup".bytes().flat_map(|b| [b, 0]).collect();
+        assert_eq!(
+            detect_installer_family(&write("inno-wide.exe", &wide)),
+            InstallerFamily::InnoSetup
+        );
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn packaged_app_targets_are_not_treated_as_folders() {
+        // Notion and other packaged apps are identified like this.
+        let packaged = Path::new(r"shell:AppsFolder\com.electron.notion");
+        assert!(!is_filesystem_target(packaged));
+        // Cleaning shortcuts must be a no-op rather than a PowerShell exception.
+        assert_eq!(cleanup_shortcuts_for_install_target(packaged), Ok(0));
+        // And the folder fallback must refuse it instead of guessing a path.
+        assert!(uninstall_from_install_path(packaged).is_err());
+        // Declared residual paths must not anchor to it either.
+        let app = json!({ "residual_paths": ["{install_dir}\\cache"] });
+        assert!(cleanup_declared_residual_paths(&app, packaged).is_err());
+    }
+
+    #[test]
+    fn real_paths_are_still_recognized_as_filesystem_targets() {
+        let program_files =
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        assert!(is_filesystem_target(
+            &PathBuf::from(program_files).join("Example App")
+        ));
+        assert!(!is_filesystem_target(Path::new("")));
+        assert!(!is_filesystem_target(Path::new("relative\\path")));
     }
 
     #[test]
