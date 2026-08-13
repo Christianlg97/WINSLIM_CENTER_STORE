@@ -4,6 +4,7 @@ mod installer;
 mod logger;
 mod paths;
 mod process;
+mod residue;
 mod store;
 
 use detect::AppStatus;
@@ -422,7 +423,12 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 /// successful uninstall as "Windows still says it is installed".
 const DETECTION_RESCAN_EVERY: u32 = 3;
 
-async fn confirm_uninstalled(state: &AppState, app_id: &str, name: &str) -> Result<(), String> {
+async fn confirm_uninstalled(
+    state: &AppState,
+    app_id: &str,
+    name: &str,
+    attempted: &[String],
+) -> Result<(), String> {
     for attempt in 1..=12 {
         if attempt % DETECTION_RESCAN_EVERY == 1 {
             detect::clear_detection_caches();
@@ -444,13 +450,51 @@ async fn confirm_uninstalled(state: &AppState, app_id: &str, name: &str) -> Resu
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
 
+    // Before calling it a failure, check what Windows is actually still holding
+    // on to. The Start Menu answers from a cache that outlives the shortcut it
+    // describes, so an entry pointing at nothing is not an installed program.
+    let lingering_target = state
+        .statuses
+        .lock()
+        .get(app_id)
+        .filter(|status| status.installed)
+        .map(|status| status.install_path.clone());
+    if let Some(target) = lingering_target.filter(|value| value.starts_with(residue::START_MENU_PREFIX)) {
+        let names = vec![name.to_string()];
+        let target_for_task = target.clone();
+        let is_real = async_runtime::spawn_blocking(move || {
+            residue::start_menu_target_is_real(&target_for_task, &names)
+        })
+        .await
+        .unwrap_or(true);
+        if !is_real {
+            logger::info(
+                "uninstall-verify",
+                format!(
+                    "Desinstalación confirmada: app_id={app_id}. Windows aún lista '{target}' en el menú Inicio, pero esa entrada ya no apunta a nada."
+                ),
+            );
+            return Ok(());
+        }
+    }
+
     logger::warn(
         "uninstall-verify",
         format!("Windows sigue informando de que {app_id} está instalada"),
     );
+    // Saying "the uninstall ran" when nothing could act on the application was
+    // the most confusing part of the old message: it sent the user looking for
+    // an uninstaller window that never existed.
+    if attempted.is_empty() {
+        return Err(format!(
+            "Se ejecutó la desinstalación, pero Windows sigue informando de que '{name}' está instalada. \
+             Es posible que el desinstalador siga en curso, que requiera reiniciar el equipo o que se cancelara."
+        ));
+    }
     Err(format!(
-        "Se ejecutó la desinstalación, pero Windows sigue informando de que '{name}' está instalada. \
-         Es posible que el desinstalador siga en curso, que requiera reiniciar el equipo o que se cancelara."
+        "No se encontró ninguna forma de desinstalar '{name}' y Windows la sigue dando por instalada. \
+         Se intentó: {}",
+        attempted.join("; ")
     ))
 }
 
@@ -481,8 +525,67 @@ async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, 
     ))
 }
 
+/// Removes what the application leaves behind and reports what could not be
+/// cleaned, without ever failing the operation on its own.
+async fn run_uninstall_cleanup(entry: Value, target: PathBuf) -> Result<Vec<String>, String> {
+    let (shortcuts, residuals) = async_runtime::spawn_blocking(move || {
+        let shortcuts = installer::cleanup_shortcuts_for_install_target(&target);
+        let residuals = installer::cleanup_declared_residual_paths(&entry, &target);
+        (shortcuts, residuals)
+    })
+    .await
+    .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
+    Ok([shortcuts.err(), residuals.err()].into_iter().flatten().collect())
+}
+
+/// Clears what the application left behind, confirms with Windows that it is
+/// really gone and drops its downloaded package.
+///
+/// The shortcuts are cleared *before* confirming whenever the files are already
+/// gone. A leftover Start Menu shortcut is itself one of the sources Windows
+/// answers "installed" from, so cleaning up only after a successful confirmation
+/// was a deadlock: the shortcut kept the application visible, the confirmation
+/// never arrived and the cleanup that would have removed it never ran. When the
+/// files are still there the old order is kept, so an uninstall the user
+/// cancelled does not lose its shortcuts.
+/// `attempted` carries the reasons every removal method declined to act. It is
+/// empty when one of them reported success, and that is what separates "the
+/// program was removed" from "the program was never on this computer and only
+/// its leftovers were".
+async fn finish_uninstall(
+    state: &AppState,
+    app_id: &str,
+    app_name: &str,
+    entry: Value,
+    target: PathBuf,
+    attempted: Vec<String>,
+) -> Result<String, String> {
+    let files_removed = !target.exists();
+    let mut warnings = Vec::new();
+    if files_removed {
+        warnings = run_uninstall_cleanup(entry.clone(), target.clone()).await?;
+    }
+    confirm_uninstalled(state, app_id, app_name, &attempted).await?;
+    if !files_removed {
+        warnings = run_uninstall_cleanup(entry, target).await?;
+    }
+    if !warnings.is_empty() {
+        return Err(warnings.join("\n"));
+    }
+    if let Err(error) = installer::cleanup_package_download(app_id) {
+        logger::warn("cleanup", error);
+    }
+    Ok(if attempted.is_empty() {
+        format!("{app_name} se desinstaló correctamente del equipo.")
+    } else {
+        format!(
+            "{app_name} no estaba instalada en el equipo. Se ha limpiado el registro que la daba por instalada, así que vuelve a aparecer como disponible para instalar."
+        )
+    })
+}
+
 #[tauri::command]
-async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(), String> {
+async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
     logger::info(
         "uninstall",
         format!("Solicitud de desinstalación: app_id={app_id}"),
@@ -519,9 +622,15 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
         );
         let uninstall_command = st.uninstall_command.clone();
         let install_path = st.install_path.clone();
-        let shortcut_target = install_path.clone();
-        let residual_target = install_path.clone();
+        let indexed_target = install_path.clone();
         let cleanup_entry = catalog_entry.clone();
+        // Portable programs are indexed from a shortcut or a PATH entry and
+        // never sat where the store expected them, so the fallback needs to know
+        // what the application is called and which executable it ships to find
+        // its real folder.
+        let identity =
+            residue::AppIdentity::from_catalog(&catalog_entry, st.uninstall_command.as_deref())
+                .with_install_location(st.install_location.as_deref());
         let winget = catalog_entry
             .get("source_type")
             .and_then(Value::as_str)
@@ -545,17 +654,32 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
             .get("winget_source")
             .and_then(Value::as_str)
             .is_some_and(|source| source.eq_ignore_ascii_case("msstore"));
-        async_runtime::spawn_blocking(move || {
+        let (handled_directory, attempted) = async_runtime::spawn_blocking(move || {
+            // Whether anything other than WinGet can act on this application: a
+            // command Windows registered for it, or a real folder on disk.
+            // Without either, a packaged application really is WinGet's business
+            // alone and deleting files would be both useless and unsafe.
+            let has_local_handle = uninstall_command.is_some()
+                || installer::is_filesystem_target(&PathBuf::from(&install_path));
             let mut errors = Vec::new();
             if let Some((package_id, source)) = winget {
                 match installer::uninstall_with_winget(&package_id, &source) {
-                    Ok(()) => return Ok(()),
+                    Ok(installer::WingetUninstall::Removed) => return Ok((None, Vec::new())),
+                    // WinGet not having the package says nothing about the copy
+                    // the user installed from the vendor's own setup, so the
+                    // chain carries on to what Windows did register.
+                    Ok(installer::WingetUninstall::NotInstalled) => logger::info(
+                        "uninstall",
+                        format!(
+                            "WinGet no tiene instalado {package_id}; se continúa con lo que Windows registró para la aplicación."
+                        ),
+                    ),
                     Err(error) => {
                         logger::warn("uninstall", format!("Fallback tras WinGet: {error}"));
                         if installer::is_winget_user_scope_elevation_error(&error) {
                             if let Some(command) = uninstall_command.as_deref() {
                                 match installer::uninstall_system_app_as_user(command) {
-                                    Ok(()) => return Ok(()),
+                                    Ok(()) => return Ok((None, Vec::new())),
                                     Err(user_error) => {
                                         logger::warn(
                                             "uninstall-user-fallback",
@@ -571,7 +695,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
                             }
                         }
                         errors.push(error);
-                        if is_msstore {
+                        if is_msstore && !has_local_handle {
                             return Err(errors.join("; "));
                         }
                     }
@@ -579,59 +703,52 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
             }
             if let Some(uninstall_command) = uninstall_command {
                 match installer::uninstall_system_app(&uninstall_command) {
-                    Ok(()) => return Ok(()),
-                    Err(registry_error) if !install_path.is_empty() => {
-                        errors.push(format!("Desinstalador registrado: {registry_error}"));
+                    Ok(()) => return Ok((None, Vec::new())),
+                    Err(registry_error) => {
+                        errors.push(format!("Desinstalador registrado: {registry_error}"))
                     }
-                    Err(registry_error) => errors.push(registry_error),
                 }
             }
-            if !install_path.is_empty() {
-                match installer::uninstall_from_install_path(&PathBuf::from(&install_path)) {
-                    Ok(()) => return Ok(()),
-                    Err(error) => errors.push(format!("Fallback de carpeta: {error}")),
+            // The fallback is attempted even without an indexed path: that is
+            // exactly the case of portable programs, which Windows lists as
+            // installed without saying where they are.
+            match installer::uninstall_from_install_path(&PathBuf::from(&install_path), &identity) {
+                Ok(directory) => {
+                    return Ok((Some(directory.to_string_lossy().to_string()), Vec::new()))
                 }
+                Err(error) => errors.push(format!("Fallback de carpeta: {error}")),
             }
-            Err(if errors.is_empty() {
-                "No hay un método de desinstalación válido para esta aplicación".into()
-            } else {
-                errors.join("; ")
-            })
+            // Nothing could be removed because there was nothing left to remove:
+            // whatever told the store the application was installed is a
+            // leftover, and clearing it is the uninstall. Whether that was
+            // enough is not decided here — Windows is asked again afterwards.
+            let cleared = residue::purge_stale_index_entries(&identity);
+            logger::warn(
+                "uninstall",
+                format!(
+                    "Ningún método pudo actuar sobre la aplicación; marcas obsoletas limpiadas: {cleared}. Detalle: {}",
+                    errors.join("; ")
+                ),
+            );
+            Ok((None, errors))
         })
         .await
         .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
 
-        confirm_uninstalled(&state, &app_id, &app_name).await?;
-        let cleanup = async_runtime::spawn_blocking(move || {
-            let shortcuts =
-                installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
-            let residuals = installer::cleanup_declared_residual_paths(
-                &cleanup_entry,
-                &PathBuf::from(residual_target),
-            );
-            (shortcuts, residuals)
-        })
-        .await
-        .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
-        let (shortcut_cleanup, residual_cleanup) = cleanup;
-        let mut warnings = Vec::new();
-        if let Err(error) = shortcut_cleanup {
-            warnings.push(error);
-        }
-        if let Err(error) = residual_cleanup {
-            warnings.push(error);
-        }
-        if !warnings.is_empty() {
-            return Err(warnings.join("\n"));
-        }
-        if let Err(error) = installer::cleanup_package_download(&app_id) {
-            logger::warn("cleanup", error);
-        }
-        return Ok(());
+        // When the fallback had to go looking for the folder, the cleanup runs
+        // on the one that really existed, not on the one the store had indexed.
+        let cleanup_target = PathBuf::from(handled_directory.unwrap_or(indexed_target));
+        return finish_uninstall(
+            &state,
+            &app_id,
+            &app_name,
+            cleanup_entry,
+            cleanup_target,
+            attempted,
+        )
+        .await;
     }
 
-    let shortcut_target = st.install_path.clone();
-    let residual_target = st.install_path.clone();
     let cleanup_entry = catalog_entry;
     let managed_path = state
         .installed
@@ -639,6 +756,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
         .get(&app_id)
         .map(|info| PathBuf::from(&info.install_path))
         .ok_or("App no instalada")?;
+    let cleanup_target = managed_path.clone();
     let uninstall_id = app_id.clone();
     // The filesystem work runs off the lock (it retries and sleeps), and only the
     // bookkeeping is done under it.
@@ -652,33 +770,15 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<(),
         installed.remove(&app_id);
         store::save_installed(&installed)?;
     }
-    confirm_uninstalled(&state, &app_id, &app_name).await?;
-    let cleanup = async_runtime::spawn_blocking(move || {
-        let shortcuts =
-            installer::cleanup_shortcuts_for_install_target(&PathBuf::from(shortcut_target));
-        let residuals = installer::cleanup_declared_residual_paths(
-            &cleanup_entry,
-            &PathBuf::from(residual_target),
-        );
-        (shortcuts, residuals)
-    })
+    finish_uninstall(
+        &state,
+        &app_id,
+        &app_name,
+        cleanup_entry,
+        cleanup_target,
+        Vec::new(),
+    )
     .await
-    .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
-    let (shortcut_cleanup, residual_cleanup) = cleanup;
-    let mut warnings = Vec::new();
-    if let Err(error) = shortcut_cleanup {
-        warnings.push(error);
-    }
-    if let Err(error) = residual_cleanup {
-        warnings.push(error);
-    }
-    if !warnings.is_empty() {
-        return Err(warnings.join("\n"));
-    }
-    if let Err(error) = installer::cleanup_package_download(&app_id) {
-        logger::warn("cleanup", error);
-    }
-    Ok(())
 }
 
 fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {

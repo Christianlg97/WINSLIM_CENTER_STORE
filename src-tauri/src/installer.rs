@@ -461,7 +461,21 @@ pub async fn winget_available_updates() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<(), String> {
+/// What `winget uninstall` actually achieved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WingetUninstall {
+    /// WinGet removed the package.
+    Removed,
+    /// WinGet has no such package installed. This is emphatically *not* proof
+    /// that the program is gone: many catalog entries point at a Store or WinGet
+    /// listing for something the user installed from the vendor's own setup, and
+    /// WinGet knows nothing about that copy. Treating it as success is what made
+    /// uninstalling Voicemod stop before ever reaching the uninstaller Windows
+    /// had registered for it.
+    NotInstalled,
+}
+
+pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<WingetUninstall, String> {
     crate::logger::info(
         "winget-uninstall",
         format!("Iniciando: paquete={package_id}, origen={source}"),
@@ -492,12 +506,11 @@ pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<(), Strin
         ),
     );
     if output.success() {
-        return Ok(());
+        return Ok(WingetUninstall::Removed);
     }
 
-    // Nothing left to remove is a success from the user's point of view.
     if winget_says_not_installed(output.code, &format!("{stdout}\n{stderr}")) {
-        return Ok(());
+        return Ok(WingetUninstall::NotInstalled);
     }
     Err(format!(
         "WinGet no pudo desinstalar {package_id} (código {:?}){}",
@@ -685,14 +698,6 @@ pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
     }
 
     upgrades
-}
-
-/// Installed and available versions WinGet reports for `package_id`, if any.
-pub fn winget_update_versions(output: &str, package_id: &str) -> Option<(String, String)> {
-    parse_winget_upgrades(output)
-        .into_iter()
-        .find(|upgrade| upgrade.matches(package_id))
-        .map(|upgrade| (upgrade.installed, upgrade.available))
 }
 
 pub fn run_installer_in_background(
@@ -1489,19 +1494,23 @@ pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), S
             install_path.display()
         ),
     );
-    if !install_path.exists() {
-        return Ok(());
+    if install_path.exists() {
+        // `remove_path_robust` clears read-only attributes and retries, which
+        // matters when the application was running a moment ago and Windows has
+        // not released every handle yet. A raw `remove_dir_all` failed halfway
+        // and left a half-deleted folder that was still listed as installed.
+        remove_path_robust(install_path).map_err(|error| {
+            format!(
+                "No se pudo borrar {}: {error}. Cierra la aplicación e inténtalo de nuevo.",
+                install_path.display()
+            )
+        })?;
     }
-    // `remove_path_robust` clears read-only attributes and retries, which matters
-    // when the application was running a moment ago and Windows has not released
-    // every handle yet. A raw `remove_dir_all` failed halfway and left a
-    // half-deleted folder that was still listed as installed.
-    remove_path_robust(install_path).map_err(|error| {
-        format!(
-            "No se pudo borrar {}: {error}. Cierra la aplicación e inténtalo de nuevo.",
-            install_path.display()
-        )
-    })
+    // An installation managed by the store can still have registered itself with
+    // Windows through the setup it ran inside its folder, so it leaves the same
+    // traces as any other program.
+    crate::residue::purge_install_residue(install_path);
+    Ok(())
 }
 
 /// Windows error codes that mean "this uninstaller needs administrator rights",
@@ -1624,7 +1633,7 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
 /// `AppStatus::install_path` doubles as the launch target, so for packaged apps
 /// it carries a shell moniker (`shell:AppsFolder\...`) instead of a directory.
 /// Every routine that touches the disk has to reject those.
-fn is_filesystem_target(path: &Path) -> bool {
+pub fn is_filesystem_target(path: &Path) -> bool {
     let value = path.to_string_lossy();
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -1704,7 +1713,7 @@ fn is_inside_windows_directory(path: &Path) -> bool {
     candidate == root || candidate.starts_with(&format!("{root}\\"))
 }
 
-fn is_protected_installation_root(path: &Path) -> bool {
+pub fn is_protected_installation_root(path: &Path) -> bool {
     let candidate = normalized_path_key(path);
     if candidate.is_empty() || path.parent().is_none() {
         return true;
@@ -1745,7 +1754,16 @@ fn is_protected_installation_root(path: &Path) -> bool {
 /// that pointed into a shared location the fallback would take the whole
 /// directory with it, so anything that is not unambiguously a single
 /// application's own folder is now refused.
-fn validate_removable_install_dir(install_dir: &Path) -> Result<(), String> {
+///
+/// `names` is what the catalog calls the application. Being somewhere under
+/// `%ProgramFiles%` is not enough on its own: that let the fallback delete
+/// `…\obs-studio\data\obs-plugins\win-capture`, a plug-in directory belonging to
+/// a program it was not removing. A folder qualifies only when it sits directly
+/// in one of the roots where programs are installed, or when it carries the
+/// application's own name — which is also what allows a portable program outside
+/// the standard roots to be removed, `D:\Portables\Ejemplo` but never
+/// `D:\Portables`.
+pub fn validate_removable_install_dir(install_dir: &Path, names: &[String]) -> Result<(), String> {
     if !install_dir.is_absolute() {
         return Err(format!(
             "La ruta de instalación no es absoluta: {}",
@@ -1778,12 +1796,12 @@ fn validate_removable_install_dir(install_dir: &Path) -> Result<(), String> {
             install_dir.display()
         ));
     }
-    let inside_allowed_root = roots
-        .iter()
-        .any(|root| install_dir.starts_with(root) && install_dir != root);
-    if !inside_allowed_root {
+    let directly_in_a_root = install_dir
+        .parent()
+        .is_some_and(|parent| roots.iter().any(|root| normalized_path_key(root) == normalized_path_key(parent)));
+    if !directly_in_a_root && !crate::residue::folder_matches_application(install_dir, names) {
         return Err(format!(
-            "La carpeta {} no está en una ubicación de programas reconocida; WinSlimCenter no la borrará.",
+            "La carpeta {} no es la carpeta principal de la aplicación: ni está directamente en una ubicación de programas ni lleva su nombre. WinSlimCenter no la borrará.",
             install_dir.display()
         ));
     }
@@ -1813,29 +1831,27 @@ fn find_typical_uninstaller(install_dir: &Path) -> Option<PathBuf> {
     executables.into_iter().next()
 }
 
-pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
-    if !is_filesystem_target(install_path) {
+/// Removes an application whose registered uninstaller could not do the job.
+///
+/// Returns the folder it acted on, which is not always the one the store had
+/// indexed: portable programs are routinely registered from a Start Menu
+/// shortcut or from a PATH entry and never sat where the catalog expected them,
+/// so the indexed path is only the first place to look.
+pub fn uninstall_from_install_path(
+    install_path: &Path,
+    identity: &crate::residue::AppIdentity,
+) -> Result<PathBuf, String> {
+    if !install_path.as_os_str().is_empty() && !is_filesystem_target(install_path) {
         return Err(format!(
             "'{}' es una aplicación empaquetada de Windows: solo puede desinstalarse desde WinGet o desde Configuración de Windows.",
             install_path.display()
         ));
     }
-    let install_dir = if install_path.is_file() {
-        install_path
-            .parent()
-            .ok_or("No se pudo determinar la carpeta de instalación")?
-            .to_path_buf()
-    } else {
-        install_path.to_path_buf()
-    };
-
-    if !install_dir.is_dir() {
-        return Err("La carpeta de instalación ya no existe".into());
-    }
-
-    // Validate before doing anything: running an `unins*.exe` found inside a
-    // shared directory is just as wrong as deleting that directory.
-    validate_removable_install_dir(&install_dir)?;
+    // Resolving and validating happens before anything is touched: running an
+    // `unins*.exe` found inside a shared directory is just as wrong as deleting
+    // that directory.
+    let install_dir = crate::residue::removable_install_dir(install_path, identity)
+        .map_err(|reasons| reasons.join(" "))?;
 
     if let Some(uninstaller) = find_typical_uninstaller(&install_dir) {
         crate::logger::info(
@@ -1861,7 +1877,12 @@ pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
                     .unwrap_or_else(|| "desconocido".into())
             ));
         }
-        return Ok(());
+        // An uninstaller found inside the folder can leave the same markers
+        // behind as the folder fallback. Purging does nothing while the files
+        // are still there, so an uninstaller that keeps working in the
+        // background is not interfered with.
+        crate::residue::purge_install_residue(&install_dir);
+        return Ok(install_dir);
     }
 
     crate::logger::warn(
@@ -1876,7 +1897,14 @@ pub fn uninstall_from_install_path(install_path: &Path) -> Result<(), String> {
             "No se encontró desinstalador y tampoco se pudo borrar {}: {err}",
             install_dir.display()
         )
-    })
+    })?;
+    // Deleting the files is not enough: the uninstall entry, the `App Paths`
+    // alias, the shortcut and the PATH entry all keep telling the system — and
+    // the store, which reads those very sources — that the program is still
+    // installed. Without this step the fallback finished cleanly and the
+    // confirmation that followed reported it as a failure.
+    crate::residue::purge_install_residue(&install_dir);
+    Ok(install_dir)
 }
 
 /// Removes stale Windows shortcuts only when their resolved target belongs to
@@ -1904,24 +1932,7 @@ pub fn cleanup_shortcuts_for_install_target(install_path: &Path) -> Result<usize
         return Ok(0);
     }
 
-    let mut roots = Vec::new();
-    for (variable, suffix) in [
-        ("USERPROFILE", "Desktop"),
-        ("PUBLIC", "Desktop"),
-        ("APPDATA", r"Microsoft\Windows\Start Menu"),
-        ("PROGRAMDATA", r"Microsoft\Windows\Start Menu"),
-        (
-            "APPDATA",
-            r"Microsoft\Internet Explorer\Quick Launch\User Pinned",
-        ),
-    ] {
-        if let Ok(base) = std::env::var(variable) {
-            let root = PathBuf::from(base).join(suffix);
-            if root.is_dir() && !roots.contains(&root) {
-                roots.push(root);
-            }
-        }
-    }
+    let roots = crate::residue::shortcut_roots();
     if roots.is_empty() {
         return Ok(0);
     }
@@ -2713,7 +2724,7 @@ mod tests {
         // Cleaning shortcuts must be a no-op rather than a PowerShell exception.
         assert_eq!(cleanup_shortcuts_for_install_target(packaged), Ok(0));
         // And the folder fallback must refuse it instead of guessing a path.
-        assert!(uninstall_from_install_path(packaged).is_err());
+        assert!(uninstall_from_install_path(packaged, &crate::residue::AppIdentity::default()).is_err());
         // Declared residual paths must not anchor to it either.
         let app = json!({ "residual_paths": ["{install_dir}\\cache"] });
         assert!(cleanup_declared_residual_paths(&app, packaged).is_err());
@@ -2746,11 +2757,59 @@ mod tests {
             PathBuf::from(r"D:\Portable\App"),
         ] {
             assert!(
-                validate_removable_install_dir(&blocked).is_err(),
+                validate_removable_install_dir(&blocked, &[]).is_err(),
                 "debería bloquearse: {}",
                 blocked.display()
             );
         }
+
+        // Not even when it carries the application's name: a system or shared
+        // directory stays untouchable.
+        let system_names = vec!["System32".to_string(), "Common Files".to_string()];
+        assert!(validate_removable_install_dir(
+            &PathBuf::from(&system_root).join("System32"),
+            &system_names
+        )
+        .is_err());
+        assert!(validate_removable_install_dir(
+            &PathBuf::from(&program_files).join("Common Files"),
+            &system_names
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_subfolder_of_another_program_is_never_taken_for_the_application() {
+        // Real case: the store indexed OBS through
+        // `…\obs-studio\data\obs-plugins\win-capture\get-graphics-offsets64.exe`,
+        // and the fallback deleted that plug-in directory. Being under
+        // `%ProgramFiles%` must not be enough on its own.
+        let program_files =
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let names = vec!["OBS Studio".to_string()];
+        let plugin_dir = PathBuf::from(&program_files)
+            .join("obs-studio")
+            .join("data")
+            .join("obs-plugins")
+            .join("win-capture");
+        assert!(validate_removable_install_dir(&plugin_dir, &names).is_err());
+        // The program's own folder is still removable.
+        assert!(
+            validate_removable_install_dir(&PathBuf::from(&program_files).join("obs-studio"), &names)
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_portable_folder_named_after_the_application_can_be_removed() {
+        // Portable programs live outside the standard roots. Their folder is
+        // only accepted when it carries the application's name, which is what
+        // tells it apart from the drawer holding it.
+        let target = PathBuf::from(r"D:\Portables\Ejemplo Portable");
+        let names = vec!["Ejemplo Portable".to_string()];
+        assert!(validate_removable_install_dir(&target, &names).is_ok());
+        assert!(validate_removable_install_dir(&PathBuf::from(r"D:\Portables"), &names).is_err());
+        assert!(validate_removable_install_dir(&target, &["Otra App".to_string()]).is_err());
     }
 
     #[test]
@@ -2758,18 +2817,19 @@ mod tests {
         let program_files =
             std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
         let target = PathBuf::from(program_files).join("Example App");
-        assert!(validate_removable_install_dir(&target).is_ok());
+        assert!(validate_removable_install_dir(&target, &[]).is_ok());
 
         let managed = paths::app_dir().join("example_app");
-        assert!(validate_removable_install_dir(&managed).is_ok());
+        assert!(validate_removable_install_dir(&managed, &[]).is_ok());
 
         // Per-user installs (Obsidian, VS Code, Discord...) live here and must
         // keep working, even though `Programs` is itself an allowed root.
         if let Ok(local) = std::env::var("LOCALAPPDATA") {
             let per_user = PathBuf::from(&local).join("Programs").join("Example App");
-            assert!(validate_removable_install_dir(&per_user).is_ok());
+            assert!(validate_removable_install_dir(&per_user, &[]).is_ok());
             assert!(
-                validate_removable_install_dir(&PathBuf::from(&local).join("Programs")).is_err()
+                validate_removable_install_dir(&PathBuf::from(&local).join("Programs"), &[])
+                    .is_err()
             );
         }
     }
@@ -2820,11 +2880,17 @@ mod tests {
 
     #[test]
     fn versions_are_looked_up_ignoring_the_identifier_case() {
-        assert_eq!(
-            winget_update_versions(WINGET_UPGRADE_ES, "google.chrome"),
-            Some(("151.0.7922.109".into(), "151.0.7922.138".into()))
-        );
-        assert_eq!(winget_update_versions(WINGET_UPGRADE_ES, "Mozilla.Firefox"), None);
+        let upgrades = parse_winget_upgrades(WINGET_UPGRADE_ES);
+        let chrome = upgrades
+            .iter()
+            .find(|upgrade| upgrade.matches("google.chrome"))
+            .expect("WinGet prints the identifier as it pleases; the catalog need not match its case");
+        assert_eq!(chrome.installed, "151.0.7922.109");
+        assert_eq!(chrome.available, "151.0.7922.138");
+        // A package missing from the table has no update pending.
+        assert!(!upgrades
+            .iter()
+            .any(|upgrade| upgrade.matches("Mozilla.Firefox")));
     }
 
     #[test]

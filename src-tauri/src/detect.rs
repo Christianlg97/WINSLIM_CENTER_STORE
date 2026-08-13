@@ -256,6 +256,11 @@ pub struct AppStatus {
     pub can_launch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uninstall_command: Option<String>,
+    /// The folder Windows itself recorded as the application's, which is not the
+    /// same as `install_path`: that one doubles as the launch target and can be
+    /// any executable deep inside the tree. Removing anything must start here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub install_location: Option<String>,
 }
 
 fn norm(s: &str) -> String {
@@ -285,7 +290,7 @@ fn is_generic_word(s: &str) -> bool {
     )
 }
 
-fn names_match(catalog_name: &str, display_name: &str) -> bool {
+pub fn names_match(catalog_name: &str, display_name: &str) -> bool {
     let a = norm(catalog_name);
     let b = norm(display_name);
     if a.is_empty() || b.is_empty() {
@@ -573,6 +578,7 @@ pub fn build_statuses(
                         can_uninstall: true,
                         can_launch: resolved_launch.is_some(),
                         uninstall_command: None,
+                        install_location: Some(info.install_path.clone()),
                     },
                 );
                 continue;
@@ -605,6 +611,17 @@ pub fn build_statuses(
                     .and_then(|path| {
                         crate::installer::resolve_launchable_path(&path, preferred_executable)
                     })
+                    // Portable programs are indexed without a usable location:
+                    // the registry points at a folder that is not there any more
+                    // — or never was — and the only trace left of them is the
+                    // executable sitting on PATH or registered as an application
+                    // alias. Without this the store listed them as installed
+                    // while refusing to open them.
+                    .or_else(|| {
+                        crate::residue::find_indexed_executable(
+                            &crate::residue::AppIdentity::from_catalog(entry, None),
+                        )
+                    })
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_default()
             });
@@ -632,6 +649,8 @@ pub fn build_statuses(
                             .is_some_and(|value| !value.trim().is_empty()),
                     can_launch: !launch_path.is_empty(),
                     uninstall_command: sys.uninstall_string.clone(),
+                    install_location: Some(sys.install_location.trim().to_string())
+                        .filter(|location| !location.is_empty()),
                 },
             );
         } else if let Some(start_app) = match_start_app(entry, name, start_apps) {
@@ -651,6 +670,7 @@ pub fn build_statuses(
                         .is_some(),
                     can_launch: true,
                     uninstall_command: None,
+                    install_location: None,
                 },
             );
         } else if let Some(version) = installed_winget_version(entry, winget_packages) {
@@ -666,6 +686,7 @@ pub fn build_statuses(
                     can_uninstall: true,
                     can_launch: false,
                     uninstall_command: None,
+                    install_location: None,
                 },
             );
         } else {
@@ -681,6 +702,7 @@ pub fn build_statuses(
                     can_uninstall: false,
                     can_launch: false,
                     uninstall_command: None,
+                    install_location: None,
                 },
             );
         }
@@ -706,6 +728,15 @@ fn installed_winget_version(entry: &serde_json::Value, output: &str) -> Option<S
     })
 }
 
+/// The Start Menu lists entries whose identifier is a plain path, and it keeps
+/// listing them after the file is gone — several of this machine's entries point
+/// into the recycle bin. Such an entry describes something Windows can no longer
+/// open, so it cannot be evidence that a program is installed.
+fn start_app_still_exists(app: &StartApp) -> bool {
+    let path = std::path::Path::new(app.app_id.trim());
+    !path.is_absolute() || path.is_file()
+}
+
 fn match_start_app<'a>(
     entry: &serde_json::Value,
     catalog_name: &str,
@@ -723,11 +754,12 @@ fn match_start_app<'a>(
             explicit
                 .iter()
                 .any(|candidate| norm(candidate) == norm(&app.name))
+                && start_app_still_exists(app)
         });
     }
     start_apps
         .iter()
-        .find(|app| names_match(catalog_name, &app.name))
+        .find(|app| names_match(catalog_name, &app.name) && start_app_still_exists(app))
 }
 
 #[cfg(test)]
@@ -780,6 +812,24 @@ mod tests {
         assert!(catalog_update_available("2.1.0", "2.0.9"));
         assert!(!catalog_update_available("2.1.0", "2.1.0"));
         assert!(!catalog_update_available("2.1.0", "3.0.0"));
+    }
+
+    #[test]
+    fn a_start_menu_entry_whose_file_is_gone_is_not_an_installed_program() {
+        let apps = vec![
+            StartApp {
+                name: "Ejemplo".into(),
+                app_id: r"D:\Borrado\Ejemplo.exe".into(),
+            },
+            StartApp {
+                name: "Xbox".into(),
+                app_id: "xbox!App".into(),
+            },
+        ];
+        let entry = serde_json::json!({});
+        assert!(match_start_app(&entry, "Ejemplo", &apps).is_none());
+        // A packaged identifier is not a path and stays trusted.
+        assert!(match_start_app(&entry, "Xbox", &apps).is_some());
     }
 
     #[test]

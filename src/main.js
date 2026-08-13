@@ -1045,7 +1045,10 @@ async function uninstallApp(id) {
         }
       }, 20000);
       try {
-        await invoke("uninstall_app", { appId: id });
+        // El backend decide el mensaje: no es lo mismo haber quitado el programa
+        // que descubrir que nunca estuvo y haber limpiado lo que lo daba por
+        // instalado.
+        const outcome = await invoke("uninstall_app", { appId: id });
         closeModal();
         await refreshStatuses();
         setTransientStatus(`${app.name} se desinstaló correctamente`, "var(--green)", 5000);
@@ -1053,7 +1056,7 @@ async function uninstallApp(id) {
         renderContent();
         showAlertModal(
           "Desinstalación completada",
-          `${app.name} se desinstaló correctamente del equipo.`,
+          outcome || `${app.name} se desinstaló correctamente del equipo.`,
         );
       } catch (e) {
         closeModal();
