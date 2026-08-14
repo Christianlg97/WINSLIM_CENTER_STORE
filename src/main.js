@@ -1885,8 +1885,10 @@ function showAboutModal() {
       note.className = "about-note ok";
     } catch (error) {
       // Asked for on purpose, so the answer cannot be a silent shrug the way it
-      // is when the check runs by itself at start-up.
-      note.textContent = "No se pudo consultar GitHub. Comprueba la conexión e inténtalo de nuevo.";
+      // is when the check runs by itself at start-up — and it says what actually
+      // happened, because "comprueba la conexión" sent the user chasing a
+      // network problem that was never there.
+      note.textContent = String(error) || "No se pudo consultar GitHub.";
       note.className = "about-note bad";
       clientLog("warn", "self-update", `Comprobación manual fallida: ${error}`);
     } finally {

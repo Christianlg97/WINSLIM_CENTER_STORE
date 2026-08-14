@@ -903,28 +903,63 @@ async fn fetch_github_json<T: for<'de> Deserialize<'de>>(
 }
 
 /// Everything a repository's newest release says about itself, as one piece of
-/// text: tag, name and notes in that order.
+/// text: tag, name and notes.
 ///
 /// The store publishes every build under the same `latest` tag, so its version
-/// is never in the tag — it is written in the name or in the notes. Handing the
-/// three back joined lets the caller look for it wherever the author put it,
-/// most specific source first.
+/// is never in the tag — it is written in the name or in the notes. Handing them
+/// back joined lets the caller look for it wherever the author put it.
+///
+/// The releases feed is read first and the API only as a fallback. The API
+/// allows sixty requests an hour per address, and a single scan of this catalog
+/// spends forty-nine of them checking its GitHub-hosted applications; the
+/// store's own version check ran last and was the one that always found the
+/// quota gone. The feed is served by the web host, does not count against that
+/// budget, and carries the same notes.
 pub async fn github_release_text(repo: &str) -> Result<String, String> {
     let client = reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .build()
         .map_err(|e| e.to_string())?;
-    let release = fetch_github_json::<GhRelease>(
-        &client,
-        &format!("https://api.github.com/repos/{repo}/releases/latest"),
-    )
-    .await?;
-    Ok([
-        release.tag_name,
-        release.name.unwrap_or_default(),
-        release.body.unwrap_or_default(),
-    ]
-    .join("\n"))
+
+    match github_releases_feed(&client, repo).await {
+        Ok(feed) => Ok(feed),
+        Err(feed_error) => {
+            crate::logger::warn(
+                "github",
+                format!(
+                    "El feed de versiones de {repo} no respondió ({feed_error}); se consulta la API"
+                ),
+            );
+            let release = fetch_github_json::<GhRelease>(
+                &client,
+                &format!("https://api.github.com/repos/{repo}/releases/latest"),
+            )
+            .await?;
+            Ok([
+                release.tag_name,
+                release.name.unwrap_or_default(),
+                release.body.unwrap_or_default(),
+            ]
+            .join("\n"))
+        }
+    }
+}
+
+/// The public Atom feed of a repository's releases, newest entry first.
+async fn github_releases_feed(client: &reqwest::Client, repo: &str) -> Result<String, String> {
+    let response = client
+        .get(format!("https://github.com/{repo}/releases.atom"))
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("respondió {}", response.status()));
+    }
+    let body = response.text().await.map_err(|error| error.to_string())?;
+    if body.trim().is_empty() {
+        return Err("llegó vacío".into());
+    }
+    Ok(body)
 }
 
 pub async fn github_latest_release_asset(

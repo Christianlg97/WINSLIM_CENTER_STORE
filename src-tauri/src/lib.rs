@@ -1198,7 +1198,11 @@ struct StoreUpdate {
 #[tauri::command]
 async fn check_store_update() -> Result<Option<StoreUpdate>, String> {
     let current = env!("CARGO_PKG_VERSION").to_string();
-    let text = download::github_release_text(GITHUB_REPO).await?;
+    // The internal markers belong to the log, never to the sentence the user
+    // reads in the About dialog.
+    let text = download::github_release_text(GITHUB_REPO)
+        .await
+        .map_err(|error| installer::display_install_error(&error))?;
     let Some(published) = version_in_release_text(&text) else {
         logger::warn(
             "self-update",
@@ -1805,6 +1809,21 @@ mod tests {
         assert_eq!(version_in_release_text("latest\nlatest\nCorrecciones varias"), None);
         // Bare numbers are not versions, however many of them there are.
         assert_eq!(version_in_release_text("build 20260814 · 1490x999"), None);
+    }
+
+    #[test]
+    fn the_version_is_also_read_from_the_releases_feed() {
+        // The feed carries the notes XML-escaped and wrapped in entry metadata.
+        // Nothing needs unescaping: the number sits right after the product name
+        // either way.
+        let feed = concat!(
+            "<entry><id>tag:github.com,2008:Repository/1/latest</id>",
+            "<link rel=\"alternate\" href=\"https://github.com/x/y/releases/tag/latest\"/>",
+            "<title>latest</title>",
+            "<content type=\"html\">&lt;h1&gt;### WinSlimCenter 1.7.1 ###&lt;/h1&gt;\n",
+            "&lt;ul&gt;\n&lt;li&gt;Primera Release Estable.&lt;/li&gt;\n&lt;/ul&gt;</content></entry>"
+        );
+        assert_eq!(version_in_release_text(feed).as_deref(), Some("1.7.1"));
     }
 
     #[test]
