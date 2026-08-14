@@ -10,6 +10,13 @@ const DEFAULT_CATALOG_JSON: &str = include_str!("../apps.json");
 pub struct Settings {
     pub theme: String,
     pub accent: String,
+    /// Which build of an application published in several was chosen, by
+    /// application id. Remembered so that an update installs the same one: for
+    /// Thorium the choice is a CPU instruction set, and quietly moving from AVX2
+    /// to SSE3 would replace the browser with a slower build — or the other way
+    /// round, with one the processor cannot run at all.
+    #[serde(default)]
+    pub variants: HashMap<String, String>,
 }
 
 impl Default for Settings {
@@ -17,8 +24,50 @@ impl Default for Settings {
         Self {
             theme: "plata".into(),
             accent: "#c7ced6".into(),
+            variants: HashMap::new(),
         }
     }
+}
+
+/// The catalog entry as it reads once one of its builds is chosen.
+///
+/// An application published in several builds is a single entry carrying a
+/// `variants` block, so that the store detects, opens and uninstalls it as the
+/// one program it is; the chosen option decides only what gets downloaded. Its
+/// `overrides` are laid over the entry and the block itself is dropped, leaving
+/// something every other part of the store already knows how to read.
+pub fn apply_variant(entry: &Value, variant: Option<&str>) -> Value {
+    let mut resolved = entry.clone();
+    let Some(variants) = entry.get("variants") else {
+        return resolved;
+    };
+    let wanted = variant
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| variants.get("default").and_then(Value::as_str));
+    let options = variants.get("options").and_then(Value::as_array);
+    let chosen = options.and_then(|options| {
+        options
+            .iter()
+            .find(|option| option.get("id").and_then(Value::as_str) == wanted)
+            // An unknown or missing choice falls back to the first build listed,
+            // which is the one the catalog leads with.
+            .or_else(|| options.first())
+    });
+
+    if let Some(map) = resolved.as_object_mut() {
+        map.remove("variants");
+        if let Some(chosen) = chosen {
+            if let Some(id) = chosen.get("id").and_then(Value::as_str) {
+                map.insert("variant".into(), Value::String(id.to_string()));
+            }
+            if let Some(overrides) = chosen.get("overrides").and_then(Value::as_object) {
+                for (key, value) in overrides {
+                    map.insert(key.clone(), value.clone());
+                }
+            }
+        }
+    }
+    resolved
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -170,10 +219,51 @@ mod tests {
     }
 
     #[test]
+    fn the_chosen_build_decides_what_gets_downloaded() {
+        let entry = serde_json::json!({
+            "id": "thorium",
+            "name": "Thorium Browser",
+            "source_type": "github_release",
+            "variants": {
+                "default": "avx2",
+                "options": [
+                    { "id": "avx2", "overrides": { "asset_pattern": "thorium_AVX2_*.zip" } },
+                    { "id": "sse3", "overrides": { "asset_pattern": "thorium_SSE3_*.zip" } }
+                ]
+            }
+        });
+
+        let chosen = apply_variant(&entry, Some("sse3"));
+        assert_eq!(chosen["asset_pattern"], "thorium_SSE3_*.zip");
+        assert_eq!(chosen["variant"], "sse3");
+        // The block is spent once the choice is made: everything downstream
+        // reads an ordinary entry.
+        assert!(chosen.get("variants").is_none());
+        // The name, and everything else identifying the application, is the one
+        // the catalog gives it whichever build was picked.
+        assert_eq!(chosen["name"], "Thorium Browser");
+
+        // No choice yet means the one the catalog leads with.
+        assert_eq!(
+            apply_variant(&entry, None)["asset_pattern"],
+            "thorium_AVX2_*.zip"
+        );
+        // A choice that no longer exists must not leave the entry unusable.
+        assert_eq!(
+            apply_variant(&entry, Some("avx512"))["asset_pattern"],
+            "thorium_AVX2_*.zip"
+        );
+        // An entry without builds is handed back untouched.
+        let plain = serde_json::json!({ "id": "git", "asset_pattern": "Git-*.exe" });
+        assert_eq!(apply_variant(&plain, Some("sse3")), plain);
+    }
+
+    #[test]
     fn migrates_legacy_blue_settings_to_plata() {
         let legacy = Settings {
             theme: "midnight".into(),
             accent: "#38bdf8".into(),
+            variants: HashMap::new(),
         };
         let migrated = migrate_settings(legacy);
         assert_eq!(migrated.theme, "plata");

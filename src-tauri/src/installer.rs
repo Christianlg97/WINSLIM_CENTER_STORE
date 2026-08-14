@@ -120,8 +120,7 @@ impl InstallerFamily {
             // prompt. 5: cancelled during installation, or Abort on a retry box.
             // 6: the setup process was terminated.
             InstallerFamily::InnoSetup => &[2, 5, 6, 1602, 1223, -2_147_023_294],
-            // NSIS returns 1 when the user quits the wizard.
-            InstallerFamily::Nsis => &[1, 1602, 1223],
+            InstallerFamily::Nsis => &[1602, 1223],
             InstallerFamily::Unknown => &[1602, 1223, -2_147_023_294, -2_147_023_673],
         }
     }
@@ -192,7 +191,15 @@ fn detect_installer_family(installer_path: &Path) -> InstallerFamily {
 }
 
 fn installer_exit_means_cancelled(app: &Value, family: InstallerFamily, code: i32) -> bool {
-    family.cancel_exit_codes().contains(&code)
+    // Every setup technology in use here returns 1 when its wizard is closed
+    // before it finishes, and some also document 1 for "failed to initialise".
+    // Both readings looked equally likely from the outside, so the store used to
+    // hedge — and every single 1 it has actually seen, from Aseprite, MPC-HC and
+    // Audacity, was a wizard the user closed. It is read as the cancellation it
+    // is; nothing has been installed under either reading, so the worst a wrong
+    // guess costs is one misleading sentence.
+    code == 1
+        || family.cancel_exit_codes().contains(&code)
         || app
             .get("installer_cancel_exit_codes")
             .and_then(Value::as_array)
@@ -233,15 +240,6 @@ fn interpret_installer_exit(
         ));
     }
 
-    // Exit code 1 stays ambiguous for technologies that do not document it as
-    // cancellation: plenty of installers use it for genuine failures. NSIS is the
-    // exception and is handled above through its own code table.
-    if exit_code == Some(1) {
-        return Err(format!(
-            "{INSTALL_INTERRUPTED_PREFIX}El instalador de {name} se cerró sin completar la instalación (código 1). Puede que lo cancelaras o que el propio instalador fallara."
-        ));
-    }
-
     Err(format!(
         "El instalador de {name} terminó con el código {} ({}).",
         exit_code
@@ -277,6 +275,160 @@ fn app_installer_args(app: &Value, installer_path: &Path) -> Vec<String> {
     }
 }
 
+/// What the package's installer weighs, according to the server that hosts it.
+///
+/// WinGet neither announces the size nor prints any progress once its output is
+/// redirected — which is how the store runs it, so that no console window
+/// appears — so the total the bar needs is asked of the manifest's own link. A
+/// package whose size cannot be learned still shows what has arrived and how
+/// fast it is going; it is the percentage and the remaining time that need this.
+async fn winget_expected_size(app: &Value) -> u64 {
+    let Ok(url) = winget_installer_url(app).await else {
+        return 0;
+    };
+    crate::download::content_length(&url).await.unwrap_or(0)
+}
+
+/// How much of the installer WinGet has written so far.
+///
+/// WinGet downloads into `%TEMP%\WinGet\<PackageIdentifier>.<Version>\` and
+/// deletes the folder once the installation is under way, so the file growing
+/// there is the only account of the download the store can give.
+fn winget_downloaded_bytes(package_id: &str, since: std::time::SystemTime) -> Option<u64> {
+    let root = std::env::temp_dir().join("WinGet");
+    let prefix = format!("{}.", package_id.to_ascii_lowercase());
+    let mut newest: Option<(std::time::SystemTime, u64)> = None;
+    for package in fs::read_dir(&root).ok()?.flatten() {
+        if !package
+            .file_name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with(&prefix)
+        {
+            continue;
+        }
+        let Ok(files) = fs::read_dir(package.path()) else {
+            continue;
+        };
+        for file in files.flatten() {
+            let Ok(metadata) = file.metadata() else {
+                continue;
+            };
+            let Ok(modified) = metadata.modified() else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+            // WinGet leaves these folders behind for good, so a copy downloaded
+            // days ago sits there at its full size. Taking one for the download
+            // in flight would report an installation that had not started.
+            if modified < since {
+                continue;
+            }
+            let better = match newest {
+                Some((seen, _)) => modified >= seen,
+                None => true,
+            };
+            if better {
+                newest = Some((modified, metadata.len()));
+            }
+        }
+    }
+    newest.map(|(_, size)| size)
+}
+
+/// How long the file has to sit at the same size before the download is taken
+/// for finished. Long enough that a slow patch of a real transfer is not
+/// mistaken for the end of one.
+const WINGET_STILL_TICKS: u32 = 5;
+
+const WINGET_TICK: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Reports the download WinGet is doing while it does it, and hands back
+/// whatever the command finally answered.
+///
+/// The end of the download is read from the file itself rather than from the
+/// folder disappearing: WinGet keeps its temporary directory around well past
+/// the installation, and often for good, so waiting for it to go left the bar
+/// reading "Descargando: 100%" through the whole install and then jumping
+/// straight to "instalada correctamente".
+async fn watch_winget_download(
+    package_id: &str,
+    expected_bytes: u64,
+    running: &mut tokio::task::JoinHandle<std::io::Result<crate::process::CapturedOutput>>,
+    on_progress: &mut impl FnMut(u32, String, bool),
+) -> Result<std::io::Result<crate::process::CapturedOutput>, tokio::task::JoinError> {
+    // Only what is written from now on belongs to this operation. A few seconds
+    // of slack absorb the difference between this clock and the file times.
+    let since = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
+    let mut rate = crate::download::TransferRate::new();
+    let mut ticker = tokio::time::interval(WINGET_TICK);
+    ticker.tick().await;
+    let mut previous: Option<u64> = None;
+    let mut still_ticks = 0_u32;
+    let mut installing = false;
+    loop {
+        tokio::select! {
+            finished = &mut *running => return finished,
+            _ = ticker.tick() => {
+                // Once the installer is running there is nothing left to
+                // measure, and the message must not flicker back.
+                if installing {
+                    continue;
+                }
+                let downloaded = winget_downloaded_bytes(package_id, since);
+                let finished_downloading = match (downloaded, previous) {
+                    // Everything the server announced has arrived.
+                    (Some(bytes), _) if expected_bytes > 0 && bytes >= expected_bytes => true,
+                    // Nothing has arrived for a while: either the download is
+                    // over or the size was never known, and both end the same.
+                    (Some(bytes), Some(before)) if bytes == before => {
+                        still_ticks += 1;
+                        still_ticks >= WINGET_STILL_TICKS
+                    }
+                    // The folder went away, which WinGet does eventually.
+                    (None, Some(_)) => true,
+                    _ => {
+                        still_ticks = 0;
+                        false
+                    }
+                };
+                if let Some(bytes) = downloaded {
+                    previous = Some(bytes);
+                }
+
+                if finished_downloading {
+                    installing = true;
+                    on_progress(100, "Instalando en el sistema...".into(), false);
+                    continue;
+                }
+                let Some(downloaded) = downloaded else {
+                    continue;
+                };
+                let percent = downloaded
+                    .saturating_mul(100)
+                    .checked_div(expected_bytes)
+                    .map(|percent| percent.min(100) as u32)
+                    // Without a size to measure against the bar has nothing to
+                    // say, so it holds where the preparation left it and the
+                    // text carries the news.
+                    .unwrap_or(10);
+                on_progress(
+                    percent,
+                    crate::download::transfer_status(
+                        "Descargando",
+                        downloaded,
+                        expected_bytes,
+                        rate.sample(downloaded),
+                    ),
+                    false,
+                );
+            }
+        }
+    }
+}
+
 async fn install_with_winget(
     app: &Value,
     force_update: bool,
@@ -297,9 +449,18 @@ async fn install_with_winget(
     let verb = if force_update { "upgrade" } else { "install" }.to_string();
     let command_package_id = package_id.clone();
 
+    on_progress(5, "Preparando la descarga...".into(), false);
+    // Asked before WinGet starts rather than beside it: two WinGet processes
+    // reading the same source at once is not worth risking for a number, and
+    // the query costs a second once.
+    let expected_bytes = winget_expected_size(app).await;
+    if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(CANCELLED_MARKER.into());
+    }
     on_progress(10, "Trabajando en segundo plano...".into(), false);
+
     let cancel_flags = flags.clone();
-    let output = tokio::task::spawn_blocking(move || {
+    let mut running = tokio::task::spawn_blocking(move || {
         crate::process::hidden_output_cancelable(
             "winget.exe",
             &[
@@ -316,10 +477,12 @@ async fn install_with_winget(
             ],
             &cancel_flags.cancel,
         )
-    })
-    .await
-    .map_err(|err| format!("No se pudo iniciar winget: {err}"))?
-    .map_err(|err| format!("Windows Package Manager no está disponible: {err}"))?;
+    });
+
+    let output = watch_winget_download(&package_id, expected_bytes, &mut running, on_progress)
+        .await
+        .map_err(|err| format!("No se pudo iniciar winget: {err}"))?
+        .map_err(|err| format!("Windows Package Manager no está disponible: {err}"))?;
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst)
         || output.code == Some(WIN32_ERROR_CANCELLED)
@@ -523,6 +686,25 @@ pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<WingetUni
     ))
 }
 
+/// Repeats `winget uninstall` with the interactive user's own token.
+///
+/// WinGet refuses to touch a package installed for the user's account while it
+/// runs with administrator privileges, which is every uninstall attempted from a
+/// WinSlimCenter that was started as administrator. Explorer holds that token,
+/// so the command is handed to it. Kimi is installed this way and registers
+/// nothing else: WinGet is the only thing that knows it is there, and until this
+/// existed nothing could remove it.
+pub fn uninstall_with_winget_as_user(package_id: &str, source: &str) -> Result<(), String> {
+    let arguments = format!(
+        "uninstall --id {package_id} --exact --source {source} --accept-source-agreements --disable-interactivity --silent"
+    );
+    crate::logger::warn(
+        "uninstall-user-fallback",
+        format!("Reintentando WinGet como usuario interactivo: paquete={package_id}"),
+    );
+    crate::process::launch_as_interactive_user(Path::new("winget.exe"), &arguments, None)
+}
+
 pub fn is_winget_user_scope_elevation_error(error: &str) -> bool {
     let normalized = error.to_ascii_lowercase();
     (normalized.contains("user scope") && normalized.contains("administrator privileges"))
@@ -685,6 +867,15 @@ pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
         // Summary lines ("N upgrades available.") and prose reuse the table
         // width but never produce a bare identifier plus a target version.
         if id.is_empty() || id.contains(char::is_whitespace) || available.is_empty() {
+            continue;
+        }
+        // WinGet writes "< 1.2.3" in the Version column when it cannot read what
+        // is installed, and `--include-unknown` is what puts those rows in the
+        // table at all. That is not a comparison WinGet made, so the package
+        // stays listed however many times it is upgraded: Ubisoft Connect keeps
+        // its registry version across its own updates and went on offering the
+        // same one for ever.
+        if installed.trim_start().starts_with('<') {
             continue;
         }
         let id_truncated = id.ends_with(WINGET_ELLIPSIS);
@@ -931,11 +1122,17 @@ pub async fn do_install(
                 {
                     return Err(winget_error);
                 }
-                on_progress(
-                    5,
-                    "WinGet ha fallado; buscando descarga directa para cURL...".into(),
-                    false,
+                // What the user reads is a step, not a failure: WinGet not
+                // serving a package is ordinary — Battle.net's manifest points
+                // at a download its own server gates — and the operation carries
+                // on and succeeds. Announcing "WinGet ha fallado" made a
+                // recovery that works look like an error flashing past. The
+                // detail is in the log, where it belongs.
+                crate::logger::info(
+                    "installer",
+                    format!("WinGet no sirvió el paquete ({winget_error}); se buscará la descarga directa del proveedor."),
                 );
+                on_progress(5, "Buscando la descarga del proveedor...".into(), false);
                 let direct_url = winget_installer_url(app).await.map_err(|fallback_error| {
                     format!("{winget_error}. El fallback cURL tampoco está disponible: {fallback_error}")
                 })?;
@@ -1057,15 +1254,7 @@ pub async fn do_install(
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
-        .or_else(|| {
-            url::Url::parse(&url)
-                .ok()
-                .and_then(|u| {
-                    u.path_segments()
-                        .and_then(|mut segments| segments.next_back().map(str::to_string))
-                })
-                .filter(|s| !s.is_empty())
-        })
+        .or_else(|| file_name_from_url(&url))
         .unwrap_or_else(|| format!("{app_id}.bin"));
 
     let dest_file = download_path.join(&filename);
@@ -1079,7 +1268,9 @@ pub async fn do_install(
 
     if source_type == "winget" {
         download::download_with_curl(&url, &dest_file, flags, |p, s, pausable| {
-            on_progress(p, format!("Fallback cURL: {s}"), pausable)
+            // Which downloader is doing the work is the store's business, not
+            // something to label the user's progress bar with.
+            on_progress(p, s, pausable)
         })
         .await?;
     } else {
@@ -1147,6 +1338,25 @@ pub async fn do_install(
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
             run_installer_in_background(app, &dest_file, flags)?;
+            used_system_installer = true;
+        } else if looks_like_windows_executable(&dest_file) {
+            // Kept as a separate case from the extension above because it is a
+            // different claim: this one is what the file says it is rather than
+            // what it is called. Battle.net's setup arrives as `getInstaller`,
+            // and the store used to shelve it as a portable application and
+            // report an installation that had never run.
+            let renamed = dest_file.with_file_name(format!("{filename}.exe"));
+            fs::rename(&dest_file, &renamed)
+                .map_err(|error| format!("No se pudo preparar el instalador descargado: {error}"))?;
+            crate::logger::info(
+                "installer",
+                format!(
+                    "La descarga no traía extensión y es un ejecutable de Windows; se instala como {}",
+                    renamed.display()
+                ),
+            );
+            on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
+            run_installer_in_background(app, &renamed, flags)?;
             used_system_installer = true;
         } else {
             let stage_dir = download_path.join("stage");
@@ -1850,6 +2060,16 @@ fn allowed_installation_roots() -> Vec<PathBuf> {
             if path.is_absolute() {
                 if variable == "LOCALAPPDATA" {
                     roots.push(path.join("Programs"));
+                    // Where WinGet unpacks a portable package: one folder per
+                    // package, named after it. Those register nothing with
+                    // Windows and live nowhere else, so without this the store
+                    // had no way to remove OCCT, SpaceSniffer or Ventoy — and
+                    // WinGet itself refuses to, being run with administrator
+                    // privileges against a package installed for the user.
+                    roots.push(path.join(r"Microsoft\WinGet\Packages"));
+                }
+                if variable.starts_with("ProgramFiles") {
+                    roots.push(path.join(r"WinGet\Packages"));
                 }
                 roots.push(path);
             }
@@ -1955,12 +2175,44 @@ pub fn validate_removable_install_dir(install_dir: &Path, names: &[String]) -> R
     let directly_in_a_root = install_dir
         .parent()
         .is_some_and(|parent| roots.iter().any(|root| normalized_path_key(root) == normalized_path_key(parent)));
-    if !directly_in_a_root && !crate::residue::folder_matches_application(install_dir, names) {
+    if directly_in_a_root || crate::residue::folder_matches_application(install_dir, names) {
+        return Ok(());
+    }
+
+    // An ancestor sitting directly in one of those roots is the application's
+    // own folder, which makes this one a part of it rather than a program.
+    // OBS was indexed through
+    // `…\obs-studio\data\obs-plugins\win-capture\get-graphics-offsets64.exe`,
+    // and removing that folder took a plug-in out of a program nobody was
+    // uninstalling.
+    let nested_in_another_application = install_dir.ancestors().skip(1).any(|ancestor| {
+        ancestor.parent().is_some_and(|parent| {
+            roots
+                .iter()
+                .any(|root| normalized_path_key(root) == normalized_path_key(parent))
+        })
+    });
+    if nested_in_another_application {
         return Err(format!(
-            "La carpeta {} no es la carpeta principal de la aplicación: ni está directamente en una ubicación de programas ni lleva su nombre. WinSlimCenter no la borrará.",
+            "La carpeta {} está dentro de la carpeta de otra aplicación, así que pertenece a esa y no a la que se desinstala. WinSlimCenter no la borrará.",
             install_dir.display()
         ));
     }
+
+    // Anywhere else the folder is the application's, wherever its user chose to
+    // put it: Mod Organizer 2 installs into `C:\Modding\MO2`, which is neither a
+    // programs location nor named after it, and refusing left it impossible to
+    // uninstall from here. It goes — the system and shared locations rejected
+    // above are still off limits — and the decision is written down, because
+    // this is the one case where the folder was not recognisably its own.
+    crate::logger::warn(
+        "uninstall-folder",
+        format!(
+            "Se eliminará {} aunque no está en una ubicación de programas ni lleva el nombre de {}",
+            install_dir.display(),
+            names.first().map(String::as_str).unwrap_or("la aplicación")
+        ),
+    );
     Ok(())
 }
 
@@ -2386,6 +2638,59 @@ fn executable_architecture_score(path: &Path) -> i32 {
     }
 }
 
+/// Whether Windows opens the program in a window of its own or in a console.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutableSubsystem {
+    Gui,
+    Console,
+    Unknown,
+}
+
+/// Reads the Subsystem field of the PE optional header, which sits at the same
+/// offset in the 32- and 64-bit variants: four bytes of signature, twenty of
+/// COFF header, and sixty-eight into the optional header itself.
+fn executable_subsystem(path: &Path) -> ExecutableSubsystem {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = fs::File::open(path) else {
+        return ExecutableSubsystem::Unknown;
+    };
+    let mut dos = [0_u8; 64];
+    if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" {
+        return ExecutableSubsystem::Unknown;
+    }
+    let pe_offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
+    if file.seek(SeekFrom::Start(pe_offset + 4 + 20 + 68)).is_err() {
+        return ExecutableSubsystem::Unknown;
+    }
+    let mut subsystem = [0_u8; 2];
+    if file.read_exact(&mut subsystem).is_err() {
+        return ExecutableSubsystem::Unknown;
+    }
+    match u16::from_le_bytes(subsystem) {
+        2 => ExecutableSubsystem::Gui,
+        3 => ExecutableSubsystem::Console,
+        _ => ExecutableSubsystem::Unknown,
+    }
+}
+
+/// How much the subsystem recommends an executable as the one to open.
+///
+/// What the user asks for when pressing "Abrir" is the program with a window.
+/// Maxima installs nine console helpers next to `wxmaxima.exe` — `sbcl.exe`,
+/// `maxima_longnames.exe`, `tclsh90s.exe` — and picking one of those opened a
+/// console that printed nothing and closed itself.
+/// Deliberately worth less than the executable named after its own folder: a
+/// command-line program is entitled to be the answer when the installation is
+/// plainly named after it, and only then.
+fn subsystem_score(path: &Path) -> i32 {
+    match executable_subsystem(path) {
+        ExecutableSubsystem::Gui => 45,
+        ExecutableSubsystem::Console => -20,
+        ExecutableSubsystem::Unknown => 0,
+    }
+}
+
 fn executable_family(path: &Path) -> String {
     let mut stem = path
         .file_stem()
@@ -2455,63 +2760,147 @@ pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
     exes.retain(|path| {
         !is_installer_artifact(path) && executable_architecture_score(path) >= -1_000
     });
-    if exes.is_empty() {
-        return None;
-    }
-    exes.sort_by_key(|p| {
-        let name = p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        let mut s = 0i32;
-        // Architecture decides between variants of the same application, but
-        // must not make an unrelated x64 helper outrank the real neutral-name
-        // launcher.
-        s += executable_architecture_score(p) / 3;
-        if name.contains("setup") || name.contains("installer") || name.contains("install") {
-            s -= 50;
-        }
-        if matches!(
-            name.as_str(),
-            "main.exe" | "app.exe" | "start.exe" | "launcher.exe"
-        ) {
-            s += 30;
-        }
-        if p.parent() == Some(install_dir) {
-            s += 10;
-        }
-        if p.file_stem()
-            .and_then(|value| value.to_str())
-            .zip(install_dir.file_name().and_then(|value| value.to_str()))
-            .map(|(exe, dir)| {
-                let normalize = |value: &str| {
-                    value
-                        .chars()
-                        .filter(|character| character.is_alphanumeric())
-                        .flat_map(|character| character.to_lowercase())
-                        .collect::<String>()
-                };
-                normalize(exe) == normalize(dir)
-            })
-            .unwrap_or(false)
-        {
-            s += 80;
-        }
-        if name.contains("unins") || name.contains("uninstall") {
-            s -= 100;
-        }
-        if name.contains("update")
-            || name.contains("crash")
-            || name.contains("helper")
-            || name.contains("service")
-        {
-            s -= 40;
-        }
-        -s // reverse sort via negative
+    // Scoring reads each file's headers, so it runs once per candidate instead
+    // of on every comparison the sort makes.
+    let mut ranked = exes
+        .into_iter()
+        .map(|path| (launcher_score(install_dir, &path), path))
+        .collect::<Vec<_>>();
+    // Candidates that score the same are ordered by path rather than by
+    // whatever order the directory happened to be read in: Maxima's launcher
+    // changed from one refresh of the store to the next because of that.
+    ranked.sort_by(|(left_score, left), (right_score, right)| {
+        right_score.cmp(left_score).then_with(|| left.cmp(right))
     });
-    // sort_by_key ascending on -s means highest score first
-    Some(exes.into_iter().next().unwrap())
+    ranked.into_iter().next().map(|(_, path)| path)
+}
+
+/// How much an executable looks like the one the user means by "open it".
+fn launcher_score(install_dir: &Path, path: &Path) -> i32 {
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    let mut s = 0i32;
+    // Architecture decides between variants of the same application, but
+    // must not make an unrelated x64 helper outrank the real neutral-name
+    // launcher.
+    s += executable_architecture_score(path) / 3;
+    s += subsystem_score(path);
+    if name.contains("setup") || name.contains("installer") || name.contains("install") {
+        s -= 50;
+    }
+    if matches!(
+        name.as_str(),
+        "main.exe" | "app.exe" | "start.exe" | "launcher.exe"
+    ) {
+        s += 30;
+    }
+    if path.parent() == Some(install_dir) {
+        s += 10;
+    }
+    if path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .zip(install_dir.file_name().and_then(|value| value.to_str()))
+        .map(|(exe, dir)| {
+            let normalize = |value: &str| {
+                value
+                    .chars()
+                    .filter(|character| character.is_alphanumeric())
+                    .flat_map(|character| character.to_lowercase())
+                    .collect::<String>()
+            };
+            normalize(exe) == normalize(dir)
+        })
+        .unwrap_or(false)
+    {
+        s += 80;
+    }
+    if name.contains("unins") || name.contains("uninstall") {
+        s -= 100;
+    }
+    if name.contains("update")
+        || name.contains("crash")
+        || name.contains("helper")
+        || name.contains("service")
+    {
+        s -= 40;
+    }
+    s
+}
+
+/// Whether a name ends in one of the extensions the store knows how to install.
+fn has_package_extension(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    [
+        ".exe",
+        ".msi",
+        ".msix",
+        ".msixbundle",
+        ".appx",
+        ".appxbundle",
+        ".zip",
+        ".7z",
+        ".rar",
+    ]
+    .iter()
+    .any(|extension| lower.ends_with(extension))
+}
+
+/// The name to save a download under, taken from the link itself.
+///
+/// The last segment of the path is the usual answer, but a download endpoint is
+/// free to name the file in the query instead: Battle.net is served from
+/// `…/getInstaller?os=win&installer=Battle.net-Setup.exe`, and saving that as
+/// `getInstaller` left a setup with no extension the store recognised.
+fn file_name_from_url(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let segment = parsed
+        .path_segments()
+        .and_then(|mut segments| segments.next_back())
+        .map(str::to_string)
+        .filter(|segment| !segment.is_empty());
+    if segment.as_deref().is_some_and(has_package_extension) {
+        return segment;
+    }
+    let named_in_query = parsed
+        .query_pairs()
+        .map(|(_, value)| value.into_owned())
+        .find(|value| has_package_extension(value));
+    match named_in_query {
+        // The query is written by the server, so what comes out of it is used
+        // as a file name and never as a path.
+        Some(name) => Some(sanitize_file_name(
+            name.rsplit(['/', '\\']).next().unwrap_or(&name),
+        )),
+        None => segment,
+    }
+}
+
+fn sanitize_file_name(name: &str) -> String {
+    name.chars()
+        .map(|character| {
+            if character.is_control() || r#"<>:"/\|?*"#.contains(character) {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
+/// Whether the file starts with the `MZ` signature every Windows executable
+/// carries, whatever the download happened to call it.
+fn looks_like_windows_executable(path: &Path) -> bool {
+    use std::io::Read;
+
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    let mut signature = [0_u8; 2];
+    file.read_exact(&mut signature).is_ok() && &signature == b"MZ"
 }
 
 fn is_installer_artifact(path: &Path) -> bool {
@@ -2629,14 +3018,45 @@ pub fn resolve_launchable_path(
         .flatten();
     }
     if let Some(relative) = preferred_executable.filter(|value| !value.trim().is_empty()) {
-        let preferred = install_path.join(relative);
-        if preferred.is_file() && !is_installer_artifact(&preferred) {
-            if let Some(executable) = prefer_x64_executable(&preferred) {
-                return Some(executable);
-            }
+        if let Some(executable) = preferred_in_tree(install_path, relative) {
+            return Some(executable);
         }
     }
     find_executable(install_path)
+}
+
+/// The executable the catalog names, wherever the installation keeps it.
+///
+/// `launch_executable` is written relative to the installation root, but which
+/// folder the store ends up calling the root depends on what the installer
+/// registered: for Maxima it is `C:\maxima-5.49.0` when Windows recorded
+/// InstallLocation and `…\bin` when only the icon gave it away. Falling back to
+/// a search by file name keeps one catalog value right in both cases.
+fn preferred_in_tree(install_path: &Path, relative: &str) -> Option<PathBuf> {
+    let relative = relative.trim();
+    let direct = install_path.join(relative);
+    if direct.is_file() && !is_installer_artifact(&direct) {
+        if let Some(executable) = prefer_x64_executable(&direct) {
+            return Some(executable);
+        }
+    }
+    let wanted = relative.rsplit(['/', '\\']).next()?.trim();
+    if wanted.is_empty() {
+        return None;
+    }
+    let mut candidates = Vec::new();
+    collect_exes(install_path, &mut candidates);
+    candidates.sort();
+    candidates
+        .into_iter()
+        .find(|candidate| {
+            candidate
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case(wanted))
+                && !is_installer_artifact(candidate)
+        })
+        .and_then(|found| prefer_x64_executable(&found))
 }
 
 fn collect_exes(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -2675,8 +3095,18 @@ pub fn launch_path_with_preferred(
         ),
     );
     let mut command = std::process::Command::new(&executable);
-    if install_path.is_dir() {
-        command.current_dir(install_path);
+    // A shortcut made by Windows always carries a "Start in" folder, and plenty
+    // of programs need it: UNIGINE Heaven reads its configuration through a path
+    // built from the working directory and refuses to start without the right
+    // one. Leaving the child with WinSlimCenter's own directory is never what
+    // any of them mean.
+    let working_directory = if install_path.is_dir() {
+        Some(install_path.to_path_buf())
+    } else {
+        executable.parent().map(Path::to_path_buf)
+    };
+    if let Some(directory) = working_directory.filter(|path| path.is_dir()) {
+        command.current_dir(directory);
     }
     let mut child = command.spawn().map_err(|error| {
         crate::logger::error(
@@ -2783,6 +3213,64 @@ pub fn launch_app(
         return launch_path(&PathBuf::from(cached_path));
     }
     launch_path(&PathBuf::from(&info.install_path))
+}
+
+#[cfg(test)]
+mod naming_tests {
+    use super::*;
+
+    #[test]
+    fn a_download_endpoint_can_name_the_file_in_the_query() {
+        // Battle.net's link, which used to be saved as `getInstaller`: with no
+        // extension the store shelved the setup as a portable application and
+        // reported an installation that had never run.
+        assert_eq!(
+            file_name_from_url(
+                "https://downloader.battle.net/download/getInstaller?os=win&installer=Battle.net-Setup.exe"
+            )
+            .as_deref(),
+            Some("Battle.net-Setup.exe")
+        );
+        // A path that already names the package is left exactly as it is.
+        assert_eq!(
+            file_name_from_url("https://example.com/releases/App-1.2-x64.exe").as_deref(),
+            Some("App-1.2-x64.exe")
+        );
+        // Nothing recognisable anywhere: the last segment still answers.
+        assert_eq!(
+            file_name_from_url("https://example.com/download/latest").as_deref(),
+            Some("latest")
+        );
+    }
+
+    #[test]
+    fn a_name_taken_from_the_query_can_never_be_a_path() {
+        assert_eq!(
+            file_name_from_url("https://example.com/get?file=../../evil.exe").as_deref(),
+            Some("evil.exe")
+        );
+        assert_eq!(
+            file_name_from_url(r"https://example.com/get?file=C:\Windows\System32\evil.exe")
+                .as_deref(),
+            Some("evil.exe")
+        );
+    }
+
+    #[test]
+    fn winget_does_not_offer_an_upgrade_it_cannot_compare() {
+        // `--include-unknown` lists a package whose installed version WinGet
+        // could not read as "< target". Ubisoft Connect kept its registry
+        // version across its own updates and so was offered for ever.
+        let table = concat!(
+            "Nombre            Id                Versión           Disponible     Origen\n",
+            "-------------------------------------------------------------------------\n",
+            "Ubisoft Connect   Ubisoft.Connect   < 172.1.0.13247   172.1.0.13247  winget\n",
+            "7-Zip             7zip.7zip         24.08             25.01          winget\n",
+        );
+        let upgrades = parse_winget_upgrades(table);
+        let ids: Vec<&str> = upgrades.iter().map(|upgrade| upgrade.id.as_str()).collect();
+        assert_eq!(ids, vec!["7zip.7zip"]);
+    }
 }
 
 #[cfg(test)]
@@ -2973,9 +3461,22 @@ mod tests {
             assert!(!display_install_error(&error).contains("código"));
         }
 
-        // NSIS uses 1 for the same thing.
-        let nsis = interpret_installer_exit(&app, InstallerFamily::Nsis, Some(1)).unwrap_err();
-        assert!(is_install_cancelled(&nsis));
+        // A closed wizard comes back as 1 whatever built the installer, and it
+        // is read the same way for all of them: Aseprite, MPC-HC and Audacity
+        // are Inno Setup, and every one of them answered 1 on being cancelled.
+        for family in [
+            InstallerFamily::Nsis,
+            InstallerFamily::InnoSetup,
+            InstallerFamily::WindowsInstaller,
+            InstallerFamily::Burn,
+            InstallerFamily::InstallShield,
+            InstallerFamily::Unknown,
+        ] {
+            let error = interpret_installer_exit(&app, family, Some(1)).unwrap_err();
+            assert!(is_install_cancelled(&error), "{family:?} 1 es cancelación");
+            assert!(!is_install_interrupted(&error));
+            assert!(!display_install_error(&error).contains("código"));
+        }
 
         // Windows Installer / Burn: 1602, 1223 and their HRESULT forms.
         for code in [1602, 1223, -2_147_023_294, -2_147_023_673] {
@@ -3103,7 +3604,6 @@ mod tests {
             PathBuf::from(&program_files),
             PathBuf::from(&program_files).join("Common Files"),
             PathBuf::from(&program_files).join("Common Files").join("Vendor"),
-            PathBuf::from(r"D:\Portable\App"),
         ] {
             assert!(
                 validate_removable_install_dir(&blocked, &[]).is_err(),
@@ -3150,15 +3650,38 @@ mod tests {
     }
 
     #[test]
-    fn a_portable_folder_named_after_the_application_can_be_removed() {
-        // Portable programs live outside the standard roots. Their folder is
-        // only accepted when it carries the application's name, which is what
-        // tells it apart from the drawer holding it.
+    fn a_winget_portable_package_is_its_own_folder() {
+        // OCCT, SpaceSniffer and Ventoy arrive this way: WinGet unpacks them
+        // under its own Packages directory, registers nothing with Windows, and
+        // then refuses to remove them because the store runs elevated and they
+        // belong to the user. The folder is all there is to delete, and its name
+        // does not resemble the application's.
+        let local = std::env::var("LOCALAPPDATA").unwrap();
+        let packages = PathBuf::from(&local).join(r"Microsoft\WinGet\Packages");
+        assert!(validate_removable_install_dir(
+            &packages.join("OCBase.OCCT.Personal_Microsoft.Winget.Source_8wekyb3d8bbwe"),
+            &["OCCT Personal".to_string()]
+        )
+        .is_ok());
+        // The directory holding all of them is not one package's folder.
+        assert!(validate_removable_install_dir(&packages, &[]).is_err());
+    }
+
+    #[test]
+    fn a_portable_folder_outside_the_standard_roots_can_be_removed() {
+        // Programs installed wherever their user wanted them are removed just
+        // the same, whether or not the folder carries the application's name:
+        // Mod Organizer 2 goes into `C:\Modding\MO2` and could not be
+        // uninstalled from here while the name was a requirement.
         let target = PathBuf::from(r"D:\Portables\Ejemplo Portable");
         let names = vec!["Ejemplo Portable".to_string()];
         assert!(validate_removable_install_dir(&target, &names).is_ok());
-        assert!(validate_removable_install_dir(&PathBuf::from(r"D:\Portables"), &names).is_err());
-        assert!(validate_removable_install_dir(&target, &["Otra App".to_string()]).is_err());
+        assert!(validate_removable_install_dir(&target, &["Otra App".to_string()]).is_ok());
+        assert!(validate_removable_install_dir(
+            &PathBuf::from(r"C:\Modding\MO2"),
+            &["Mod Organizer 2".to_string()]
+        )
+        .is_ok());
     }
 
     #[test]

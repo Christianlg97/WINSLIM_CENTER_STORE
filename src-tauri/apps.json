@@ -244,6 +244,9 @@
     "github_repo": "git-for-windows/git",
     "asset_pattern": "Git-*-64-bit.exe",
     "winget_id": "Git.Git",
+    "detect_names": [
+      "Git"
+    ],
     "accent_color": "#f05032",
     "icon_url": "https://cdn.simpleicons.org/git/white",
     "featured": false
@@ -304,8 +307,11 @@
     "featured": true,
     "source_type": "github_release",
     "github_repo": "brave/brave-browser",
-    "asset_pattern": "BraveBrowserStandaloneSetup*.exe",
+    "asset_pattern": "BraveBrowserStandaloneSilentSetup*.exe",
     "winget_id": "Brave.Brave",
+    "detect_names": [
+      "Brave"
+    ],
     "accent_color": "#fb542b",
     "icon_url": "https://cdn.simpleicons.org/brave/white"
   },
@@ -705,6 +711,9 @@
     "github_repo": "microsoft/PowerToys",
     "asset_pattern": "PowerToysSetup-*-x64.exe",
     "winget_id": "Microsoft.PowerToys",
+    "detect_names": [
+      "PowerToys"
+    ],
     "accent_color": "#f25022",
     "icon_url": "https://raw.githubusercontent.com/microsoft/PowerToys/HEAD/doc/images/icons/PowerToys%20icon/PNG/2160x2160.png"
   },
@@ -927,6 +936,9 @@
     "icon_url": "https://cdn.simpleicons.org/python/white",
     "winget_id": "Python.Python.3.14",
     "winget_source": "winget",
+    "detect_names": [
+      "Python 3"
+    ],
     "featured": false
   },
   {
@@ -1234,6 +1246,9 @@
     "accent_color": "#10a37f",
     "winget_id": "OpenAI.Codex",
     "winget_source": "winget",
+    "detect_names": [
+      "Codex"
+    ],
     "featured": false
   },
   {
@@ -1264,6 +1279,9 @@
     "accent_color": "#3b82f6",
     "winget_id": "ByteDance.Trae",
     "winget_source": "winget",
+    "detect_names": [
+      "Trae"
+    ],
     "featured": false
   },
   {
@@ -1296,6 +1314,9 @@
     "accent_color": "#8b5cf6",
     "winget_id": "MoonshotAI.Kimi",
     "winget_source": "winget",
+    "detect_names": [
+      "Kimi"
+    ],
     "featured": false
   },
   {
@@ -1314,69 +1335,60 @@
     "featured": false
   },
   {
-    "id": "thorium_avx2",
-    "name": "Thorium Browser AVX2",
-    "description": "Edición de Thorium para procesadores modernos con AVX2; ofrece el mayor nivel de optimización disponible.",
+    "id": "thorium",
+    "name": "Thorium Browser",
+    "description": "Navegador basado en Chromium recompilado con optimizaciones de CPU; notablemente más rápido que Chrome.",
     "version": "latest",
     "author": "Alex313031",
     "category": "Navegadores",
     "section": "Navegadores",
     "source_type": "github_release",
     "github_repo": "Alex313031/Thorium-Win",
-    "asset_pattern": "thorium_AVX2_*.zip",
-    "winget_id": "Alex313031.Thorium.AVX2",
     "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
     "accent_color": "#2563eb",
     "launch_executable": "thorium.exe",
-    "featured": false
-  },
-  {
-    "id": "thorium_avx",
-    "name": "Thorium Browser AVX",
-    "description": "Edición de Thorium compatible con procesadores x64 que admiten AVX pero no AVX2.",
-    "version": "latest",
-    "author": "Alex313031",
-    "category": "Navegadores",
-    "section": "Navegadores",
-    "source_type": "github_release",
-    "github_repo": "Alex313031/Thorium-Win",
-    "asset_pattern": "thorium_AVX_*.zip",
-    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
-    "accent_color": "#2563eb",
-    "launch_executable": "thorium.exe",
-    "featured": false
-  },
-  {
-    "id": "thorium_sse4",
-    "name": "Thorium Browser SSE4",
-    "description": "Edición de compatibilidad de Thorium optimizada para procesadores x64 con SSE4.",
-    "version": "latest",
-    "author": "Alex313031",
-    "category": "Navegadores",
-    "section": "Navegadores",
-    "source_type": "github_release",
-    "github_repo": "Alex313031/Thorium-Win",
-    "asset_pattern": "thorium_SSE4_*.zip",
-    "winget_id": "Alex313031.Thorium",
-    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
-    "accent_color": "#2563eb",
-    "launch_executable": "thorium.exe",
-    "featured": false
-  },
-  {
-    "id": "thorium_sse3",
-    "name": "Thorium Browser SSE3",
-    "description": "Edición de máxima compatibilidad de Thorium para procesadores x64 antiguos con SSE3.",
-    "version": "latest",
-    "author": "Alex313031",
-    "category": "Navegadores",
-    "section": "Navegadores",
-    "source_type": "github_release",
-    "github_repo": "Alex313031/Thorium-Win",
-    "asset_pattern": "thorium_SSE3_*.zip",
-    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
-    "accent_color": "#2563eb",
-    "launch_executable": "thorium.exe",
+    "detect_names": [
+      "Thorium"
+    ],
+    "variants": {
+      "label": "Optimización de procesador",
+      "hint": "Thorium publica una compilación por juego de instrucciones. Elige la más avanzada que admita tu procesador: si te equivocas hacia arriba, el navegador no arrancará.",
+      "default": "avx2",
+      "options": [
+        {
+          "id": "avx2",
+          "name": "AVX2",
+          "description": "Intel desde 4ª generación (2013) y AMD desde Excavator. La más rápida.",
+          "overrides": {
+            "asset_pattern": "thorium_AVX2_*.zip"
+          }
+        },
+        {
+          "id": "avx",
+          "name": "AVX",
+          "description": "Intel desde Sandy Bridge (2011) y AMD desde Bulldozer.",
+          "overrides": {
+            "asset_pattern": "thorium_AVX_*.zip"
+          }
+        },
+        {
+          "id": "sse4",
+          "name": "SSE4",
+          "description": "Procesadores x64 anteriores a AVX, desde Core 2 y AMD K10.",
+          "overrides": {
+            "asset_pattern": "thorium_SSE4_*.zip"
+          }
+        },
+        {
+          "id": "sse3",
+          "name": "SSE3",
+          "description": "Máxima compatibilidad, para los x64 más antiguos.",
+          "overrides": {
+            "asset_pattern": "thorium_SSE3_*.zip"
+          }
+        }
+      ]
+    },
     "featured": false
   },
   {
@@ -2100,7 +2112,8 @@
     "icon_url": "https://www.google.com/s2/favicons?domain=maxima.sourceforge.io&sz=128",
     "detect_names": [
       "Maxima"
-    ]
+    ],
+    "launch_executable": "bin/wxmaxima.exe"
   },
   {
     "id": "coq_platform",

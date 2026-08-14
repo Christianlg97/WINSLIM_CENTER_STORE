@@ -11,6 +11,11 @@ pub struct SystemApp {
     pub publisher: String,
     pub display_icon: String,
     pub uninstall_string: Option<String>,
+    /// The plain `UninstallString`, kept apart when it differs from the one
+    /// above. A vendor's quiet switch is a claim, not a fact: Rockstar
+    /// advertises `uninstall.exe /S` and that exits zero in half a second
+    /// having removed nothing, while the full command beside it works.
+    pub full_uninstall_string: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -256,6 +261,10 @@ pub struct AppStatus {
     pub can_launch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uninstall_command: Option<String>,
+    /// What Windows registered besides the quiet command, when the two differ.
+    /// Tried when the quiet one runs without error and changes nothing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uninstall_command_full: Option<String>,
     /// The folder Windows itself recorded as the application's, which is not the
     /// same as `install_path`: that one doubles as the launch target and can be
     /// any executable deep inside the tree. Removing anything must start here.
@@ -438,21 +447,24 @@ pub fn scan_installed_programs() -> Vec<SystemApp> {
             let display_icon: String = app_key
                 .get_value("DisplayIcon")
                 .unwrap_or_else(|_| String::new());
-            let uninstall_string: String = app_key
-                .get_value("QuietUninstallString")
-                .or_else(|_| app_key.get_value("UninstallString"))
-                .unwrap_or_default();
+            let stated = |name: &str| -> Option<String> {
+                app_key
+                    .get_value::<String, _>(name)
+                    .ok()
+                    .filter(|value| !value.trim().is_empty())
+            };
+            let quiet = stated("QuietUninstallString");
+            let plain = stated("UninstallString");
+            let chosen = quiet.clone().or_else(|| plain.clone());
             out.push(SystemApp {
                 display_name,
                 version,
                 install_location,
                 publisher,
                 display_icon,
-                uninstall_string: if uninstall_string.trim().is_empty() {
-                    None
-                } else {
-                    Some(uninstall_string)
-                },
+                full_uninstall_string: plain
+                    .filter(|value| Some(value.as_str()) != chosen.as_deref()),
+                uninstall_string: chosen,
             });
         }
     }
@@ -578,6 +590,7 @@ pub fn build_statuses(
                         can_uninstall: true,
                         can_launch: resolved_launch.is_some(),
                         uninstall_command: None,
+                        uninstall_command_full: None,
                         install_location: Some(info.install_path.clone()),
                     },
                 );
@@ -625,6 +638,17 @@ pub fn build_statuses(
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_default()
             });
+            // An installer is free to register that its program is here without
+            // saying where: a WiX bundle points DisplayIcon and UninstallString
+            // at its own copy in the package cache, and an MSI routinely leaves
+            // InstallLocation empty. Moonlight was listed as installed with no
+            // way to open it for exactly that reason. The Start Menu entry
+            // Windows built for the same program does carry the path.
+            let launch_path = if launch_path.is_empty() {
+                start_menu_launch_path(entry, name, start_apps)
+            } else {
+                launch_path
+            };
             map.insert(
                 id.to_string(),
                 AppStatus {
@@ -649,12 +673,13 @@ pub fn build_statuses(
                             .is_some_and(|value| !value.trim().is_empty()),
                     can_launch: !launch_path.is_empty(),
                     uninstall_command: sys.uninstall_string.clone(),
+                    uninstall_command_full: sys.full_uninstall_string.clone(),
                     install_location: Some(sys.install_location.trim().to_string())
                         .filter(|location| !location.is_empty()),
                 },
             );
         } else if let Some(start_app) = match_start_app(entry, name, start_apps) {
-            let launch_target = format!(r"shell:AppsFolder\{}", start_app.app_id);
+            let launch_target = start_app_launch_target(start_app);
             map.insert(
                 id.to_string(),
                 AppStatus {
@@ -676,22 +701,28 @@ pub fn build_statuses(
                             .is_some(),
                     can_launch: true,
                     uninstall_command: None,
+                    uninstall_command_full: None,
                     install_location: None,
                 },
             );
         } else if let Some(version) = installed_winget_version(entry, winget_packages) {
+            // WinGet knowing the package is proof that it is installed, not a
+            // hint of where. The Start Menu is asked for the path rather than
+            // leaving the application listed with no way to open it.
+            let launch_path = start_menu_launch_path(entry, name, start_apps);
             map.insert(
                 id.to_string(),
                 AppStatus {
                     installed: true,
                     version,
                     origin: "system".into(),
-                    install_path: String::new(),
+                    install_path: launch_path.clone(),
                     update_available: false,
                     latest_version: None,
                     can_uninstall: true,
-                    can_launch: false,
+                    can_launch: !launch_path.is_empty(),
                     uninstall_command: None,
+                    uninstall_command_full: None,
                     install_location: None,
                 },
             );
@@ -708,6 +739,7 @@ pub fn build_statuses(
                     can_uninstall: false,
                     can_launch: false,
                     uninstall_command: None,
+                    uninstall_command_full: None,
                     install_location: None,
                 },
             );
@@ -754,9 +786,103 @@ pub fn is_packaged_start_app(app_id: &str) -> bool {
     !desktop_entry
 }
 
+/// The folder a KNOWNFOLDERID stands for, as Windows writes it in a Start Menu
+/// AppID.
+///
+/// `Get-StartApps` reports an ordinary program as `{GUID}\vendor\app.exe`, where
+/// the GUID names the root the rest of the path hangs from. Only the roots an
+/// installer can actually target are translated; anything else is left for
+/// Explorer to open by identifier.
+fn known_folder(guid: &str) -> Option<PathBuf> {
+    let from_env = |name: &str| {
+        std::env::var(name)
+            .ok()
+            .map(PathBuf::from)
+            .filter(|path| path.is_dir())
+    };
+    match guid.trim().to_ascii_uppercase().as_str() {
+        // FOLDERID_ProgramFiles — the 64-bit one on 64-bit Windows, which is
+        // what %ProgramW6432% names from a process of either width.
+        "6D809377-6AF0-444B-8957-A3773F02200E" => {
+            from_env("ProgramW6432").or_else(|| from_env("ProgramFiles"))
+        }
+        "7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E" => from_env("ProgramFiles(x86)"),
+        "F7F1ED05-9F6D-47A2-AAAE-29D317C6F066" => from_env("CommonProgramW6432"),
+        "1AC14E77-02E7-4E5D-B744-2EB1AE5198B7" => {
+            from_env("SystemRoot").map(|root| root.join("System32"))
+        }
+        "D65231B0-B2F1-4857-A4CE-A8E7C6EA7D27" => {
+            from_env("SystemRoot").map(|root| root.join("SysWOW64"))
+        }
+        "F38BF404-1D43-42F2-9305-67DE0B28FC23" => from_env("SystemRoot"),
+        "F1B32785-6FBA-4FCF-9D55-7B8E7F157091" => from_env("LOCALAPPDATA"),
+        "3EB685DB-65F9-4CF6-A03A-E3EF65729F3D" => from_env("APPDATA"),
+        "62AB5D82-FDC1-4DC3-A9DD-070D1D495D97" => from_env("ProgramData"),
+        "5E6C858F-0E22-4760-9AFE-EA3317B67173" => from_env("USERPROFILE"),
+        _ => None,
+    }
+}
+
+/// The path a Start Menu AppID names, when it names one at all.
+///
+/// `None` covers the identifiers that are not paths: the AUMID of a packaged
+/// application, the web address behind an "About …" entry, and a known folder
+/// this build does not translate.
+fn start_app_path(app_id: &str) -> Option<PathBuf> {
+    let trimmed = app_id.trim();
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return None;
+    }
+    let direct = PathBuf::from(trimmed);
+    if direct.is_absolute() {
+        return Some(direct);
+    }
+    let (guid, relative) = trimmed.strip_prefix('{')?.split_once('}')?;
+    Some(known_folder(guid)?.join(relative.trim_start_matches('\\')))
+}
+
+/// The executable behind a Start Menu entry, if it is there.
+fn start_app_executable(app_id: &str) -> Option<PathBuf> {
+    start_app_path(app_id).filter(|path| path.is_file())
+}
+
 fn start_app_still_exists(app: &StartApp) -> bool {
-    let path = std::path::Path::new(app.app_id.trim());
-    !path.is_absolute() || path.is_file()
+    let trimmed = app.app_id.trim();
+    // Programs publish an "Acerca de …" entry pointing at the vendor's website
+    // beside their own. Taking one for the program made the store offer to open
+    // `shell:AppsFolder\https://…`, which opens nothing.
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        return false;
+    }
+    match start_app_path(trimmed) {
+        Some(path) => path.is_file(),
+        // A packaged identifier cannot be checked against the filesystem, so it
+        // stays trusted the way Windows states it.
+        None => true,
+    }
+}
+
+/// How a Start Menu entry is opened: its own executable when Windows named one,
+/// and otherwise the identifier, left for Explorer to resolve.
+///
+/// Prefixing `shell:AppsFolder\` unconditionally produced targets such as
+/// `shell:AppsFolder\C:\Modding\MO2\ModOrganizer.exe` for every program listed
+/// by path, which names nothing: Explorer cannot open it and the store could not
+/// recognise it as a folder either, so uninstalling never found the application
+/// it had just been pointed at.
+fn start_app_launch_target(start_app: &StartApp) -> String {
+    match start_app_executable(&start_app.app_id) {
+        Some(executable) => executable.to_string_lossy().to_string(),
+        None => format!(r"shell:AppsFolder\{}", start_app.app_id),
+    }
+}
+
+/// Where the Start Menu says an application can be opened, for the entries whose
+/// proof of being installed carries no usable path of its own.
+fn start_menu_launch_path(entry: &Value, catalog_name: &str, start_apps: &[StartApp]) -> String {
+    match_start_app(entry, catalog_name, start_apps)
+        .map(start_app_launch_target)
+        .unwrap_or_default()
 }
 
 fn match_start_app<'a>(
@@ -779,9 +905,19 @@ fn match_start_app<'a>(
                 && start_app_still_exists(app)
         });
     }
-    start_apps
-        .iter()
-        .find(|app| names_match(catalog_name, &app.name) && start_app_still_exists(app))
+    // The names the catalog gives for recognising the application count here
+    // too, not only in the registry. Windows calls Moonshot's assistant "Kimi"
+    // and the catalog calls it "Kimi AI", which match nowhere near closely
+    // enough on their own: the store listed it as installed with no way to open
+    // it and nothing to uninstall it with.
+    let mut candidates = vec![catalog_name.to_string()];
+    candidates.extend(detect_names_from_entry(entry));
+    start_apps.iter().find(|app| {
+        start_app_still_exists(app)
+            && candidates
+                .iter()
+                .any(|candidate| names_match(candidate, &app.name))
+    })
 }
 
 #[cfg(test)]
@@ -837,6 +973,146 @@ mod tests {
     }
 
     #[test]
+    fn the_catalog_detect_names_also_identify_the_start_menu_entry() {
+        // Windows calls Moonshot's assistant "Kimi" and the catalog calls it
+        // "Kimi AI": too far apart to match on their own, which left it listed
+        // as installed with no way to open it and nothing to uninstall it with.
+        let apps = vec![StartApp {
+            name: "Kimi".into(),
+            app_id: "Kimi.Kimi_8wekyb3d8bbwe!App".into(),
+        }];
+        let bare = serde_json::json!({ "name": "Kimi AI" });
+        assert!(match_start_app(&bare, "Kimi AI", &apps).is_none());
+        let named = serde_json::json!({ "name": "Kimi AI", "detect_names": ["Kimi"] });
+        assert!(match_start_app(&named, "Kimi AI", &apps).is_some());
+    }
+
+    #[test]
+    fn the_full_uninstall_command_travels_beside_the_quiet_one() {
+        // Rockstar's quiet command is a different operation, not the same one
+        // with the window hidden, and it removes nothing. The uninstall chain
+        // needs both to be able to fall through to the one that works.
+        let entry = serde_json::json!({ "id": "rockstar", "name": "Rockstar Games Launcher" });
+        let system = vec![SystemApp {
+            display_name: "Rockstar Games Launcher".into(),
+            version: "1.0".into(),
+            install_location: String::new(),
+            publisher: "Rockstar Games".into(),
+            display_icon: String::new(),
+            uninstall_string: Some(r#""C:\RGL\uninstall.exe" /S"#.into()),
+            full_uninstall_string: Some(
+                r#""C:\RGL\uninstall.exe" -enableFullMode -uninstall=launcher"#.into(),
+            ),
+        }];
+
+        let statuses = build_statuses(
+            std::slice::from_ref(&entry),
+            &HashMap::new(),
+            &system,
+            &[],
+            "",
+        );
+        let status = &statuses["rockstar"];
+        assert_eq!(status.uninstall_command.as_deref(), Some(r#""C:\RGL\uninstall.exe" /S"#));
+        assert_eq!(
+            status.uninstall_command_full.as_deref(),
+            Some(r#""C:\RGL\uninstall.exe" -enableFullMode -uninstall=launcher"#)
+        );
+    }
+
+    #[test]
+    fn an_about_entry_pointing_at_a_website_is_not_the_program() {
+        // Maxima publishes "About Maxima" beside itself. Taking that for the
+        // program made the store offer to open `shell:AppsFolder\https://…`.
+        let apps = vec![StartApp {
+            name: "Maxima".into(),
+            app_id: "https://maxima.sourceforge.io".into(),
+        }];
+        let entry = serde_json::json!({});
+        assert!(match_start_app(&entry, "Maxima", &apps).is_none());
+        assert!(start_app_path("https://maxima.sourceforge.io").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_known_folder_identifier_resolves_to_the_path_windows_means() {
+        // FOLDERID_ProgramFiles, the root Windows names in the Start Menu entry
+        // of any ordinary 64-bit program.
+        let resolved =
+            start_app_path(r"{6D809377-6AF0-444B-8957-A3773F02200E}\Example\Example.exe").unwrap();
+        let expected = std::env::var("ProgramW6432")
+            .or_else(|_| std::env::var("ProgramFiles"))
+            .unwrap();
+        assert_eq!(resolved, PathBuf::from(expected).join(r"Example\Example.exe"));
+        // An identifier that is not a path stays one: only Windows can open it.
+        assert!(start_app_path("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_start_menu_entry_listed_by_path_is_opened_by_that_path() {
+        // Mod Organizer 2 lives wherever its user put it, and Windows lists it
+        // by absolute path. Wrapping that in `shell:AppsFolder\` named nothing
+        // at all: neither Explorer nor the uninstaller could act on it.
+        let start_app = StartApp {
+            name: "Ejemplo".into(),
+            app_id: r"C:\Windows\System32\cmd.exe".into(),
+        };
+        assert_eq!(
+            start_app_launch_target(&start_app),
+            r"C:\Windows\System32\cmd.exe"
+        );
+        // A packaged application really does need Explorer to open it.
+        let packaged = StartApp {
+            name: "Ejemplo".into(),
+            app_id: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
+        };
+        assert_eq!(
+            start_app_launch_target(&packaged),
+            r"shell:AppsFolder\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_start_menu_answers_when_the_registry_entry_carries_no_path() {
+        // What Moonlight, 7-Zip and every other WiX bundle or MSI leave behind:
+        // an uninstall entry with no location, no icon and a cached setup as
+        // its uninstall command.
+        let entry = serde_json::json!({ "id": "example", "name": "Example" });
+        // FOLDERID_System, so that the entry points at something every Windows
+        // has: what matters is that the path comes from the Start Menu.
+        let start_apps = vec![StartApp {
+            name: "Example".into(),
+            app_id: r"{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\cmd.exe".into(),
+        }];
+        let system = vec![SystemApp {
+            display_name: "Example".into(),
+            version: "1.0.0.0".into(),
+            install_location: String::new(),
+            publisher: "Example".into(),
+            display_icon: String::new(),
+            uninstall_string: Some(
+                r#""C:\ProgramData\Package Cache\{0}\Setup.exe" /uninstall"#.into(),
+            ),
+            full_uninstall_string: None,
+        }];
+
+        let statuses = build_statuses(
+            std::slice::from_ref(&entry),
+            &HashMap::new(),
+            &system,
+            &start_apps,
+            "",
+        );
+        let status = &statuses["example"];
+        assert!(status.installed);
+        assert_eq!(status.origin, "system");
+        assert!(status.can_launch);
+        assert!(status.install_path.to_lowercase().ends_with(r"\cmd.exe"));
+    }
+
+    #[test]
     fn a_start_menu_entry_whose_file_is_gone_is_not_an_installed_program() {
         let apps = vec![
             StartApp {
@@ -881,6 +1157,7 @@ mod tests {
             publisher: String::new(),
             display_icon: String::new(),
             uninstall_string: uninstall_string.map(str::to_string),
+            full_uninstall_string: None,
         }
     }
 

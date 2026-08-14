@@ -660,11 +660,14 @@ function cardHtml(app, index) {
   const st = appStatus(app.id);
   const version = st.installed ? st.version : app.version || "1.0";
   const letter = (app.name || app.id || "A")[0].toUpperCase();
+  // Shown for anything installed, whoever installed it: the plain "en el
+  // sistema" text only appeared for programs Windows had registered, so the
+  // ones the store put there itself showed nothing at all.
   const origin =
     st.update_available
       ? `<span class="origin-tag update-origin">actualización disponible</span>`
-      : st.installed && st.origin === "system"
-        ? `<span class="origin-tag">en el sistema</span>`
+      : st.installed
+        ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
         : "";
   return `
     <article class="app-card" data-app-id="${escapeHtml(app.id)}" tabindex="0"
@@ -710,6 +713,10 @@ function projectHeroHtml() {
       <div class="hero-tag">Ligero · Directo · Organizado</div>
     </section>`;
 }
+
+/// Which list was on screen the last time it was drawn, so that redrawing the
+/// same one can put the scroll back where it was.
+let lastRenderedView = null;
 
 function renderContent() {
   const apps = filteredApps();
@@ -813,7 +820,23 @@ function renderContent() {
   }
 
   const content = document.getElementById("content");
+  // Replacing the markup sends the scroll back to the top. Redrawing the same
+  // list — which is what happens on the refresh after installing or
+  // uninstalling — has to leave it where the user was, or the card they were
+  // working with disappears off screen just as they reach for its buttons.
+  // Moving to another section, searching or filtering does start at the top,
+  // because that is a different list.
+  const view = `${state.section}|${state.search}|${state.consoleFilter}`;
+  const restoreTo = view === lastRenderedView ? content.scrollTop : 0;
+  lastRenderedView = view;
+
   content.innerHTML = html;
+  // The list can have grown shorter — an application leaving the Updates
+  // section, say — so the old offset is capped at what there is to scroll.
+  content.scrollTop = Math.min(
+    restoreTo,
+    Math.max(0, content.scrollHeight - content.clientHeight),
+  );
   content.querySelectorAll("[data-console-filter]").forEach((button) => {
     button.addEventListener("click", () => {
       state.consoleFilter = button.dataset.consoleFilter || "all";
@@ -875,10 +898,13 @@ function openAppModal(id) {
   const avatar = renderAvatar(app, letter);
   const version = st.installed ? st.version : app.version || "1.0";
 
-  const installedBanner = st.update_available
-    ? `<div>${updateVersionBadge(st, true)}</div>`
-    : st.installed
-      ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>✓ Aplicación instalada en el sistema</div>`
+  // Installed is installed, with or without an update waiting: the update badge
+  // used to take this one's place, so an application with a version pending
+  // showed nothing saying it was already on the machine. They say different
+  // things and both are worth saying.
+  const installedBanner = st.installed
+    ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Ya instalado</div>
+       ${st.update_available ? `<div>${updateVersionBadge(st, true)}</div>` : ""}`
     : "";
 
   let actionBtnsHtml = "";
@@ -974,20 +1000,35 @@ async function installApp(id, isUpdate = false) {
     : `¿Deseas instalar '${app.name}' en tu equipo?`;
   const confirmText = isUpdate ? "Actualizar" : "Instalar";
 
+  // An application published in several builds asks which one on the way in.
+  // An update never asks: it reinstalls the build already chosen, because
+  // changing it is changing the program.
+  const remembered = state.settings?.variants?.[id];
+  const choices =
+    app.variants && !isUpdate
+      ? { ...app.variants, selected: remembered || app.variants.default }
+      : null;
+
   showConfirmModal({
     title,
     message,
     app,
     confirmText,
     confirmVariant: "primary",
-    onConfirm: async () => {
+    choices,
+    onConfirm: async (picked) => {
+      const variant = picked || remembered || app.variants?.default || null;
       state.busy[id] = isUpdate ? "updating" : "installing";
       renderContent();
       state.finished.delete(id);
       renderDlPanel();
       showPackageOperationModal(app, isUpdate);
       try {
-        await invoke("install_app", { appEntry: app, forceUpdate: !!isUpdate || !!st.update_available });
+        await invoke("install_app", {
+          appEntry: app,
+          forceUpdate: !!isUpdate || !!st.update_available,
+          variant,
+        });
       } catch (e) {
         delete state.busy[id];
         state.operationAppId = null;
@@ -1315,6 +1356,55 @@ function showBackgroundOperationModal(app, title, initialStatus) {
   `, false, true);
 }
 
+/**
+ * Turns the operation dialog into its finished state instead of closing it.
+ *
+ * The user has been watching a progress dialog: dropping them back into the
+ * list the instant it ends leaves them to hunt for the card they were just
+ * working with. It stays put with the only two things worth doing next.
+ */
+function showOperationCompleted(app, { canLaunch, isUpdate, changed }) {
+  const dialog = document.querySelector(".package-operation");
+  if (!dialog) return;
+  // Escape becomes a way out again now that nothing is in progress.
+  modalLocked = false;
+
+  const dots = dialog.querySelector(".package-operation-dots");
+  if (dots) {
+    dots.classList.add("done");
+    dots.innerHTML = '<span aria-hidden="true">✓</span>';
+  }
+  const title = dialog.querySelector("h2");
+  if (title && app) title.textContent = app.name;
+  // The same dialog serves the Install and Update buttons, and WinGet answers a
+  // package that was already current without installing anything: telling the
+  // user it was installed would be wrong in two of the three cases.
+  const outcome = !changed
+    ? "ya estaba en su última versión"
+    : isUpdate
+      ? "se actualizó correctamente"
+      : "se instaló correctamente";
+  const status = document.getElementById("package-operation-status");
+  if (status) {
+    status.textContent = app?.name
+      ? `${app.name} ${outcome}`
+      : outcome.charAt(0).toUpperCase() + outcome.slice(1);
+  }
+
+  const actions = document.getElementById("package-operation-actions");
+  if (!actions) return;
+  actions.innerHTML = `
+    ${canLaunch ? '<button type="button" class="btn primary" id="operation-launch">Lanzar</button>' : ""}
+    <button type="button" class="btn ghost" id="operation-close">Cerrar</button>
+  `;
+  actions.querySelector("#operation-launch")?.addEventListener("click", () => {
+    closeModal();
+    if (app) launchApp(app.id);
+  });
+  actions.querySelector("#operation-close")?.addEventListener("click", closeModal);
+  actions.querySelector("button")?.focus();
+}
+
 function updatePackageOperation(tasks) {
   if (!state.operationAppId) return;
   const task = [...tasks].reverse().find((item) => item.app_id === state.operationAppId);
@@ -1342,7 +1432,34 @@ function updatePackageOperation(tasks) {
   );
 }
 
-function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", onConfirm }) {
+/**
+ * Renders the builds an application is published in, when there is more than
+ * one to pick from. The chosen id is what `onConfirm` receives.
+ */
+function renderChoices(choices) {
+  if (!choices || !choices.options?.length) return "";
+  return `
+    <fieldset class="choice-group">
+      <legend>${escapeHtml(choices.label || "Versión")}</legend>
+      ${choices.hint ? `<p class="choice-hint">${escapeHtml(choices.hint)}</p>` : ""}
+      ${choices.options
+        .map(
+          (option, index) => `
+        <label class="choice-option">
+          <input type="radio" name="modal-choice" value="${escapeHtml(option.id)}"${
+            (choices.selected ? option.id === choices.selected : index === 0) ? " checked" : ""
+          }>
+          <span class="choice-option-body">
+            <strong>${escapeHtml(option.name || option.id)}</strong>
+            ${option.description ? `<small>${escapeHtml(option.description)}</small>` : ""}
+          </span>
+        </label>`
+        )
+        .join("")}
+    </fieldset>`;
+}
+
+function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, onConfirm }) {
   const avatar = app ? renderAvatar(app, app.name?.[0] || "?") : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
@@ -1369,6 +1486,7 @@ function showConfirmModal({ title, message, app, confirmText = "Confirmar", conf
         </div>
       </div>
       <p class="confirm-dialog-msg">${escapeHtml(message)}</p>
+      ${renderChoices(choices)}
       <div class="modal-foot" style="margin-top: 20px;">
         <button type="button" class="btn ghost" id="modal-btn-cancel">Cancelar</button>
         <button type="button" class="btn ${confirmVariant}" id="modal-btn-confirm">${escapeHtml(confirmText)}</button>
@@ -1378,8 +1496,9 @@ function showConfirmModal({ title, message, app, confirmText = "Confirmar", conf
 
   document.getElementById("modal-btn-cancel").onclick = closeModal;
   document.getElementById("modal-btn-confirm").onclick = async () => {
+    const picked = document.querySelector('input[name="modal-choice"]:checked')?.value;
     closeModal();
-    if (onConfirm) await onConfirm();
+    if (onConfirm) await onConfirm(picked);
   };
 }
 
@@ -2025,9 +2144,12 @@ window.addEventListener("DOMContentLoaded", async () => {
       interrupted = false,
     } = ev.payload;
     delete state.busy[app_id];
-    if (state.operationAppId === app_id) {
+    // A finished installation keeps its dialog, which turns into the completion
+    // state below; everything else is replaced by the message that explains it.
+    const ownsModal = state.operationAppId === app_id;
+    if (ownsModal) {
       state.operationAppId = null;
-      closeModal();
+      if (!ok) closeModal();
     }
     if (ok) {
       await refreshInstalledFromBootstrap();
@@ -2049,6 +2171,13 @@ window.addEventListener("DOMContentLoaded", async () => {
           ? (changed ? `Actualizado: ${app.name}` : `${app.name} ya estaba actualizado`)
           : `Instalado: ${app.name}`;
         setTransientStatus(message, "var(--green)", 5000);
+      }
+      if (ownsModal) {
+        showOperationCompleted(app, {
+          canLaunch: !!appStatus(app_id).can_launch,
+          isUpdate: is_update,
+          changed,
+        });
       }
     } else {
       const app = findApp(app_id);

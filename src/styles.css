@@ -900,24 +900,27 @@ textarea {
   font-size: 12px;
 }
 
+/* The row fits as many cards as the window allows at a width they can be read
+   at, rather than always four that shrink with it. Fixed counts left the update
+   cards too narrow for their own contents: the version badge was cut off mid
+   number and "Actualizar" and "Desinstalar" fell onto separate lines. */
 .grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 12px;
-}
-
-@media (max-width: 1180px) {
-  .grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 900px) {
   .shell {
     grid-template-columns: 200px 1fr;
   }
+}
+
+/* Under roughly two columns' worth of room the minimum above would overflow the
+   viewport, so the cards give it up and take whatever is left. */
+@media (max-width: 640px) {
   .grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -1185,6 +1188,30 @@ textarea {
   color: var(--text-dark);
 }
 
+/* The card's version of the badge the detail dialog shows, in the slot the
+   plain "en el sistema" text used to occupy: small enough to sit beside the
+   name, green enough to be read across a grid of cards without reading it. */
+.installed-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 6px;
+  padding: 2px 7px;
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 20px;
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.installed-tag .badge-dot {
+  width: 6px;
+  height: 6px;
+}
+
 .update-version-badge {
   display: block;
   width: fit-content;
@@ -1208,6 +1235,84 @@ textarea {
   margin-top: 7px;
   padding: 5px 9px;
   font-size: 11px;
+}
+
+/* Where an application is published in several builds, the install dialog asks
+   which one before starting. */
+.choice-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 0;
+  border: 0;
+}
+
+.choice-group legend {
+  padding: 0;
+  color: var(--text-light);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.choice-hint {
+  margin: 6px 0 8px;
+  color: var(--text-medium);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.choice-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: var(--bg-card);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.choice-option:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+}
+
+.choice-option:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card) 90%);
+}
+
+.choice-option:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.choice-option input {
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.choice-option-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.choice-option-body strong {
+  color: var(--text-dark);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.choice-option-body small {
+  color: var(--text-medium);
+  font-size: 11px;
+  line-height: 1.4;
 }
 
 .empty {
@@ -1856,6 +1961,20 @@ textarea {
 
 .package-operation-dots span:nth-child(2) { animation-delay: 0.14s; }
 .package-operation-dots span:nth-child(3) { animation-delay: 0.28s; }
+
+/* A finished operation shows a tick where the dots were pulsing, in the row
+   they already occupied so that nothing below it jumps. */
+.package-operation-dots.done span {
+  width: auto;
+  height: auto;
+  border-radius: 0;
+  background: none;
+  box-shadow: none;
+  animation: none;
+  color: var(--green);
+  font-size: 34px;
+  line-height: 1;
+}
 
 .package-operation-actions {
   min-height: 36px;

@@ -359,7 +359,11 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
             settings.theme, settings.accent
         ),
     );
-    let s = store::migrate_settings(settings);
+    let mut s = store::migrate_settings(settings);
+    // This command belongs to the appearance dialog, which knows nothing about
+    // which build of an application was installed. Storing its payload whole
+    // would forget every one of those choices each time the theme changed.
+    s.variants = state.settings.lock().variants.clone();
     store::save_settings(&s)?;
     *state.settings.lock() = s;
     Ok(())
@@ -507,13 +511,46 @@ async fn confirm_uninstalled(
     ))
 }
 
-async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, String> {
-    for attempt in 1..=60 {
+/// How long Windows is given to admit that the application arrived.
+///
+/// Bounded by the clock rather than by a number of attempts: each attempt
+/// rebuilds the statuses, which asks WinGet and the Start Menu and can take
+/// seconds on its own. Sixty attempts of that ran for minutes with the interface
+/// showing a finished installation the whole time.
+const INSTALL_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Waits for Windows to agree that the application is really there.
+///
+/// An installer having exited says less than it seems: Battle.net's setup is a
+/// bootstrapper that returns success the moment its own window closes, whether
+/// it installed anything or not. Only what Windows reports afterwards settles
+/// it.
+async fn confirm_installed(
+    state: &AppState,
+    app_id: &str,
+    name: &str,
+    flags: &Arc<download::DownloadFlags>,
+    mut report: impl FnMut(&str),
+) -> Result<AppStatus, String> {
+    let started = std::time::Instant::now();
+    let mut attempt = 0_u32;
+    while started.elapsed() < INSTALL_CONFIRMATION_TIMEOUT {
+        attempt += 1;
+        if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            logger::info(
+                "install-verify",
+                format!("Comprobación interrumpida por el usuario: app_id={app_id}"),
+            );
+            return Err(installer::CANCELLED_MARKER.to_string());
+        }
         // Same reasoning as `confirm_uninstalled`: a newly installed packaged app
         // will not show up until the Start Menu cache is dropped.
         if attempt % DETECTION_RESCAN_EVERY == 1 {
             detect::clear_detection_caches();
         }
+        // Leaving "instalado correctamente" on screen throughout told the user
+        // the operation was over long before it was.
+        report("Comprobando la instalación...");
         rebuild_statuses(state);
         if let Some(status) = state.statuses.lock().get(app_id).cloned() {
             if status.installed {
@@ -529,9 +566,41 @@ async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, 
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
     }
+    logger::warn(
+        "install-verify",
+        format!(
+            "Windows no registra {app_id} tras {} s desde que el instalador terminó",
+            started.elapsed().as_secs()
+        ),
+    );
+    // The setup ran and Windows knows nothing about the application: it was
+    // closed without going through with it. Reported as the cancellation it is,
+    // in the same words as a wizard cancelled outright, rather than as a failure
+    // that would send the user looking for a cause that does not exist.
     Err(format!(
-        "Windows no confirmó que '{app_id}' quedara instalada después de que el instalador terminara. Puede haberse cancelado o cerrado sin completar la operación."
+        "{}Cerraste el instalador de {name} sin completar la instalación. No se ha instalado nada.",
+        installer::INSTALL_CANCELLED_PREFIX
     ))
+}
+
+/// Waits, briefly, for an uninstall somebody else is running to take effect.
+///
+/// Only used for the retries handed to Explorer, which reports back the moment
+/// it accepts the request. The application's own file going away is the only
+/// proof available from here; an application whose path was never found cannot
+/// be checked, and the confirmation Windows is asked for afterwards decides.
+fn uninstall_took_effect(install_path: &str) -> bool {
+    let target = PathBuf::from(install_path);
+    if install_path.trim().is_empty() || !target.exists() {
+        return true;
+    }
+    for _ in 0..12 {
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        if !target.exists() {
+            return true;
+        }
+    }
+    false
 }
 
 /// `true` while Windows still has an uninstall entry for the application.
@@ -646,6 +715,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
             ),
         );
         let uninstall_command = st.uninstall_command.clone();
+        let uninstall_command_full = st.uninstall_command_full.clone();
         let install_path = st.install_path.clone();
         let indexed_target = install_path.clone();
         let cleanup_entry = catalog_entry.clone();
@@ -656,24 +726,26 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
         let identity =
             residue::AppIdentity::from_catalog(&catalog_entry, st.uninstall_command.as_deref())
                 .with_install_location(st.install_location.as_deref());
+        // Whether WinGet can be asked about this application depends on it
+        // having a package identifier, not on the catalog having used WinGet to
+        // install it: PowerToys is published here as a GitHub release and is
+        // detected through `winget list`, which left the store offering an
+        // uninstall button it then had no way to honour. The same identifier
+        // that makes the button appear is the one tried first.
         let winget = catalog_entry
-            .get("source_type")
+            .get("winget_id")
             .and_then(Value::as_str)
-            .filter(|source| *source == "winget")
-            .and_then(|_| {
-                catalog_entry
-                    .get("winget_id")
-                    .and_then(Value::as_str)
-                    .map(|id| {
-                        (
-                            id.to_string(),
-                            catalog_entry
-                                .get("winget_source")
-                                .and_then(Value::as_str)
-                                .unwrap_or("winget")
-                                .to_string(),
-                        )
-                    })
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map(|id| {
+                (
+                    id.to_string(),
+                    catalog_entry
+                        .get("winget_source")
+                        .and_then(Value::as_str)
+                        .unwrap_or("winget")
+                        .to_string(),
+                )
             });
         let is_msstore = catalog_entry
             .get("winget_source")
@@ -719,20 +791,57 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                     Err(error) => {
                         logger::warn("uninstall", format!("Fallback tras WinGet: {error}"));
                         if installer::is_winget_user_scope_elevation_error(&error) {
-                            if let Some(command) = uninstall_command.as_deref() {
-                                match installer::uninstall_system_app_as_user(command) {
-                                    Ok(()) => return Ok((None, Vec::new())),
-                                    Err(user_error) => {
+                            // The package belongs to the user's own account and
+                            // this process is elevated, so the work is handed to
+                            // Explorer, which holds the interactive token. The
+                            // uninstaller Windows registered goes first when
+                            // there is one; WinGet itself answers for packages
+                            // like Kimi, which register nothing at all and could
+                            // not be removed by any means before this.
+                            let retried = match uninstall_command.as_deref() {
+                                Some(command) => installer::uninstall_system_app_as_user(command)
+                                    .or_else(|first| {
                                         logger::warn(
                                             "uninstall-user-fallback",
-                                            format!(
-                                                "Falló el reintento como usuario: {user_error}"
-                                            ),
+                                            format!("Falló el desinstalador registrado como usuario: {first}"),
                                         );
-                                        errors.push(format!(
-                                            "Fallback con el usuario interactivo: {user_error}"
-                                        ));
-                                    }
+                                        installer::uninstall_with_winget_as_user(
+                                            &package_id,
+                                            &source,
+                                        )
+                                    }),
+                                None => {
+                                    installer::uninstall_with_winget_as_user(&package_id, &source)
+                                }
+                            };
+                            match retried {
+                                // Explorer answers as soon as it accepts the
+                                // request, not when the uninstaller has
+                                // finished, so its word is not proof of
+                                // anything. Taking it for one ended the chain on
+                                // a retry that had done nothing at all and left
+                                // SpaceSniffer exactly where it was, with every
+                                // remaining method untried.
+                                Ok(()) if uninstall_took_effect(&install_path) => {
+                                    return Ok((None, Vec::new()))
+                                }
+                                Ok(()) => {
+                                    logger::warn(
+                                        "uninstall-user-fallback",
+                                        "El reintento como usuario no quitó la aplicación; se continúa con los demás métodos.",
+                                    );
+                                    errors.push(
+                                        "Reintento con el usuario interactivo: la aplicación seguía ahí después".into(),
+                                    );
+                                }
+                                Err(user_error) => {
+                                    logger::warn(
+                                        "uninstall-user-fallback",
+                                        format!("Falló el reintento como usuario: {user_error}"),
+                                    );
+                                    errors.push(format!(
+                                        "Fallback con el usuario interactivo: {user_error}"
+                                    ));
                                 }
                             }
                         }
@@ -743,12 +852,36 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                     }
                 }
             }
-            if let Some(uninstall_command) = uninstall_command {
-                match installer::uninstall_system_app(&uninstall_command) {
-                    Ok(()) => return Ok((None, Vec::new())),
-                    Err(registry_error) => {
-                        errors.push(format!("Desinstalador registrado: {registry_error}"))
+            // A vendor's quiet switch is a claim, not a fact. Rockstar registers
+            // `uninstall.exe /S` as its quiet command and that exits zero in
+            // half a second having removed nothing at all, so an exit code is
+            // not proof either: what Windows says afterwards decides, the same
+            // test WinGet's own answer already gets above. Only then is the
+            // full command Windows registered beside it worth running.
+            for (label, command) in [
+                ("Desinstalador registrado", uninstall_command),
+                ("Desinstalador completo", uninstall_command_full),
+            ] {
+                let Some(command) = command else {
+                    continue;
+                };
+                match installer::uninstall_system_app(&command) {
+                    Ok(()) => {
+                        // Some uninstallers return before Windows has caught up
+                        // with them; a moment's grace keeps a job well done from
+                        // being repeated.
+                        std::thread::sleep(std::time::Duration::from_millis(800));
+                        if !still_listed_by_windows(&identity) {
+                            return Ok((None, Vec::new()));
+                        }
+                        logger::warn(
+                            "uninstall",
+                            format!(
+                                "{label} terminó sin error, pero Windows sigue registrando la aplicación; se continúa."
+                            ),
+                        );
                     }
+                    Err(registry_error) => errors.push(format!("{label}: {registry_error}")),
                 }
             }
             // The fallback is attempted even without an indexed path: that is
@@ -1052,6 +1185,10 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
     // Resolve every GitHub release with bounded concurrency instead of one
     // request after another. The cap keeps the unauthenticated API quota from
     // being spent in a single burst.
+    // Which build of an application published in several is installed decides
+    // which release the update check has to look at: Thorium publishes one per
+    // CPU instruction set under the same tag.
+    let chosen_variants = state.settings.lock().variants.clone();
     let github_targets: Vec<(String, String, Option<String>)> = catalog
         .iter()
         .filter_map(|entry| {
@@ -1063,10 +1200,11 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
                 return None;
             }
             let repo = entry.get("github_repo").and_then(|v| v.as_str())?;
+            let resolved = store::apply_variant(entry, chosen_variants.get(id).map(String::as_str));
             Some((
                 id.to_string(),
                 repo.to_string(),
-                entry
+                resolved
                     .get("asset_pattern")
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
@@ -1374,12 +1512,28 @@ async fn install_app(
     state: State<'_, AppState>,
     app_entry: Value,
     force_update: Option<bool>,
+    variant: Option<String>,
 ) -> Result<(), String> {
     let app_id = app_entry
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or("App sin id")?
         .to_string();
+    // Which build was asked for is settled here rather than in the interface, so
+    // that the update check and a later reinstall reach for the same one.
+    let app_entry = store::apply_variant(&app_entry, variant.as_deref());
+    if let Some(chosen) = app_entry.get("variant").and_then(Value::as_str) {
+        let mut settings = state.settings.lock();
+        if settings.variants.get(&app_id).map(String::as_str) != Some(chosen) {
+            settings.variants.insert(app_id.clone(), chosen.to_string());
+            if let Err(error) = store::save_settings(&settings) {
+                logger::warn(
+                    "install",
+                    format!("No se pudo recordar la edición elegida de {app_id}: {error}"),
+                );
+            }
+        }
+    }
     let name = app_entry
         .get("name")
         .and_then(|v| v.as_str())
@@ -1521,11 +1675,36 @@ async fn install_app(
                     }
                 }
                 if outcome.changed {
-                    match confirm_installed(&app_state, &app_id_for_task).await {
-                        Ok(_) => Ok(outcome.changed),
-                        Err(error) => {
-                            Err(format!("{}{error}", installer::INSTALL_INTERRUPTED_PREFIX))
+                    let downloads_while_checking = downloads.clone();
+                    let handle_while_checking = app_handle.clone();
+                    let id_while_checking = app_id_for_task.clone();
+                    let report = move |message: &str| {
+                        {
+                            let mut dl = downloads_while_checking.lock();
+                            dl.update(
+                                &id_while_checking,
+                                Some(TaskState::Installing),
+                                Some(100),
+                                Some(message.to_string()),
+                                None,
+                            );
                         }
+                        let tasks = downloads_while_checking.lock().snapshots();
+                        let _ = handle_while_checking.emit("downloads-changed", DlEvent { tasks });
+                    };
+                    match confirm_installed(
+                        &app_state,
+                        &app_id_for_task,
+                        &name_for_task,
+                        &flags_for_task,
+                        report,
+                    )
+                    .await
+                    {
+                        Ok(_) => Ok(outcome.changed),
+                        // Already worded and marked for the interface: a
+                        // cancellation, or the user's own cancel request.
+                        Err(error) => Err(error),
                     }
                 } else {
                     Ok(outcome.changed)
@@ -1754,6 +1933,24 @@ pub fn run() {
             );
             logger::info("startup", format!("Catálogo: {}", catalog_path.display()));
             logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::app_dir().display()));
+
+            // The packages downloaded for past installations are never read
+            // again — every installation fetches its own copy — and start-up is
+            // the one moment when none of them can be in use. It runs on a
+            // thread of its own so that hundreds of megabytes of old setups do
+            // not stand between the user and the first window.
+            std::thread::spawn(|| {
+                let (removed, freed) = paths::purge_downloads();
+                if removed > 0 {
+                    logger::info(
+                        "startup-cleanup",
+                        format!(
+                            "Paquetes descargados eliminados: {removed}, espacio liberado: {:.1} MB",
+                            freed as f64 / (1024.0 * 1024.0)
+                        ),
+                    );
+                }
+            });
 
             // Open-Shell only finds what has a shortcut under `shell:programs`,
             // so the store leaves one there the first time it runs. It goes on a

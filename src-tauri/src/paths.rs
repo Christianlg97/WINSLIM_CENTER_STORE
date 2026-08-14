@@ -39,6 +39,65 @@ pub fn settings_json() -> PathBuf {
     app_dir().join("settings.json")
 }
 
+/// Empties the folder the store downloads packages into, and answers with how
+/// many entries went and how much room that freed.
+///
+/// Each installer is kept only until the operation that needed it finishes, and
+/// a run that was cancelled — or that never got to finish — leaves its copy
+/// behind. They are never read again, because every installation downloads its
+/// own, so all they do is take up room: Ubisoft Connect alone is 247 MB.
+pub fn purge_downloads() -> (usize, u64) {
+    purge_directory_contents(&downloads_dir())
+}
+
+fn purge_directory_contents(root: &Path) -> (usize, u64) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return (0, 0);
+    };
+    let mut removed = 0;
+    let mut freed = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let size = tree_size(&path);
+        let outcome = if path.is_dir() {
+            std::fs::remove_dir_all(&path)
+        } else {
+            std::fs::remove_file(&path)
+        };
+        match outcome {
+            Ok(()) => {
+                removed += 1;
+                freed += size;
+            }
+            // A setup still running holds its own file open. Nothing here is
+            // worth interrupting a start-up for, so it stays for the next one.
+            Err(error) => crate::logger::warn(
+                "startup-cleanup",
+                format!("No se pudo borrar {}: {error}", path.display()),
+            ),
+        }
+    }
+    (removed, freed)
+}
+
+fn tree_size(path: &Path) -> u64 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0;
+    };
+    if metadata.is_file() {
+        return metadata.len();
+    }
+    if !metadata.is_dir() {
+        return 0;
+    }
+    std::fs::read_dir(path)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| tree_size(&entry.path()))
+        .sum()
+}
+
 pub fn ensure_dirs() -> Result<(), String> {
     std::fs::create_dir_all(app_dir()).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(downloads_dir()).map_err(|e| e.to_string())?;
@@ -139,6 +198,29 @@ mod tests {
 
         let candidates = candidate_apps_json_paths(&root, None);
         assert_eq!(first_existing_path(&candidates), Some(app_json));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn purging_downloads_empties_the_folder_without_removing_it() {
+        let root = temp_dir();
+        let package = root.join("ejemplo");
+        fs::create_dir_all(&package).unwrap();
+        fs::write(package.join("setup.exe"), vec![0_u8; 2048]).unwrap();
+        fs::write(root.join("suelto.zip"), vec![0_u8; 1024]).unwrap();
+
+        let (removed, freed) = purge_directory_contents(&root);
+
+        assert_eq!(removed, 2);
+        assert_eq!(freed, 3072);
+        // The folder itself stays: the next download expects to find it there.
+        assert!(root.is_dir());
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        // Asking again is not an error, and a folder that is not there is not
+        // one either.
+        assert_eq!(purge_directory_contents(&root), (0, 0));
+        assert_eq!(purge_directory_contents(&root.join("no-existe")), (0, 0));
 
         let _ = fs::remove_dir_all(&root);
     }

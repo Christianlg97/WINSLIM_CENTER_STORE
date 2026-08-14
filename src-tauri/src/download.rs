@@ -431,6 +431,124 @@ fn fmt_size(mut size: f64) -> String {
     format!("{size:.1} TB")
 }
 
+/// A remaining time written the way a person would say it.
+fn fmt_eta(seconds: f64) -> String {
+    let seconds = seconds.max(0.0).round() as u64;
+    if seconds < 60 {
+        return format!("{seconds} s");
+    }
+    if seconds < 3_600 {
+        let (minutes, rest) = (seconds / 60, seconds % 60);
+        return if rest == 0 {
+            format!("{minutes} min")
+        } else {
+            format!("{minutes} min {rest} s")
+        };
+    }
+    let (hours, rest) = (seconds / 3_600, (seconds % 3_600) / 60);
+    if rest == 0 {
+        format!("{hours} h")
+    } else {
+        format!("{hours} h {rest} min")
+    }
+}
+
+/// How fast a transfer is going, measured over a short trailing window.
+///
+/// An average taken over the whole transfer keeps reporting the speed of the
+/// first seconds long after the connection has changed, so what the user reads
+/// stops matching what the bar does. Samples older than the window are dropped
+/// instead.
+pub struct TransferRate {
+    samples: std::collections::VecDeque<(std::time::Instant, u64)>,
+}
+
+impl TransferRate {
+    const WINDOW: std::time::Duration = std::time::Duration::from_secs(5);
+    /// Below this the two samples are too close together for the division to
+    /// say anything, and the number jumps around instead of settling.
+    const MINIMUM_SPAN: f64 = 0.35;
+
+    pub fn new() -> Self {
+        Self {
+            samples: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Records how much has arrived so far and answers with the current speed in
+    /// bytes per second, or `None` while there is not yet a window to divide by.
+    pub fn sample(&mut self, downloaded: u64) -> Option<f64> {
+        let now = std::time::Instant::now();
+        self.samples.push_back((now, downloaded));
+        while self
+            .samples
+            .front()
+            .is_some_and(|(seen, _)| self.samples.len() > 1 && now.duration_since(*seen) > Self::WINDOW)
+        {
+            self.samples.pop_front();
+        }
+        let (started, first) = *self.samples.front()?;
+        let span = now.duration_since(started).as_secs_f64();
+        (span >= Self::MINIMUM_SPAN && downloaded > first)
+            .then(|| (downloaded - first) as f64 / span)
+    }
+}
+
+impl Default for TransferRate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The line the store shows while something is coming down, in one shape for
+/// every source so a WinGet package and a direct download read alike.
+///
+/// A `total` of zero means nobody announced the size: what has arrived and how
+/// fast are still worth showing, a percentage and a remaining time are not.
+pub fn transfer_status(label: &str, downloaded: u64, total: u64, speed: Option<f64>) -> String {
+    let mut text = match downloaded
+        .saturating_mul(100)
+        .checked_div(total)
+        .map(|percent| percent.min(100))
+    {
+        Some(percent) => format!(
+            "{label}: {percent}% ({} / {})",
+            fmt_size(downloaded as f64),
+            fmt_size(total as f64)
+        ),
+        None => format!("{label}: {}", fmt_size(downloaded as f64)),
+    };
+    if let Some(speed) = speed.filter(|value| *value > 0.0) {
+        text.push_str(&format!(" · {}/s", fmt_size(speed)));
+        if total > downloaded {
+            text.push_str(&format!(
+                " · faltan {}",
+                fmt_eta((total - downloaded) as f64 / speed)
+            ));
+        }
+    }
+    text
+}
+
+/// The size the server announces for a URL, without downloading it.
+///
+/// Used for the sources that hand the download to somebody else — WinGet writes
+/// the installer to its own temporary folder and says nothing about how big it
+/// is — so that the bar can still show a percentage and a remaining time.
+pub async fn content_length(url: &str) -> Option<u64> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .ok()?;
+    let response = client.head(url).send().await.ok()?;
+    response
+        .status()
+        .is_success()
+        .then(|| response.content_length())
+        .flatten()
+}
+
 async fn wait_if_paused(flags: &DownloadFlags) -> Result<(), String> {
     while flags.pause.load(Ordering::SeqCst) {
         if flags.cancel.load(Ordering::SeqCst) {
@@ -640,6 +758,13 @@ pub async fn download_url(
         .await
         .map_err(|e| e.to_string())?;
     let mut downloaded: u64 = 0;
+    let mut rate = TransferRate::new();
+    // A chunk arrives every few hundred microseconds on a fast link, and
+    // reporting each one rewrote the status bar — and wrote a line to the
+    // diagnostic log — thousands of times a second for a number nobody can read
+    // that fast.
+    let mut last_report: Option<std::time::Instant> = None;
+    const REPORT_EVERY: std::time::Duration = std::time::Duration::from_millis(200);
 
     use tokio::io::AsyncWriteExt;
 
@@ -656,32 +781,27 @@ pub async fn download_url(
         file.write_all(&chunk).await.map_err(|e| e.to_string())?;
         downloaded += chunk.len() as u64;
 
-        if let Some(percent) = downloaded.saturating_mul(100).checked_div(total) {
-            let percent = percent.min(100) as u32;
-            let paused = flags.pause.load(Ordering::SeqCst) && is_pausable;
-            let msg = if paused {
-                format!(
-                    "⏸ Pausado: {percent}% ({} / {})",
-                    fmt_size(downloaded as f64),
-                    fmt_size(total as f64)
-                )
-            } else {
-                format!(
-                    "Descargando: {percent}% ({} / {})",
-                    fmt_size(downloaded as f64),
-                    fmt_size(total as f64)
-                )
-            };
-            on_progress(percent, msg, is_pausable);
-        } else {
-            let paused = flags.pause.load(Ordering::SeqCst) && is_pausable;
-            let msg = if paused {
-                format!("⏸ Pausado: {}", fmt_size(downloaded as f64))
-            } else {
-                format!("Descargando: {}", fmt_size(downloaded as f64))
-            };
-            on_progress(0, msg, is_pausable);
+        let speed = rate.sample(downloaded);
+        let due = last_report.is_none_or(|last| last.elapsed() >= REPORT_EVERY);
+        if !due {
+            continue;
         }
+        last_report = Some(std::time::Instant::now());
+
+        let percent = downloaded
+            .saturating_mul(100)
+            .checked_div(total)
+            .map(|value| value.min(100) as u32)
+            .unwrap_or(0);
+        let paused = flags.pause.load(Ordering::SeqCst) && is_pausable;
+        let msg = if paused {
+            // A speed and a remaining time for a transfer that is not moving
+            // would both be zero, which reads as a stall rather than a pause.
+            transfer_status("⏸ Pausado", downloaded, total, None)
+        } else {
+            transfer_status("Descargando", downloaded, total, speed)
+        };
+        on_progress(percent, msg, is_pausable);
     }
 
     file.flush().await.map_err(|e| e.to_string())?;
@@ -773,6 +893,16 @@ fn asset_architecture_score(name: &str) -> i32 {
     ]
     .iter()
     .any(|marker| lower.contains(marker))
+        // Brave names its builds BraveBrowserStandaloneSetup.exe and
+        // BraveBrowserStandaloneSetup32.exe: the width is a bare 32 glued to
+        // the end of the name, with no separator for the markers above to catch.
+        // Both scored zero, the tie went to whichever GitHub listed last, and
+        // the store installed the 32-bit browser on a 64-bit machine.
+        || lower
+            .strip_suffix(".exe")
+            .or_else(|| lower.strip_suffix(".msi"))
+            .unwrap_or(&lower)
+            .ends_with("32")
     {
         -500
     } else {
@@ -781,9 +911,20 @@ fn asset_architecture_score(name: &str) -> i32 {
 }
 
 fn best_x64_asset<'a>(assets: impl Iterator<Item = &'a GhAsset>) -> Option<&'a GhAsset> {
-    assets
+    let candidates: Vec<&GhAsset> = assets.collect();
+    candidates
+        .iter()
+        .copied()
         .filter(|asset| asset_architecture_score(&asset.name) >= 0)
         .max_by_key(|asset| asset_architecture_score(&asset.name))
+        // A project that publishes nothing but a 32-bit or ARM build still has
+        // to be installable: the width is a preference between candidates, not
+        // a requirement each one has to meet on its own.
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .max_by_key(|asset| asset_architecture_score(&asset.name))
+        })
 }
 
 fn select_github_asset_url(assets: &[GhAsset], asset_pattern: Option<&str>) -> Option<String> {
