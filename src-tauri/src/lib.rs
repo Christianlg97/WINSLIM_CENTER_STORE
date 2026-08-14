@@ -1137,6 +1137,86 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
 /// update script below expects to copy over the installation directory.
 const GITHUB_LATEST_URL: &str = "https://github.com/Christianlg97/WINSLIM_CENTER_STORE/releases/download/latest/WINSLIMCENTER_latest.zip";
 
+/// The repository the two live behind: the archive above and the release notes
+/// the version is read from.
+const GITHUB_REPO: &str = "Christianlg97/WINSLIM_CENTER_STORE";
+
+/// The version a release states about itself.
+///
+/// Every build is published under the same rolling `latest` tag, so the tag
+/// never carries the number: it is written in the notes, whose heading reads
+/// `### WinSlimCenter 1.6.0 ###`. The number is looked for right after the
+/// product name first, because that one is unmistakably the release's own —
+/// every other number in the notes belongs to somebody else, from a required
+/// runtime to the pixel size of the screenshot below.
+fn version_in_release_text(text: &str) -> Option<String> {
+    const PRODUCT: &str = "winslimcenter";
+    if let Some(index) = text.to_ascii_lowercase().find(PRODUCT) {
+        if let Some(version) = first_version_number(&text[index + PRODUCT.len()..]) {
+            return Some(version);
+        }
+    }
+    first_version_number(text)
+}
+
+/// The first run of digits that reads as a version. A run without a dot is not
+/// one: release notes are full of bare numbers.
+fn first_version_number(text: &str) -> Option<String> {
+    let mut run = String::new();
+    // The trailing space closes the last run without repeating the check below.
+    for character in text.chars().chain(std::iter::once(' ')) {
+        if character.is_ascii_digit() || character == '.' {
+            run.push(character);
+            continue;
+        }
+        let candidate = run.trim_matches('.').to_string();
+        run.clear();
+        if candidate.contains('.')
+            && candidate.starts_with(|c: char| c.is_ascii_digit())
+            && candidate.ends_with(|c: char| c.is_ascii_digit())
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// A published release worth telling the user about.
+#[derive(Serialize)]
+struct StoreUpdate {
+    /// Empty when the release does not say which version it is.
+    version: String,
+    current: String,
+}
+
+/// Reports the published release when it is newer than the copy that is running.
+///
+/// `Ok(None)` means "nothing to offer": either the release is not newer, or it
+/// does not state a version and there is nothing to compare against. Announcing
+/// an update on every start because the release forgot to name itself would be
+/// nagging, not helping.
+#[tauri::command]
+async fn check_store_update() -> Result<Option<StoreUpdate>, String> {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    let text = download::github_release_text(GITHUB_REPO).await?;
+    let Some(published) = version_in_release_text(&text) else {
+        logger::warn(
+            "self-update",
+            "La release publicada no indica su versión; no se puede comparar con la instalada.",
+        );
+        return Ok(None);
+    };
+    let newer = detect::is_newer(&published, &current) == Some(true);
+    logger::info(
+        "self-update",
+        format!("Release publicada: {published}, instalada: {current}, más reciente: {newer}"),
+    );
+    Ok(newer.then_some(StoreUpdate {
+        version: published,
+        current,
+    }))
+}
+
 #[tauri::command]
 async fn update_center_app(app: AppHandle) -> Result<String, String> {
     logger::info("self-update", "Actualización de WinSlimCenter solicitada.");
@@ -1669,6 +1749,7 @@ pub fn run() {
             get_bootstrap,
             refresh_statuses,
             check_updates,
+            check_store_update,
             update_center_app,
             get_tasks,
             reload_catalog,
@@ -1698,4 +1779,47 @@ pub fn run() {
             logger::shutdown();
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_version_is_read_from_the_notes_a_release_actually_carries() {
+        // The published release, verbatim: the tag says nothing, the heading
+        // does, and the screenshot that follows is full of bare numbers.
+        let published = concat!(
+            "latest\nlatest\n",
+            "<h1>### WinSlimCenter 1.6.0 ###</h1>\r\n\r\n- Primera Release Estable.\r\n\r\n",
+            "<img width=\"1490\" height=\"999\" alt=\"image\" src=\"https://example.invalid/a.png\">"
+        );
+        assert_eq!(
+            version_in_release_text(published).as_deref(),
+            Some("1.6.0")
+        );
+    }
+
+    #[test]
+    fn a_release_that_never_names_a_version_is_not_mistaken_for_one() {
+        assert_eq!(version_in_release_text("latest\nlatest\nCorrecciones varias"), None);
+        // Bare numbers are not versions, however many of them there are.
+        assert_eq!(version_in_release_text("build 20260814 · 1490x999"), None);
+    }
+
+    #[test]
+    fn the_number_beside_the_product_name_wins_over_any_other_in_the_notes() {
+        // Anything written above the heading — a requirement, a link, a date —
+        // must not be taken for the version of the release.
+        let notes = "latest\nlatest\nRequiere .NET 8.0 y Windows 10 21H2.\n\
+                     <h1>### WinSlimCenter 1.7.2 ###</h1>\n- Cambios varios.";
+        assert_eq!(version_in_release_text(notes).as_deref(), Some("1.7.2"));
+    }
+
+    #[test]
+    fn only_a_higher_number_counts_as_an_update() {
+        assert_eq!(detect::is_newer("1.6.1", "1.6.0"), Some(true));
+        assert_eq!(detect::is_newer("1.6.0", "1.6.0"), Some(false));
+        assert_eq!(detect::is_newer("1.5.9", "1.6.0"), Some(false));
+    }
 }

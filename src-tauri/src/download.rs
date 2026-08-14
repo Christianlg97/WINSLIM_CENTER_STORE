@@ -716,6 +716,10 @@ pub async fn download_url(
 #[derive(Deserialize)]
 struct GhRelease {
     tag_name: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    body: Option<String>,
     assets: Vec<GhAsset>,
 }
 
@@ -896,6 +900,31 @@ async fn fetch_github_json<T: for<'de> Deserialize<'de>>(
         return Err(error);
     }
     response.json().await.map_err(|e| e.to_string())
+}
+
+/// Everything a repository's newest release says about itself, as one piece of
+/// text: tag, name and notes in that order.
+///
+/// The store publishes every build under the same `latest` tag, so its version
+/// is never in the tag — it is written in the name or in the notes. Handing the
+/// three back joined lets the caller look for it wherever the author put it,
+/// most specific source first.
+pub async fn github_release_text(repo: &str) -> Result<String, String> {
+    let client = reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let release = fetch_github_json::<GhRelease>(
+        &client,
+        &format!("https://api.github.com/repos/{repo}/releases/latest"),
+    )
+    .await?;
+    Ok([
+        release.tag_name,
+        release.name.unwrap_or_default(),
+        release.body.unwrap_or_default(),
+    ]
+    .join("\n"))
 }
 
 pub async fn github_latest_release_asset(

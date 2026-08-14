@@ -107,7 +107,9 @@ const STATE_LABELS = {
 
 const state = {
   catalog: [],
-  appVersion: "1.6.0",
+  // Filled from the backend, which reads it from src-tauri/Cargo.toml. Never
+  // written here: a second copy of the number is a second place to forget.
+  appVersion: "",
   installed: {},
   statuses: {},
   settings: { theme: "plata", accent: "#c7ced6" },
@@ -396,7 +398,9 @@ function setProgress(pct) {
 
 function renderAppVersion() {
   const version = document.getElementById("app-version");
-  if (version) version.textContent = `v${state.appVersion}`;
+  // Blank until the backend answers, rather than a number invented here that
+  // could disagree with the build actually running.
+  if (version) version.textContent = state.appVersion ? `v${state.appVersion}` : "";
 }
 
 function appStatus(id) {
@@ -1240,6 +1244,9 @@ function openModal(html, wide = false, locked = false) {
   if (backdrop.classList.contains("hidden")) modalReturnFocus = document.activeElement;
   modalLocked = locked;
   modal.classList.toggle("wide", wide);
+  // Cleared here rather than on close, so the treatment can never leak from the
+  // modal that asked for it into the next one.
+  modal.classList.remove("modal-hero");
   modal.innerHTML = html;
   const heading = modal.querySelector("h2");
   if (heading) {
@@ -1739,6 +1746,9 @@ async function finishStartupInBackground() {
   } finally {
     closeSyncModal();
     setProgress(100);
+    // Only once the start-up screen has let go of the modal, so the two never
+    // fight over it.
+    void checkStoreUpdate();
   }
 }
 
@@ -1750,23 +1760,203 @@ async function refreshInstalledFromBootstrap() {
   renderAppVersion();
 }
 
-async function updateAppFromGitHub() {
-  showConfirmModal({
-    title: "Actualizar WinSlimCenter",
-    message: "¿Deseas descargar la versión más reciente de la tienda desde GitHub y actualizar el equipo?",
-    confirmText: "Actualizar tienda",
-    confirmVariant: "primary",
-    onConfirm: async () => {
+async function startStoreUpdate() {
+  try {
+    setStatus("Descargando la nueva versión de la tienda...", "var(--accent)");
+    const msg = await invoke("update_center_app");
+    setStatus(String(msg || "Actualización iniciada"), "var(--accent)");
+  } catch (e) {
+    setStatus(`Error de actualización: ${e}`, "var(--red)");
+    showAlertModal("Error de actualización", String(e));
+  }
+}
+
+// One of the people behind the store, as a button that opens their GitHub
+// profile. The mark and the arrow say it leads somewhere without a line of text
+// having to explain it.
+function aboutPersonHtml(handle, role, url) {
+  return `
+    <button type="button" class="about-person" data-url="${escapeHtml(url)}" title="Abrir ${escapeHtml(url)}">
+      <svg class="about-person-mark" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M12 .5C5.37.5 0 5.87 0 12.5c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58v-2.03c-3.34.73-4.04-1.61-4.04-1.61-.55-1.39-1.34-1.76-1.34-1.76-1.09-.75.08-.73.08-.73 1.2.08 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.5.99.11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.13-.3-.54-1.52.11-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6 0c2.29-1.55 3.3-1.23 3.3-1.23.65 1.66.24 2.88.12 3.18.77.84 1.23 1.91 1.23 3.22 0 4.61-2.8 5.62-5.48 5.92.43.37.81 1.1.81 2.22v3.29c0 .32.22.7.83.58A12.01 12.01 0 0 0 24 12.5C24 5.87 18.63.5 12 .5z"/>
+      </svg>
+      <span class="about-person-text">
+        <strong>${escapeHtml(handle)}</strong>
+        <span>${escapeHtml(role)}</span>
+      </span>
+      <svg class="about-person-go" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <line x1="7" y1="17" x2="17" y2="7"/>
+        <polyline points="8 7 17 7 17 16"/>
+      </svg>
+    </button>`;
+}
+
+function showAboutModal() {
+  const catalogSize = state.catalog.length;
+  openModal(`
+    <div class="about-dialog">
+      <div class="about-logo">
+        <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+      </div>
+      <h2 class="about-name">WinSlimCenter</h2>
+      <p class="about-version">${state.appVersion ? `Versión ${escapeHtml(state.appVersion)}` : "Tienda de aplicaciones"}</p>
+      <dl class="about-facts">
+        <div class="about-fact people">
+          <dt>Desarrollo</dt>
+          <dd>
+            <div class="about-people">
+              ${aboutPersonHtml(
+                "Christianlg97",
+                "Creador de WinSlimOS y desarrollador de esta tienda.",
+                "https://github.com/Christianlg97",
+              )}
+              ${aboutPersonHtml(
+                "tiranosaurio73",
+                "Colaborador del proyecto.",
+                "https://github.com/tiranosaurio73",
+              )}
+              ${aboutPersonHtml(
+                "Darkeiser003",
+                "Colaborador y autor de WinSlimTerminal.",
+                "https://github.com/Darkeiser003",
+              )}
+            </div>
+          </dd>
+        </div>
+        <div class="about-fact">
+          <dt>Construido con</dt>
+          <dd>
+            <strong>Rust · Tauri 2</strong>
+            <span>Interfaz en JavaScript, HTML y CSS. Integración con Windows en PowerShell.</span>
+          </dd>
+        </div>
+        <div class="about-fact">
+          <dt>Catálogo</dt>
+          <dd>
+            <strong>${catalogSize} aplicaciones</strong>
+            <span>Seleccionadas una a una, cada una desde su origen oficial.</span>
+          </dd>
+        </div>
+        <div class="about-fact">
+          <dt>Licencia</dt>
+          <dd>
+            <strong>GNU GPL v3</strong>
+            <span>Software libre: úsalo, estúdialo, modifícalo y compártelo.</span>
+          </dd>
+        </div>
+      </dl>
+      <p class="about-note hidden" id="about-note" role="status" aria-live="polite"></p>
+      <div class="modal-foot" style="margin-top: 4px;">
+        <button type="button" class="btn ghost" id="about-check">Buscar actualizaciones</button>
+        <button type="button" class="btn primary" id="about-close">Cerrar</button>
+      </div>
+    </div>
+  `);
+  document.getElementById("modal").classList.add("modal-hero");
+  document.getElementById("about-close").onclick = closeModal;
+
+  const check = document.getElementById("about-check");
+  const note = document.getElementById("about-note");
+
+  document.querySelectorAll(".about-person").forEach((person) => {
+    person.addEventListener("click", async () => {
       try {
-        setStatus("Buscando actualización...", "var(--accent)");
-        const msg = await invoke("update_center_app");
-        setStatus(String(msg || "Actualización iniciada"), "var(--accent)");
-      } catch (e) {
-        setStatus(`Error de actualización: ${e}`, "var(--red)");
-        showAlertModal("Error de actualización", String(e));
+        await invoke("open_url", { url: person.dataset.url });
+      } catch (error) {
+        note.textContent = "No se pudo abrir el navegador para ese perfil.";
+        note.className = "about-note bad";
+        clientLog("warn", "about", `No se pudo abrir ${person.dataset.url}: ${error}`);
       }
-    },
+    });
   });
+  check.onclick = async () => {
+    const label = check.textContent;
+    check.disabled = true;
+    check.textContent = "Buscando…";
+    note.className = "about-note hidden";
+    try {
+      const update = await invoke("check_store_update");
+      if (update) {
+        closeModal();
+        showStoreUpdateModal(update);
+        return;
+      }
+      note.textContent = `Ya tienes la versión más reciente${state.appVersion ? ` (v${state.appVersion})` : ""}.`;
+      note.className = "about-note ok";
+    } catch (error) {
+      // Asked for on purpose, so the answer cannot be a silent shrug the way it
+      // is when the check runs by itself at start-up.
+      note.textContent = "No se pudo consultar GitHub. Comprueba la conexión e inténtalo de nuevo.";
+      note.className = "about-note bad";
+      clientLog("warn", "self-update", `Comprobación manual fallida: ${error}`);
+    } finally {
+      check.disabled = false;
+      check.textContent = label;
+    }
+  };
+}
+
+// Shown once per run when the repository publishes a build newer than this one.
+function showStoreUpdateModal(update) {
+  const version = String(update?.version || "").trim();
+  const current = String(update?.current || state.appVersion || "").trim();
+  const versions = version
+    ? `<div class="store-update-versions">
+         <span class="from">v${escapeHtml(current)}</span>
+         <span class="arrow">→</span>
+         <span class="to">v${escapeHtml(version)}</span>
+       </div>`
+    : "";
+  openModal(`
+    <div class="store-update">
+      <div class="store-update-logo">
+        <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+        <span class="store-update-badge" aria-hidden="true">
+          <svg class="store-update-badge-icon" width="17" height="17" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="4" x2="12" y2="14.5"/>
+            <polyline points="7.5 10 12 14.5 16.5 10"/>
+            <line x1="5.5" y1="19" x2="18.5" y2="19"/>
+          </svg>
+        </span>
+      </div>
+      <h2 class="store-update-title">Actualización disponible</h2>
+      <p class="store-update-sub">
+        Hay una versión más reciente de WinSlimCenter publicada. La tienda se
+        cerrará para aplicarla y volverá a abrirse sola.
+      </p>
+      ${versions}
+      <div class="modal-foot" style="margin-top: 6px;">
+        <button type="button" class="btn ghost" id="store-update-skip">Omitir</button>
+        <button type="button" class="btn primary" id="store-update-now">Actualizar ahora</button>
+      </div>
+    </div>
+  `);
+  document.getElementById("modal").classList.add("modal-hero");
+  document.getElementById("store-update-skip").onclick = () => {
+    closeModal();
+    setTransientStatus("Actualización omitida. Se volverá a avisar al abrir la tienda.", "var(--text-medium)", 6000);
+  };
+  document.getElementById("store-update-now").onclick = async () => {
+    closeModal();
+    await startStoreUpdate();
+  };
+}
+
+// Asks the repository whether it publishes something newer than this build.
+//
+// Runs once, after the start-up scan has released the screen, and stays silent
+// about its own failures: not reaching GitHub is not something the user has to
+// act on, and it must never get in the way of a store that already works.
+async function checkStoreUpdate() {
+  try {
+    const update = await invoke("check_store_update");
+    if (!update) return;
+    clientLog("info", "self-update", `Versión publicada: ${update.version}, instalada: ${update.current}`);
+    showStoreUpdateModal(update);
+  } catch (error) {
+    clientLog("warn", "self-update", `No se pudo comprobar la versión publicada: ${error}`);
+  }
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
@@ -1795,7 +1985,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     clearTimeout(searchTimer);
     searchTimer = setTimeout(renderContent, 180);
   });
-  document.getElementById("btn-update").addEventListener("click", updateAppFromGitHub);
+  document.getElementById("btn-about").addEventListener("click", showAboutModal);
   // Called without arguments on purpose: the click event must not leak into the
   // options object, and this is one of the two places allowed to show the modal.
   document.getElementById("btn-refresh").addEventListener("click", () => refreshStore());
