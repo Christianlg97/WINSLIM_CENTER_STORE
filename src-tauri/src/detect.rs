@@ -895,6 +895,19 @@ mod tests {
     }
 
     #[test]
+    fn a_sibling_product_of_the_same_vendor_is_not_the_application() {
+        // Checked after WinGet claims to have uninstalled something: mistaking
+        // the vendor's other entry for the application would report it as still
+        // installed for ever and keep the uninstall chain running against
+        // nothing.
+        let system = vec![system_app("Rockstar Games SDK", Some("a.exe"))];
+        assert!(match_system_app("Rockstar Games Launcher", &[], &system).is_none());
+
+        let system = vec![system_app("Rockstar Games Launcher", Some("b.exe"))];
+        assert!(match_system_app("Rockstar Games Launcher", &[], &system).is_some());
+    }
+
+    #[test]
     fn entry_with_an_uninstaller_wins_over_an_equally_named_one_without() {
         let system = vec![
             system_app("Example App", None),

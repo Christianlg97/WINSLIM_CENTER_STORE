@@ -534,6 +534,18 @@ async fn confirm_installed(state: &AppState, app_id: &str) -> Result<AppStatus, 
     ))
 }
 
+/// `true` while Windows still has an uninstall entry for the application.
+///
+/// Read straight from the registry, with no cache in the way: it is asked in the
+/// middle of an uninstall precisely to find out whether the step that just ran
+/// achieved anything.
+fn still_listed_by_windows(identity: &residue::AppIdentity) -> bool {
+    let Some((name, alternatives)) = identity.names.split_first() else {
+        return false;
+    };
+    detect::match_system_app(name, alternatives, &detect::scan_installed_programs()).is_some()
+}
+
 /// Removes what the application leaves behind and reports what could not be
 /// cleaned, without ever failing the operation on its own.
 async fn run_uninstall_cleanup(entry: Value, target: PathBuf) -> Result<Vec<String>, String> {
@@ -677,7 +689,24 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
             let mut errors = Vec::new();
             if let Some((package_id, source)) = winget {
                 match installer::uninstall_with_winget(&package_id, &source) {
-                    Ok(installer::WingetUninstall::Removed) => return Ok((None, Vec::new())),
+                    // WinGet reports success as soon as the vendor's uninstaller
+                    // accepts the job, and some accept it without doing anything:
+                    // Rockstar's exits zero in half a second and leaves the
+                    // program, its folder and its uninstall entry exactly where
+                    // they were. Taking that exit code as proof ended the chain
+                    // here and never tried the uninstaller Windows had
+                    // registered, which is the one that actually works.
+                    Ok(installer::WingetUninstall::Removed) => {
+                        if !still_listed_by_windows(&identity) {
+                            return Ok((None, Vec::new()));
+                        }
+                        logger::warn(
+                            "uninstall",
+                            format!(
+                                "WinGet dijo haber desinstalado {package_id}, pero Windows la sigue registrando; se continúa con los demás métodos."
+                            ),
+                        );
+                    }
                     // WinGet not having the package says nothing about the copy
                     // the user installed from the vendor's own setup, so the
                     // chain carries on to what Windows did register.

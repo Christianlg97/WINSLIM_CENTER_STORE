@@ -3902,11 +3902,12 @@
     "category": "Emuladores",
     "section": "Emuladores",
     "featured": false,
-    "source_type": "web",
-    "web_url": "https://www.ldplayer.net/",
-    "icon_url": "https://cdn.simpleicons.org/android/3DDC84",
-    "icon_background": "#181818",
-    "icon_padding": 6,
+    "source_type": "wget",
+    "download_url": "https://res.ldrescdn.com/download/package/LDPlayer9.exe",
+    "download_filename": "LDPlayer9.exe",
+    "icon_url": "https://www.google.com/s2/favicons?domain=ldplayer.net&sz=128",
+    "icon_background": "#ffc619",
+    "icon_padding": 0,
     "accent_color": "#f59e0b",
     "detect_names": [
       "LDPlayer"
