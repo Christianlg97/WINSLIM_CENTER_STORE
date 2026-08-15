@@ -346,6 +346,52 @@ fn is_generic_word(s: &str) -> bool {
     )
 }
 
+/// The words of a name, lowercased and stripped of everything that only
+/// separates them.
+///
+/// Only what the text itself separates counts as a break: a space, a dash, a
+/// dot. Capitals do not, because a vendor writing `CrystalDiskInfo` as a single
+/// word is naming one product, not two.
+fn words(value: &str) -> Vec<String> {
+    value
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| word.to_lowercase())
+        .collect()
+}
+
+/// Whether `needle` — a name already reduced to letters and digits — covers a
+/// run of whole words of `words`.
+///
+/// `anchored` requires the run to start at the first word, which is what the
+/// prefix rule needs. A version number stuck to the end of the last word is
+/// allowed to be left over, because `Anaconda3` is still Anaconda; leftover
+/// letters are not, because they are the rest of another product's name.
+fn covers_whole_words(words: &[String], needle: &str, anchored: bool) -> bool {
+    if needle.is_empty() || words.is_empty() {
+        return false;
+    }
+    let last_start = if anchored { 0 } else { words.len() - 1 };
+    for start in 0..=last_start {
+        let mut joined = String::new();
+        for word in &words[start..] {
+            joined.push_str(word);
+            if joined.len() < needle.len() {
+                continue;
+            }
+            if let Some(rest) = joined.strip_prefix(needle) {
+                if rest.chars().all(|c| c.is_ascii_digit()) {
+                    return true;
+                }
+            }
+            // Anything joined from here on is longer still, so it cannot be
+            // the name either.
+            break;
+        }
+    }
+    false
+}
+
 pub fn names_match(catalog_name: &str, display_name: &str) -> bool {
     let a = norm(catalog_name);
     let b = norm(display_name);
@@ -358,12 +404,19 @@ pub fn names_match(catalog_name: &str, display_name: &str) -> bool {
     if is_generic_word(&a) || is_generic_word(&b) {
         return false;
     }
+    let catalog_words = words(catalog_name);
+    let display_words = words(display_name);
     // Permit version/product suffixes, but never match a short name in the
-    // middle of another product (for example "Code" inside "OpenCode").
-    if a.len() >= 4 && b.starts_with(&a) {
+    // middle of another product (for example "Code" inside "OpenCode"), and
+    // never part of a word: "Crystal" opens "CrystalDiskInfo" and the two are
+    // unrelated programs from unrelated vendors.
+    if a.len() >= 4 && covers_whole_words(&display_words, &a, true) {
         return true;
     }
-    if a.len().min(b.len()) >= 6 && (b.contains(&a) || a.contains(&b)) {
+    if a.len().min(b.len()) >= 6
+        && (covers_whole_words(&display_words, &a, false)
+            || covers_whole_words(&catalog_words, &b, false))
+    {
         return true;
     }
     false
@@ -1035,6 +1088,63 @@ mod tests {
         assert!(names_match("7-Zip", "7-Zip 24.08 (x64)"));
         assert!(!names_match("Code", "OpenCode"));
         assert!(!names_match("Visual Studio Code", "OpenCode"));
+    }
+
+    #[test]
+    fn a_name_that_only_opens_another_is_a_different_program() {
+        // Instalar CrystalDiskInfo daba por instalado el lenguaje Crystal, con
+        // la versión del otro y abriendo su ejecutable al pulsar «Abrir».
+        assert!(!names_match("Crystal", "CrystalDiskInfo 9.9.2"));
+        assert!(!names_match("Crystal", "CrystalDiskInfo"));
+        assert!(names_match("CrystalDiskInfo", "CrystalDiskInfo 9.9.2"));
+        assert!(!names_match("Rust", "Rustdesk"));
+        // Lo que sí es el mismo programa sigue reconociéndose: sufijos de
+        // versión y de edición, un número pegado al nombre, y el nombre del
+        // fabricante por delante.
+        assert!(names_match("7-Zip", "7-Zip 24.08 (x64)"));
+        assert!(names_match("Anaconda", "Anaconda3 2024.02"));
+        assert!(names_match("Epic Games", "Epic Games Launcher"));
+        assert!(names_match("Visual Studio Code", "Microsoft Visual Studio Code"));
+    }
+
+    #[test]
+    fn a_neighbouring_product_does_not_become_the_installed_one() {
+        // Las dos pruebas de la tienda: la entrada del registro y la del menú
+        // Inicio que CrystalDiskInfo deja, ninguna de las cuales es Crystal.
+        let entry = serde_json::json!({
+            "id": "crystal",
+            "name": "Crystal",
+            "detect_names": ["Crystal"],
+            "winget_id": "CrystalLang.Crystal"
+        });
+        let system = vec![SystemApp {
+            display_name: "CrystalDiskInfo 9.9.2".into(),
+            version: "9.9.2".into(),
+            install_location: r"C:\Program Files\CrystalDiskInfo\".into(),
+            publisher: "Crystal Dew World".into(),
+            display_icon: r"C:\Program Files\CrystalDiskInfo\DiskInfo64.exe".into(),
+            uninstall_string: Some(r#""C:\Program Files\CrystalDiskInfo\unins000.exe""#.into()),
+            full_uninstall_string: None,
+        }];
+        let start_apps = vec![StartApp {
+            name: "CrystalDiskInfo".into(),
+            app_id: r"{6D809377-6AF0-444B-8957-A3773F02200E}\CrystalDiskInfo\DiskInfo64.exe".into(),
+        }];
+
+        assert!(match_system_app("Crystal", &["Crystal".to_string()], &system).is_none());
+        assert!(match_start_app(&entry, "Crystal", &start_apps).is_none());
+
+        let statuses = build_statuses(
+            std::slice::from_ref(&entry),
+            &HashMap::new(),
+            &system,
+            &start_apps,
+            "CrystalDiskInfo  CrystalDewWorld.CrystalDiskInfo  9.9.2  winget",
+        );
+        let status = &statuses["crystal"];
+        assert!(!status.installed);
+        assert!(!status.can_launch);
+        assert!(status.install_path.is_empty());
     }
 
     #[test]
