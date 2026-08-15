@@ -1322,6 +1322,18 @@ pub async fn do_install(
         ),
     );
 
+    // Una aplicación web no descarga nada: lo que se instala es el acceso
+    // directo que la abre, así que este origen se resuelve entero aquí.
+    if source_type == "webapp" {
+        on_progress(30, format!("Creando el acceso directo de {name}..."), false);
+        let registered = crate::webapp::install(app).await?;
+        on_progress(100, "Comprobando la instalación...".into(), false);
+        return Ok(InstallOutcome {
+            changed: true,
+            registered: Some((app_id.to_string(), registered)),
+        });
+    }
+
     let mut winget_fallback_url = None;
     if source_type == "winget" {
         if let Some(dependencies) = app.get("winget_dependencies").and_then(Value::as_array) {

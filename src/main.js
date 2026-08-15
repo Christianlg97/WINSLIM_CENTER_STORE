@@ -9,6 +9,7 @@ const NAV = [
   { id: "emulators", label: "Emuladores", icon: "🕹️", filter: "Emuladores" },
   { id: "browsers", label: "Navegadores", icon: "🌐", filter: "Navegadores" },
   { id: "dev", label: "Desarrollo", icon: "💻", filter: "Desarrollo" },
+  { id: "ai", label: "IA", icon: "🤖", filter: "IA" },
   { id: "utils", label: "Utilidades", icon: "🛠️", filter: "Utilidades" },
   { id: "multimedia", label: "Multimedia", icon: "🎬", filter: "Multimedia" },
   { id: "product", label: "Productividad", icon: "📝", filter: "Productividad" },
@@ -92,6 +93,7 @@ const SRC_LABELS = {
   winget: "WinGet",
   github_release: "GitHub Rel",
   github_repo: "GitHub Repo",
+  webapp: "App web",
 };
 
 const STATE_LABELS = {
@@ -531,8 +533,15 @@ function searchFilter(app) {
   return blob.includes(q);
 }
 
+// Los programas que vienen dentro de otra aplicación solo tienen sentido cuando
+// esa aplicación está puesta: hasta entonces no hay nada que ofrecer, porque no
+// se instalan por su cuenta.
+function componentVisible(app) {
+  return app.source_type !== "component" || appStatus(app.id).installed;
+}
+
 function filteredApps() {
-  const apps = state.catalog.filter((a) => sectionFilter(a) && searchFilter(a));
+  const apps = state.catalog.filter((a) => componentVisible(a) && sectionFilter(a) && searchFilter(a));
   if (state.section !== "featured") return apps;
   const rank = new Map(FEATURED_ORDER.map((id, index) => [id, index]));
   return apps.sort((a, b) => (rank.get(a.id) ?? 999) - (rank.get(b.id) ?? 999));
@@ -576,9 +585,7 @@ function renderSidebar() {
     ).join("")}
     <div class="sb-label">ACCIONES</div>
     <button type="button" class="action-btn" data-action="theme">🎨  Apariencia</button>
-    <button type="button" class="action-btn" data-action="folder">📁  Carpeta de apps</button>
-    <button type="button" class="action-btn" data-action="catalog">⚙  Gestionar catálogo</button>
-    <button type="button" class="action-btn" data-action="reload">🔄  Recargar catálogo</button>
+    <button type="button" class="action-btn" data-action="folder">📁  Directorio local</button>
   `;
 
   el.querySelectorAll("[data-nav]").forEach((btn) => {
@@ -601,11 +608,6 @@ function renderSidebar() {
       showAlertModal("Error al abrir la carpeta", String(error));
     });
   });
-  el.querySelector('[data-action="catalog"]').addEventListener("click", () => {
-    clientLog("info", "action", "Abriendo editor de catálogo.");
-    openCatalogEditor();
-  });
-  el.querySelector('[data-action="reload"]').addEventListener("click", reloadCatalog);
 }
 
 function actionButtons(app, variant = "card") {
@@ -629,6 +631,14 @@ function actionButtons(app, variant = "card") {
     }[operation] || "Procesando…";
     const cls = variant === "hero" ? "btn soft" : "btn secondary";
     return `<button type="button" class="${cls}" disabled aria-busy="true">${label}</button>`;
+  }
+
+  // Un componente llega dentro de otra aplicación: no se instala ni se
+  // desinstala por su cuenta, así que lo único que ofrece es abrirse.
+  if (app.source_type === "component") {
+    if (!st.installed) return "";
+    const launchCls = variant === "hero" ? "btn white" : "btn primary";
+    return `<button type="button" class="${launchCls}" data-launch="${id}">Abrir</button>`;
   }
 
   if (!st.installed) {
@@ -777,6 +787,7 @@ function renderContent() {
       ["Emuladores", (a) => a.section === "Emuladores"],
       ["Navegadores", (a) => a.section === "Navegadores"],
       ["Desarrollo", (a) => a.section === "Desarrollo"],
+      ["IA", (a) => a.section === "IA"],
       ["Utilidades", (a) => a.section === "Utilidades"],
       ["Multimedia", (a) => a.section === "Multimedia"],
       ["Productividad", (a) => a.section === "Productividad"],

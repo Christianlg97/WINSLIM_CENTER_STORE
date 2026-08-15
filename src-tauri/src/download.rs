@@ -573,6 +573,30 @@ fn curl_args_for_url(url: &str, dest: &Path) -> Vec<String> {
     ]
 }
 
+/// The size the server announces for the file, or zero when it will not say.
+///
+/// curl writes nothing this program can read while it works, so the total the
+/// progress bar divides by has to be asked for separately. One HEAD is the whole
+/// cost, and a failure here is not a failure of anything: it only means a bar
+/// that counts megabytes instead of a percentage.
+async fn announced_size(url: &str) -> u64 {
+    let Ok(client) = reqwest::Client::builder().user_agent(USER_AGENT).build() else {
+        return 0;
+    };
+    match client.head(url).send().await {
+        // The header is read by hand on purpose: `content_length()` answers from
+        // the body, and a HEAD has none, so it reports nothing for every server
+        // that did announce the size.
+        Ok(response) if response.status().is_success() => response
+            .headers()
+            .get(reqwest::header::CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(0),
+        _ => 0,
+    }
+}
+
 pub async fn download_with_curl(
     url: &str,
     dest: &Path,
@@ -591,7 +615,10 @@ pub async fn download_with_curl(
         return Err("Descarga cancelada".into());
     }
 
-    on_progress(0, "Intentando descarga con curl...".into(), false);
+    // Which downloader is doing the work is the store's business: the user gets
+    // the same line, the same figures and the same bar whichever one runs.
+    on_progress(0, "Iniciando descarga...".into(), false);
+    let total = announced_size(url).await;
 
     let mut command = Command::new("curl");
     crate::process::background(&mut command);
@@ -602,6 +629,7 @@ pub async fn download_with_curl(
         .spawn()
         .map_err(|e| format!("curl no disponible: {e}"))?;
     let pid = child.id();
+    let mut rate = TransferRate::new();
     loop {
         if flags.cancel.load(Ordering::SeqCst) {
             let _ = crate::process::terminate_process_tree(pid);
@@ -614,7 +642,28 @@ pub async fn download_with_curl(
             .map_err(|error| format!("No se pudo consultar curl (pid={pid}): {error}"))?
         {
             Some(_) => break,
-            None => tokio::time::sleep(tokio::time::Duration::from_millis(150)).await,
+            None => {
+                // curl writes into the file as it goes, so how far it has got is
+                // simply how big that file is by now. Pausing is not offered:
+                // the transfer belongs to another process.
+                let downloaded = tokio::fs::metadata(dest)
+                    .await
+                    .map(|metadata| metadata.len())
+                    .unwrap_or(0);
+                if downloaded > 0 {
+                    let percent = downloaded
+                        .saturating_mul(100)
+                        .checked_div(total)
+                        .map(|value| value.min(100) as u32)
+                        .unwrap_or(0);
+                    on_progress(
+                        percent,
+                        transfer_status("Descargando", downloaded, total, rate.sample(downloaded)),
+                        false,
+                    );
+                }
+                tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+            }
         }
     }
     let output = child
@@ -639,7 +688,11 @@ pub async fn download_with_curl(
             let _ = tokio::fs::remove_file(dest).await;
             return Err("El servidor devolvió una página HTML en lugar del instalador".into());
         }
-        on_progress(100, "Descarga completada con curl".into(), false);
+        on_progress(
+            100,
+            transfer_status("Descargando", size, size.max(total), None),
+            false,
+        );
         crate::logger::info(
             "download",
             format!(
@@ -711,6 +764,13 @@ pub async fn download_url(
     let resp = match client.get(url).send().await {
         Ok(resp) => resp,
         Err(err) => {
+            // Written down even when curl goes on to succeed: a fallback that
+            // works silently hides why the first attempt did not, and the log is
+            // the only place left to find out.
+            crate::logger::warn(
+                "download",
+                format!("El cliente HTTP no pudo con la descarga ({err}); continúa curl."),
+            );
             return download_with_curl(url, dest, flags, on_progress)
                 .await
                 .map_err(|curl_err| format!("Error de red: {err}; {curl_err}"));
@@ -720,6 +780,10 @@ pub async fn download_url(
     let resp = match resp.error_for_status() {
         Ok(resp) => resp,
         Err(err) => {
+            crate::logger::warn(
+                "download",
+                format!("El servidor respondió con error ({err}); continúa curl."),
+            );
             return download_with_curl(url, dest, flags, on_progress)
                 .await
                 .map_err(|curl_err| format!("HTTP: {err}; {curl_err}"));

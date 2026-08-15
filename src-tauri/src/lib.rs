@@ -7,6 +7,7 @@ mod process;
 mod residue;
 mod start_menu;
 mod store;
+mod webapp;
 
 use detect::AppStatus;
 use download::{SharedDownloads, TaskSnapshot, TaskState};
@@ -287,19 +288,27 @@ fn save_catalog(state: State<'_, AppState>, apps: Vec<Value>) -> Result<String, 
             "direct" | "wget" => Some("download_url"),
             "github_release" | "github_repo" => Some("github_repo"),
             "winget" => Some("winget_id"),
-            "web" => Some("web_url"),
+            "web" | "webapp" => Some("web_url"),
+            // Un componente no se descarga: llega dentro de otra aplicación y
+            // solo hace falta saber dónde queda su ejecutable.
+            "component" => Some("known_launch_paths"),
             other => {
                 return Err(format!(
                     "Entrada {idx} usa un origen desconocido: '{other}'."
                 ))
             }
         };
-        if required_source_field.is_some_and(|field| {
-            entry
-                .get(field)
-                .and_then(Value::as_str)
-                .is_none_or(|value| value.trim().is_empty())
-        }) {
+        // El dato puede ser un texto — una URL, un identificador — o una lista,
+        // como las rutas conocidas de un componente. Vale cualquiera de los dos
+        // mientras traiga algo dentro.
+        let states_its_source = |field: &str| match entry.get(field) {
+            Some(Value::String(value)) => !value.trim().is_empty(),
+            Some(Value::Array(items)) => items
+                .iter()
+                .any(|item| item.as_str().is_some_and(|value| !value.trim().is_empty())),
+            _ => false,
+        };
+        if required_source_field.is_some_and(|field| !states_its_source(field)) {
             return Err(format!(
                 "Entrada {idx} ({id}) no contiene el dato necesario para su origen."
             ));
@@ -681,6 +690,9 @@ async fn finish_uninstall(
         warnings = run_uninstall_cleanup(entry.clone(), target.clone()).await?;
     }
     confirm_uninstalled(state, app_id, app_name, &attempted).await?;
+    // Los accesos directos que la tienda puso por la suite se van con ella: sus
+    // programas ya no están detrás.
+    remove_component_shortcuts(state, app_id);
     if !files_removed {
         warnings = run_uninstall_cleanup(entry, target).await?;
     }
@@ -730,6 +742,21 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
         .and_then(Value::as_str)
         .unwrap_or(app_id.as_str())
         .to_string();
+
+    // Una aplicación web se quita quitando lo que se escribió: sus dos accesos
+    // directos y el icono. No hay desinstalador que buscar ni residuos que
+    // barrer, así que el resto de la cadena no tiene nada que hacer aquí.
+    if catalog_entry.get("source_type").and_then(Value::as_str) == Some("webapp") {
+        webapp::uninstall(&catalog_entry)?;
+        {
+            let mut installed = state.installed.lock();
+            installed.remove(&app_id);
+            let _ = store::save_installed(&installed);
+        }
+        rebuild_statuses(&state);
+        logger::info("uninstall", format!("Aplicación web eliminada: {app_name}"));
+        return Ok(format!("{app_name} se ha desinstalado correctamente"));
+    }
 
     if st.origin == "system" {
         logger::info(
@@ -989,6 +1016,59 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
     .await
 }
 
+/// The desktop shortcut a component of `suite_id` gets, by name.
+fn component_desktop_shortcut(name: &str) -> Option<PathBuf> {
+    dirs::desktop_dir().map(|desktop| desktop.join(format!("{name}.lnk")))
+}
+
+/// Puts every program a suite installed on the desktop.
+///
+/// The icon is not set: a shortcut to `WINWORD.EXE` already wears Word's own,
+/// straight from the executable, which is sharper than anything downloadable.
+fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
+    let catalog = state.catalog.lock().clone();
+    for component in detect::components_of(&catalog, suite_id) {
+        let Some(name) = component.get("name").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(executable) = detect::component_executable(component) else {
+            continue;
+        };
+        let Some(shortcut) = component_desktop_shortcut(name) else {
+            continue;
+        };
+        match start_menu::write_shortcut(
+            &shortcut,
+            &executable,
+            name,
+            &start_menu::Extras::default(),
+        ) {
+            Ok(()) => logger::info(
+                "componentes",
+                format!("Acceso directo en el escritorio: {name} -> {}", executable.display()),
+            ),
+            Err(error) => logger::warn(
+                "componentes",
+                format!("No se pudo crear el acceso directo de {name}: {error}"),
+            ),
+        }
+    }
+}
+
+/// Removes them again when the suite goes.
+fn remove_component_shortcuts(state: &AppState, suite_id: &str) {
+    let catalog = state.catalog.lock().clone();
+    for component in detect::components_of(&catalog, suite_id) {
+        if let Some(shortcut) = component
+            .get("name")
+            .and_then(Value::as_str)
+            .and_then(component_desktop_shortcut)
+        {
+            let _ = std::fs::remove_file(shortcut);
+        }
+    }
+}
+
 fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {
     logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
     let catalog_entry = state
@@ -997,6 +1077,15 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
         .iter()
         .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id))
         .cloned();
+
+    // La aplicación web se abre como la abre su acceso directo, sin depender de
+    // que el archivo siga donde se dejó.
+    if let Some(entry) = catalog_entry
+        .as_ref()
+        .filter(|entry| entry.get("source_type").and_then(Value::as_str) == Some("webapp"))
+    {
+        return webapp::launch(entry);
+    }
 
     let preferred_executable = catalog_entry
         .as_ref()
@@ -1773,6 +1862,12 @@ async fn install_app(
                         format!("Limpieza post-instalación de {app_id_for_task}: {error}"),
                     );
                 }
+
+                // Una suite deja sus programas instalados pero el escritorio
+                // vacío: Office publica en el menú Inicio y nada más. Los
+                // accesos directos de Word, Excel y compañía se crean aquí, uno
+                // por cada componente que de verdad quedó en el disco.
+                publish_component_shortcuts(&app_state, &app_id_for_task);
 
                 // The terminal the store ships gets the same Start Menu folder
                 // the store gives itself, so Open-Shell indexes it and finds it

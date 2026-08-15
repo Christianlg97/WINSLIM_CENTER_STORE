@@ -23,6 +23,17 @@ pub fn shortcut_path(folder: &str, name: &str) -> Option<PathBuf> {
     Some(programs_dir()?.join(folder).join(format!("{name}.lnk")))
 }
 
+/// Everything a shortcut carries beyond where it points.
+///
+/// A web application needs the other two: the browser is the target for every
+/// one of them, so what tells them apart is the address in `arguments` and the
+/// site's own icon.
+#[derive(Default)]
+pub struct Extras<'a> {
+    pub arguments: Option<&'a str>,
+    pub icon: Option<&'a Path>,
+}
+
 /// Creates `<Programs>\<folder>\<name>.lnk` pointing at `target`, replacing any
 /// shortcut already there.
 #[cfg(windows)]
@@ -30,6 +41,91 @@ pub fn publish(folder: &str, name: &str, target: &Path) -> Result<PathBuf, Strin
     let programs =
         programs_dir().ok_or("Windows no indica dónde está el menú Inicio del usuario")?;
     publish_into(&programs, folder, name, target)
+}
+
+/// [`publish`] for a shortcut that also carries arguments or an icon.
+#[cfg(windows)]
+pub fn publish_with(
+    folder: &str,
+    name: &str,
+    target: &Path,
+    extras: &Extras<'_>,
+) -> Result<PathBuf, String> {
+    let programs =
+        programs_dir().ok_or("Windows no indica dónde está el menú Inicio del usuario")?;
+    let directory = programs.join(folder);
+    std::fs::create_dir_all(&directory)
+        .map_err(|error| format!("No se pudo crear {}: {error}", directory.display()))?;
+    let shortcut = directory.join(format!("{name}.lnk"));
+    write_shortcut(&shortcut, target, name, extras)?;
+    Ok(shortcut)
+}
+
+/// Writes a `.lnk` wherever it is asked to, which is what the desktop copy and
+/// the Start Menu one have in common.
+#[cfg(windows)]
+pub fn write_shortcut(
+    shortcut: &Path,
+    target: &Path,
+    description: &str,
+    extras: &Extras<'_>,
+) -> Result<(), String> {
+    if !target.is_file() {
+        return Err(format!(
+            "No existe el ejecutable que se quería publicar: {}",
+            target.display()
+        ));
+    }
+    let quote = |value: &str| value.replace('\'', "''");
+    let working = target
+        .parent()
+        .map(|parent| parent.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let mut script = format!(
+        "$ErrorActionPreference='Stop'; \
+         $shell = New-Object -ComObject WScript.Shell; \
+         $link = $shell.CreateShortcut('{}'); \
+         $link.TargetPath = '{}'; \
+         $link.WorkingDirectory = '{}'; \
+         $link.Description = '{}'; ",
+        quote(&shortcut.to_string_lossy()),
+        quote(&target.to_string_lossy()),
+        quote(&working),
+        quote(description),
+    );
+    if let Some(arguments) = extras.arguments {
+        script.push_str(&format!("$link.Arguments = '{}'; ", quote(arguments)));
+    }
+    if let Some(icon) = extras.icon {
+        script.push_str(&format!(
+            "$link.IconLocation = '{}'; ",
+            quote(&icon.to_string_lossy())
+        ));
+    }
+    script.push_str("$link.Save()");
+
+    let output = crate::process::hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    )
+    .map_err(|error| format!("Windows no pudo crear el acceso directo: {error}"))?;
+    if !output.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!("Windows no pudo guardar {}", shortcut.display())
+        } else {
+            format!("Windows no pudo guardar {}: {detail}", shortcut.display())
+        });
+    }
+    Ok(())
 }
 
 /// The body of [`publish`], with the Start Menu handed in so it can be exercised

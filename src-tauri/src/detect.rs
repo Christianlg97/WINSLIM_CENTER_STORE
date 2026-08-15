@@ -634,6 +634,43 @@ pub fn match_system_app(
         .map(|(app, _)| app.clone())
 }
 
+/// Whether the entry offers anything to open at all.
+///
+/// `"launchable": false` is for the applications that are really a bundle of
+/// others: what the user opens is Word or Excel, never "Microsoft 365".
+fn is_launchable(entry: &Value) -> bool {
+    entry
+        .get("launchable")
+        .and_then(Value::as_bool)
+        .unwrap_or(true)
+}
+
+/// Where a component of another application really is, if it is there.
+///
+/// A suite installs several programs and the catalog names each one's path, so
+/// this is a plain look at the disk rather than a search: Word is Word because
+/// `WINWORD.EXE` is where Office puts it.
+pub fn component_executable(entry: &Value) -> Option<PathBuf> {
+    entry
+        .get("known_launch_paths")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.as_str())
+        .map(PathBuf::from)
+        .find(|path| path.is_file())
+}
+
+/// The applications the catalog says come inside `suite_id`.
+pub fn components_of<'a>(catalog: &'a [Value], suite_id: &str) -> Vec<&'a Value> {
+    catalog
+        .iter()
+        .filter(|entry| {
+            entry.get("source_type").and_then(Value::as_str) == Some("component")
+                && entry.get("component_of").and_then(Value::as_str) == Some(suite_id)
+        })
+        .collect()
+}
+
 pub fn detect_names_from_entry(entry: &serde_json::Value) -> Vec<String> {
     let mut names = Vec::new();
     if let Some(arr) = entry.get("detect_names").and_then(|v| v.as_array()) {
@@ -668,6 +705,58 @@ pub fn build_statuses(
             .and_then(|v| v.as_str())
             .unwrap_or("latest");
         let detect_names = detect_names_from_entry(entry);
+        // Un componente no se instala ni se desinstala por su cuenta: llega con
+        // otra aplicación — Word con Microsoft 365 — y lo único que se puede
+        // hacer con él es abrirlo, cuando su ejecutable está donde debe.
+        if entry.get("source_type").and_then(Value::as_str) == Some("component") {
+            let executable = component_executable(entry);
+            let installed = executable.is_some();
+            map.insert(
+                id.to_string(),
+                AppStatus {
+                    installed,
+                    version: catalog_version.to_string(),
+                    origin: if installed { "system" } else { "none" }.into(),
+                    install_path: executable
+                        .map(|path| path.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    update_available: false,
+                    latest_version: None,
+                    can_uninstall: false,
+                    can_launch: installed,
+                    uninstall_command: None,
+                    uninstall_command_full: None,
+                    install_location: None,
+                },
+            );
+            continue;
+        }
+        // Una aplicación web no deja nada en el registro ni en el menú Inicio de
+        // Windows salvo el acceso directo que escribió la tienda: ese archivo es
+        // la instalación entera, y su presencia es la única respuesta honesta.
+        if entry.get("source_type").and_then(Value::as_str) == Some("webapp") {
+            let shortcut = crate::webapp::shortcut_of(entry);
+            let installed = shortcut.is_some();
+            map.insert(
+                id.to_string(),
+                AppStatus {
+                    installed,
+                    version: catalog_version.to_string(),
+                    origin: if installed { "center" } else { "none" }.into(),
+                    install_path: shortcut
+                        .map(|path| path.to_string_lossy().to_string())
+                        .unwrap_or_default(),
+                    update_available: false,
+                    latest_version: None,
+                    can_uninstall: installed,
+                    can_launch: installed,
+                    uninstall_command: None,
+                    uninstall_command_full: None,
+                    install_location: None,
+                },
+            );
+            continue;
+        }
         if let Some(info) = center_installed.get(id) {
             let install_path = PathBuf::from(&info.install_path);
             if !info.install_path.is_empty() && install_path.exists() {
@@ -791,7 +880,11 @@ pub fn build_statuses(
                             .get("winget_id")
                             .and_then(Value::as_str)
                             .is_some_and(|value| !value.trim().is_empty()),
-                    can_launch: !launch_path.is_empty(),
+                    // Una suite no se abre: se abren los programas que trae, y
+                    // el catálogo los lista aparte. Microsoft 365 registra como
+                    // icono su servicio de actualización, así que "Abrir" no
+                    // llevaba a ninguna parte visible.
+                    can_launch: !launch_path.is_empty() && is_launchable(entry),
                     uninstall_command: sys.uninstall_string.clone(),
                     uninstall_command_full: sys.full_uninstall_string.clone(),
                     install_location: Some(sys.install_location.trim().to_string())
@@ -1088,6 +1181,59 @@ mod tests {
         assert!(names_match("7-Zip", "7-Zip 24.08 (x64)"));
         assert!(!names_match("Code", "OpenCode"));
         assert!(!names_match("Visual Studio Code", "OpenCode"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_suite_is_not_opened_and_the_programs_it_brings_are_not_uninstalled() {
+        // La forma de Microsoft 365: lo que se abre es Word, no la suite, y lo
+        // que se desinstala es la suite, no Word.
+        let system_root = std::env::var("SystemRoot").unwrap();
+        let programa = format!(r"{system_root}\System32\cmd.exe");
+        let suite = serde_json::json!({
+            "id": "suite", "name": "Suite Ejemplo", "launchable": false
+        });
+        let componente = serde_json::json!({
+            "id": "programa", "name": "Programa", "source_type": "component",
+            "component_of": "suite",
+            "known_launch_paths": [programa, r"C:\no\existe\jamas.exe"]
+        });
+        let system = vec![SystemApp {
+            display_name: "Suite Ejemplo".into(),
+            version: "1.0".into(),
+            install_location: system_root.clone(),
+            publisher: "Ejemplo".into(),
+            display_icon: programa.clone(),
+            uninstall_string: Some(r"C:\Ejemplo\unins000.exe".into()),
+            full_uninstall_string: None,
+        }];
+
+        let entradas = vec![suite, componente];
+        let statuses = build_statuses(&entradas, &HashMap::new(), &system, &[], "");
+
+        let suite = &statuses["suite"];
+        assert!(suite.installed, "la suite se detecta como instalada");
+        assert!(suite.can_uninstall, "y se puede desinstalar");
+        assert!(!suite.can_launch, "pero no se abre");
+
+        let componente = &statuses["programa"];
+        assert!(componente.installed);
+        assert!(componente.can_launch, "el programa sí se abre");
+        assert!(!componente.can_uninstall, "y no se desinstala por su cuenta");
+        assert!(componente.install_path.to_lowercase().ends_with(r"\cmd.exe"));
+
+        // La suite conoce los suyos, que es lo que usa el escritorio.
+        assert_eq!(components_of(&entradas, "suite").len(), 1);
+
+        // Un programa cuyo ejecutable no está no cuenta como instalado, así que
+        // la tienda no lo muestra.
+        let ausente = serde_json::json!({
+            "id": "ausente", "name": "Ausente", "source_type": "component",
+            "component_of": "suite", "known_launch_paths": [r"C:\no\existe\jamas.exe"]
+        });
+        let statuses = build_statuses(&[ausente], &HashMap::new(), &[], &[], "");
+        assert!(!statuses["ausente"].installed);
+        assert!(!statuses["ausente"].can_launch);
     }
 
     #[test]
