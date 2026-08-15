@@ -465,6 +465,10 @@ function lastScanLabel() {
 async function scanForUpdates() {
   if (state.scanningUpdates) return;
   state.scanningUpdates = true;
+  // This one button reports on itself: it turns into its own busy state and the
+  // status bar counts the scan down. Covering the list on top of that would
+  // hide the very card the button lives in.
+  suppressShellBusy = true;
   renderContent();
   setStatus("Consultando WinGet en busca de actualizaciones...", "var(--accent)");
   setProgress(30);
@@ -488,6 +492,8 @@ async function scanForUpdates() {
     clientLog("warn", "updates-scan", String(error?.stack || error));
   } finally {
     state.scanningUpdates = false;
+    suppressShellBusy = false;
+    hideShellBusy();
     setProgress(100);
     renderSidebar();
     renderContent();
@@ -1736,11 +1742,14 @@ async function reloadCatalog() {
  */
 let shellBusyOverlay = null;
 let syncModalOverlay = null;
+/// Set while an action reports its own progress well enough that covering the
+/// list would take more away than it explains.
+let suppressShellBusy = false;
 
 function showShellBusy() {
   // The full sync screen already covers everything, card included. Two veils
   // over one another would only darken the window twice.
-  if (shellBusyOverlay || syncModalOverlay) return;
+  if (shellBusyOverlay || syncModalOverlay || suppressShellBusy) return;
   const shell = document.querySelector(".shell");
   if (!shell) return;
   shellBusyOverlay = document.createElement("div");
