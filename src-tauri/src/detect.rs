@@ -246,50 +246,54 @@ fn is_launchable_executable(path: &std::path::Path) -> bool {
     .any(|blocked| name.contains(blocked))
 }
 
-fn system_launch_path(app: &SystemApp) -> Option<PathBuf> {
+/// Every place the registry hints the application might be, best first.
+///
+/// All of them are worth trying, not just the first that exists. EA App points
+/// DisplayIcon at the installer WiX left in the package cache — a real folder
+/// with nothing openable in it — and names the folder that does hold the
+/// program only inside its uninstall command. Stopping at the first candidate
+/// meant reaching a dead end and calling it the answer.
+fn system_launch_candidates(app: &SystemApp) -> Vec<PathBuf> {
     let icon_path = executable_from_display_icon(&app.display_icon);
+    let mut candidates = Vec::new();
+
     if let Some(path) = icon_path
         .as_ref()
         .filter(|path| is_launchable_executable(path))
     {
-        return Some(path.clone());
+        candidates.push(path.clone());
     }
 
-    let location = {
-        let location = PathBuf::from(app.install_location.trim().trim_matches('"'));
-        if !app.install_location.trim().is_empty() && location.exists() {
-            Some(location)
-        } else {
-            None
-        }
-    };
-    if location.is_some() {
-        return location;
+    let location = PathBuf::from(app.install_location.trim().trim_matches('"'));
+    if !app.install_location.trim().is_empty() && location.is_dir() {
+        candidates.push(location);
     }
 
     // Steam and a few other installers register uninstall.exe as DisplayIcon
-    // and leave InstallLocation empty. Keep the folder for lazy resolution
-    // when the user presses Open; never scan it during store startup.
-    if let Some(path) = icon_path.and_then(|path| path.parent().map(std::path::Path::to_path_buf)) {
-        return Some(path);
+    // and leave InstallLocation empty, which makes the folder holding it worth
+    // a look even though the icon itself is not.
+    if let Some(parent) = icon_path
+        .as_ref()
+        .and_then(|path| path.parent())
+        .filter(|parent| parent.is_dir())
+    {
+        candidates.push(parent.to_path_buf());
     }
 
-    // Fallback: extract installation directory from uninstall_string.
-    // InnoSetup and NSIS installers often register unins000.exe as UninstallString
-    // while leaving DisplayIcon and InstallLocation empty in Registry.
-    if let Some(ref uninstall_str) = app.uninstall_string {
-        if let Ok((executable, _)) = crate::installer::split_registered_command(uninstall_str) {
-            if executable.exists() {
-                if let Some(parent) = executable.parent() {
-                    if parent.exists() {
-                        return Some(parent.to_path_buf());
-                    }
-                }
+    // InnoSetup and NSIS register unins000.exe as UninstallString while leaving
+    // the other two fields empty, and EA App names its folder here and nowhere
+    // else. An MSI command — `MsiExec.exe /X{…}` — has no folder to offer and
+    // drops out on its own.
+    if let Some(command) = app.uninstall_string.as_deref() {
+        if let Ok((executable, _)) = crate::installer::split_registered_command(command) {
+            if let Some(parent) = executable.parent().filter(|parent| parent.is_dir()) {
+                candidates.push(parent.to_path_buf());
             }
         }
     }
 
-    None
+    candidates.dedup();
+    candidates
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -668,8 +672,9 @@ pub fn build_statuses(
                 .map(|p| p.to_string_lossy().to_string());
 
             let launch_path = known_path.unwrap_or_else(|| {
-                system_launch_path(&sys)
-                    .and_then(|path| {
+                system_launch_candidates(&sys)
+                    .into_iter()
+                    .find_map(|path| {
                         crate::installer::resolve_launchable_path(&path, preferred_executable)
                     })
                     // Portable programs are indexed without a usable location:
@@ -682,6 +687,20 @@ pub fn build_statuses(
                         crate::residue::find_indexed_executable(
                             &crate::residue::AppIdentity::from_catalog(entry, None),
                         )
+                    })
+                    // Asked before the Start Menu below, because this answer is
+                    // there the instant the installer finishes and that one
+                    // waits on an index Windows rebuilds when it feels like it:
+                    // 7-Zip took over a minute to become openable.
+                    .or_else(|| {
+                        let mut folder_names = vec![name.to_string()];
+                        folder_names.extend(detect_names.iter().cloned());
+                        program_folder_named_after(&folder_names).and_then(|folder| {
+                            crate::installer::resolve_launchable_path(
+                                &folder,
+                                preferred_executable,
+                            )
+                        })
                     })
                     .map(|path| path.to_string_lossy().to_string())
                     .unwrap_or_default()
@@ -832,6 +851,35 @@ pub fn is_packaged_start_app(app_id: &str) -> bool {
         || std::path::Path::new(trimmed).is_absolute())
         && trimmed.to_ascii_lowercase().ends_with(".exe");
     !desktop_entry
+}
+
+/// The folder a program of this name would have where programs are kept.
+///
+/// Some installers record that the application is here without saying where:
+/// 7-Zip's MSI leaves both InstallLocation and DisplayIcon empty. Its Start Menu
+/// entry does know the path, but Windows rebuilds that index on its own
+/// schedule and took over a minute to list it, so a program that had just been
+/// installed sat there with no way to open it. Meanwhile its folder was in
+/// Program Files under its own name, which is where an installer puts one.
+///
+/// The name is joined rather than searched for: an exact folder is the
+/// application's, whereas anything looser starts guessing.
+fn program_folder_named_after(names: &[String]) -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    for variable in ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"] {
+        if let Ok(value) = std::env::var(variable) {
+            roots.push(PathBuf::from(value));
+        }
+    }
+    if let Ok(value) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(value).join("Programs"));
+    }
+    roots.iter().find_map(|root| {
+        names
+            .iter()
+            .map(|name| root.join(name.trim()))
+            .find(|candidate| candidate.is_dir())
+    })
 }
 
 /// The folder a KNOWNFOLDERID stands for, as Windows writes it in a Start Menu
@@ -1119,6 +1167,57 @@ mod tests {
         let entry = serde_json::json!({});
         assert!(match_start_app(&entry, "Maxima", &apps).is_none());
         assert!(start_app_path("https://maxima.sourceforge.io").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_dead_end_in_the_registry_does_not_hide_the_folder_behind_it() {
+        // EA App's shape: DisplayIcon points at the installer WiX cached, which
+        // is a real folder with nothing openable in it, and the only mention of
+        // the folder holding the program is inside the uninstall command.
+        let system_root = std::env::var("SystemRoot").unwrap();
+        let cache = PathBuf::from(&system_root).join("System32");
+        let program = PathBuf::from(&system_root).join("System32\\WindowsPowerShell\\v1.0");
+        let app = SystemApp {
+            display_name: "Ejemplo".into(),
+            version: "1.0".into(),
+            install_location: String::new(),
+            publisher: "Ejemplo".into(),
+            display_icon: format!("{}\\EjemploInstaller.exe,0", cache.display()),
+            uninstall_string: Some(format!(r#""{}\Uninstall.exe" /uninstall"#, program.display())),
+            full_uninstall_string: None,
+        };
+
+        let candidates = system_launch_candidates(&app);
+        // The icon itself is an installer and is never offered as something to
+        // open; the folder that only the uninstall command knows about is.
+        assert!(!candidates.iter().any(|path| path.ends_with("EjemploInstaller.exe")));
+        assert!(candidates.contains(&program));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn the_application_folder_is_found_where_programs_live() {
+        // 7-Zip's MSI registers no location at all and its Start Menu entry took
+        // Windows over a minute to publish, but `C:\Program Files\7-Zip` was
+        // there from the moment the installer finished.
+        let program_files = std::env::var("ProgramW6432")
+            .or_else(|_| std::env::var("ProgramFiles"))
+            .unwrap();
+        let root = PathBuf::from(&program_files);
+        let folder = root.join("WinSlimCenter Prueba Carpeta");
+        std::fs::create_dir_all(&folder).ok();
+        if folder.is_dir() {
+            assert_eq!(
+                program_folder_named_after(&["WinSlimCenter Prueba Carpeta".to_string()]),
+                Some(folder.clone())
+            );
+            let _ = std::fs::remove_dir(&folder);
+        }
+        // A name nothing is called finds nothing, rather than the nearest thing.
+        assert!(
+            program_folder_named_after(&["No Existe Este Programa Jamas".to_string()]).is_none()
+        );
     }
 
     #[cfg(windows)]

@@ -603,6 +603,31 @@ fn uninstall_took_effect(install_path: &str) -> bool {
     false
 }
 
+/// How long a step of the uninstall chain is given to take effect before it is
+/// judged to have done nothing.
+///
+/// An uninstall is hardly ever finished when the command that started it
+/// returns: WinGet hands the job to the vendor's own uninstaller and answers
+/// straight away. Asking four milliseconds later — which is what the store did —
+/// found Parsec's entry still in place, concluded WinGet had achieved nothing
+/// and ran Parsec's uninstaller a second time. Rockstar's entry, the one that
+/// really does survive its own uninstaller, is still there when the time is up.
+const UNINSTALL_SETTLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6);
+
+/// Waits for Windows to stop listing the application, up to the time above.
+fn windows_forgets_the_app(identity: &residue::AppIdentity) -> bool {
+    let started = std::time::Instant::now();
+    loop {
+        if !still_listed_by_windows(identity) {
+            return true;
+        }
+        if started.elapsed() >= UNINSTALL_SETTLE_TIMEOUT {
+            return false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(400));
+    }
+}
+
 /// `true` while Windows still has an uninstall entry for the application.
 ///
 /// Read straight from the registry, with no cache in the way: it is asked in the
@@ -769,7 +794,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                     // here and never tried the uninstaller Windows had
                     // registered, which is the one that actually works.
                     Ok(installer::WingetUninstall::Removed) => {
-                        if !still_listed_by_windows(&identity) {
+                        if windows_forgets_the_app(&identity) {
                             return Ok((None, Vec::new()));
                         }
                         logger::warn(
@@ -869,11 +894,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                 match installer::uninstall_system_app(&command) {
                     Ok(()) => {
                         ran_without_error = true;
-                        // Some uninstallers return before Windows has caught up
-                        // with them; a moment's grace keeps a job well done from
-                        // being repeated.
-                        std::thread::sleep(std::time::Duration::from_millis(800));
-                        if !still_listed_by_windows(&identity) {
+                        if windows_forgets_the_app(&identity) {
                             return Ok((None, Vec::new()));
                         }
                         logger::warn(

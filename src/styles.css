@@ -269,6 +269,28 @@ textarea {
   grid-template-columns: 230px 1fr;
   min-height: 0;
   overflow: hidden;
+  /* Anchors the loading veil below, which covers the list and the sidebar and
+     stops short of the header and the status bar. */
+  position: relative;
+}
+
+/* Shown while the store rescans the system after installing or uninstalling.
+   No card and no text of its own: the status bar at the foot of the window is
+   already saying what is happening, and it stays visible, as does the header. */
+.shell-busy {
+  position: absolute;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  animation: syncModalFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.shell-busy.closing {
+  animation: syncModalFadeOut 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
 .sidebar {
@@ -1519,14 +1541,32 @@ textarea {
   pointer-events: none;
 }
 
+/* The About dialog is the one that can outgrow the height a modal is allowed,
+   and `modal-hero` clips instead of scrolling so its glow stays inside the
+   rounded corners. Pressing "Buscar actualizaciones" adds a line, and that was
+   enough to push the buttons past the bottom edge with no way to reach them.
+   The list of facts gives up the room instead, and the buttons stay put. */
+.modal.modal-about {
+  display: flex;
+  flex-direction: column;
+}
+
 .about-dialog {
   position: relative;
   z-index: 1;
-  display: grid;
-  justify-items: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   gap: 14px;
+  min-height: 0;
   text-align: center;
   animation: fadeUp 0.35s ease;
+}
+
+/* The logo, the title and the buttons keep their size whatever happens; only
+   the list below is allowed to give room up, and it does it by scrolling. */
+.about-dialog > * {
+  flex-shrink: 0;
 }
 
 .about-logo {
@@ -1569,6 +1609,11 @@ textarea {
   gap: 8px;
   width: 100%;
   margin: 0;
+  /* The part that yields when the dialog runs out of height, so that the title
+     above it and the buttons below it never have to. */
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
   text-align: left;
 }
 

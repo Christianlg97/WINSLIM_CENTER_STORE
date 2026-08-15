@@ -1725,7 +1725,46 @@ async function reloadCatalog() {
 /*  Central Sync Loading Modal Helper Functions                               */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * The loading veil over the list of applications.
+ *
+ * Same logo and same spinning ring as the sync screen, without its card: what
+ * is being reported already has a place to be reported in — the status bar at
+ * the foot of the window, which stays visible along with the header. So this
+ * covers only the sidebar and the list, which are the parts about to be
+ * rewritten, and says nothing the bar is not already saying.
+ */
+let shellBusyOverlay = null;
 let syncModalOverlay = null;
+
+function showShellBusy() {
+  // The full sync screen already covers everything, card included. Two veils
+  // over one another would only darken the window twice.
+  if (shellBusyOverlay || syncModalOverlay) return;
+  const shell = document.querySelector(".shell");
+  if (!shell) return;
+  shellBusyOverlay = document.createElement("div");
+  shellBusyOverlay.className = "shell-busy";
+  shellBusyOverlay.setAttribute("aria-hidden", "true");
+  shellBusyOverlay.innerHTML = `
+    <div class="sync-logo-box">
+      <div class="sync-logo-ring"></div>
+      <div class="sync-logo-wrapper">
+        <img src="assets/winslim-center-logo.png" alt="" />
+      </div>
+    </div>`;
+  shell.appendChild(shellBusyOverlay);
+}
+
+function hideShellBusy() {
+  if (!shellBusyOverlay) return;
+  const overlay = shellBusyOverlay;
+  shellBusyOverlay = null;
+  overlay.classList.add("closing");
+  // Long enough for the fade to play out, short enough that a rescan finishing
+  // and another starting do not stack veils.
+  setTimeout(() => overlay.remove(), 280);
+}
 
 function showSyncModal(title = "WinSlimCenter", subtitle = "Sincronizando tienda...") {
   if (syncModalOverlay) return;
@@ -2003,7 +2042,9 @@ function showAboutModal() {
       </div>
     </div>
   `);
-  document.getElementById("modal").classList.add("modal-hero");
+  // `modal-about` is what lets the facts list scroll while the buttons stay put:
+  // this is the one hero dialog that can outgrow the height a modal is allowed.
+  document.getElementById("modal").classList.add("modal-hero", "modal-about");
   document.getElementById("about-close").onclick = closeModal;
 
   const check = document.getElementById("about-check");
@@ -2162,6 +2203,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       else setStatus(message, "var(--accent)");
     }
     if (progress != null) setProgress(progress);
+    // The rescan after installing or uninstalling rewrites every card on
+    // screen. Covering the list while it happens says the store is working on
+    // it, instead of leaving a page that is about to change under the cursor.
+    if (stage === "complete") hideShellBusy();
+    else showShellBusy();
   });
 
   await listen("install-finished", async (ev) => {
