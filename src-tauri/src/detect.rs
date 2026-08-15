@@ -154,6 +154,49 @@ pub fn scan_start_apps() -> Vec<StartApp> {
     Vec::new()
 }
 
+/// Switches that only decide whether the uninstaller shows a window.
+const SILENT_SWITCHES: [&str; 12] = [
+    "/s",
+    "/silent",
+    "/verysilent",
+    "/quiet",
+    "/qn",
+    "/qb",
+    "-s",
+    "-silent",
+    "-quiet",
+    "--silent",
+    "--quiet",
+    "/norestart",
+];
+
+/// The command with nothing left in it but what it actually does.
+fn normalized_command(command: &str) -> String {
+    command
+        .split_whitespace()
+        .map(|token| token.trim_matches('"').to_ascii_lowercase())
+        .filter(|token| !SILENT_SWITCHES.contains(&token.as_str()))
+        // The two entries are written by hand often enough to disagree on
+        // quoting and on which slash separates a folder: Ubisoft registers the
+        // same uninstaller as `"…Ubisoft Game Launcher/Uninstall.exe" /S` and as
+        // `C:\…\Uninstall.exe`.
+        .map(|token| token.replace('/', "\\"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Whether Windows registered two genuinely different ways of uninstalling,
+/// rather than the same one with and without its window.
+///
+/// Worth knowing because a command that runs without error and removes nothing
+/// is only worth following up when there is something else to run: Rockstar's
+/// `/S` does nothing and its `-enableFullMode -uninstall=launcher` works, while
+/// Winamp's two entries are one uninstaller, and running it twice puts a second
+/// window on top of the one already waiting for the user.
+fn is_a_different_operation(quiet: &str, full: &str) -> bool {
+    normalized_command(quiet) != normalized_command(full)
+}
+
 fn executable_from_display_icon(value: &str) -> Option<PathBuf> {
     let cleaned = value.trim();
     if cleaned.is_empty() {
@@ -456,6 +499,11 @@ pub fn scan_installed_programs() -> Vec<SystemApp> {
             let quiet = stated("QuietUninstallString");
             let plain = stated("UninstallString");
             let chosen = quiet.clone().or_else(|| plain.clone());
+            let plain = plain.filter(|full| {
+                chosen
+                    .as_deref()
+                    .is_some_and(|current| is_a_different_operation(current, full))
+            });
             out.push(SystemApp {
                 display_name,
                 version,
@@ -985,6 +1033,46 @@ mod tests {
         assert!(match_start_app(&bare, "Kimi AI", &apps).is_none());
         let named = serde_json::json!({ "name": "Kimi AI", "detect_names": ["Kimi"] });
         assert!(match_start_app(&named, "Kimi AI", &apps).is_some());
+    }
+
+    #[test]
+    fn only_a_genuinely_different_uninstall_command_is_worth_keeping() {
+        // Rockstar's quiet command is another operation entirely, and the one
+        // that works is the other: worth following up when the first does
+        // nothing.
+        assert!(is_a_different_operation(
+            r#""C:\RGL\uninstall.exe" /S"#,
+            r#""C:\RGL\uninstall.exe" -enableFullMode -uninstall=launcher"#
+        ));
+        // Everything else on a real machine is one uninstaller with and without
+        // its window. Running it twice puts a second Winamp dialog on top of the
+        // one already waiting for the user.
+        for (quiet, full) in [
+            (r#""C:\P\unins000.exe" /SILENT"#, r#""C:\P\unins000.exe""#),
+            (
+                r#""C:\P\Uninstall Kimi.exe" /currentuser /S"#,
+                r#""C:\P\Uninstall Kimi.exe" /currentuser"#,
+            ),
+            (
+                r"C:\D\Update.exe --uninstall -s",
+                r"C:\D\Update.exe --uninstall",
+            ),
+            (
+                r#""C:\C\VC_redist.x64.exe" /uninstall /quiet"#,
+                r#""C:\C\VC_redist.x64.exe"  /uninstall"#,
+            ),
+            // Ubisoft writes the same path quoted with a forward slash in one
+            // entry and bare with a backslash in the other.
+            (
+                r#""C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher/Uninstall.exe" /S"#,
+                r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher\Uninstall.exe",
+            ),
+        ] {
+            assert!(
+                !is_a_different_operation(quiet, full),
+                "no deberían ser distintos: {quiet} / {full}"
+            );
+        }
     }
 
     #[test]

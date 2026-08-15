@@ -978,7 +978,15 @@ textarea {
 }
 
 .card-top strong {
-  display: block;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  /* Separation from the name when the badge fits beside it, and room beneath it
+     when the name is long enough to push it onto a row of its own — "NVIDIA
+     Control Panel" against "NVIDIA App". `row-gap` only ever applies between
+     rows, so the extra distance appears in the wrapped case and nowhere else. */
+  column-gap: 6px;
+  row-gap: 5px;
   font-size: 13px;
   font-family: var(--font-display);
 }
@@ -1177,11 +1185,12 @@ textarea {
   display: none;
 }
 
+/* Spacing comes from the container's gap, so that it is the same whether the
+   tag sits beside the name or below it. */
 .origin-tag {
   font-size: 10px;
   font-weight: 600;
   color: var(--text-light);
-  margin-left: 4px;
 }
 
 .origin-tag.update-origin {
@@ -1195,7 +1204,6 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-left: 6px;
   padding: 2px 7px;
   border: 1px solid rgba(34, 197, 94, 0.35);
   border-radius: 20px;
@@ -1962,18 +1970,30 @@ textarea {
 .package-operation-dots span:nth-child(2) { animation-delay: 0.14s; }
 .package-operation-dots span:nth-child(3) { animation-delay: 0.28s; }
 
-/* A finished operation shows a tick where the dots were pulsing, in the row
-   they already occupied so that nothing below it jumps. */
+/* A finished operation shows a tick where the dots were pulsing, on a disc of
+   the same green the "Ya instalado" badge uses, so that the dialog closing an
+   installation and the card announcing it afterwards speak with one voice. */
 .package-operation-dots.done span {
-  width: auto;
-  height: auto;
-  border-radius: 0;
-  background: none;
-  box-shadow: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 1px solid color-mix(in srgb, #22c55e 34%, transparent);
+  background: radial-gradient(
+    circle at 50% 42%,
+    color-mix(in srgb, #22c55e 20%, transparent) 0%,
+    color-mix(in srgb, #22c55e 9%, transparent) 70%
+  );
+  box-shadow: 0 4px 20px color-mix(in srgb, #22c55e 16%, transparent);
+  color: #4ade80;
   animation: none;
-  color: var(--green);
-  font-size: 34px;
-  line-height: 1;
+}
+
+.package-operation-dots.done svg {
+  width: 28px;
+  height: 28px;
 }
 
 .package-operation-actions {
@@ -1991,6 +2011,31 @@ textarea {
   font-size: 14px;
   font-weight: 650;
   line-height: 1.5;
+}
+
+/* The dialog's own version of the bar under the status line at the foot of the
+   window: same accent, same glow, same easing. Thicker because here there is
+   room to look at it rather than glance at it, and pulled up against the text
+   above so the two read as one thing — the line says it in words, the bar at a
+   glance. No percentage of its own: the line already carries one. */
+.package-operation-progress {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  margin-top: -4px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+.package-operation-progress-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 55%, transparent);
+  transition: width 220ms ease-out;
 }
 
 @keyframes package-operation-dot {

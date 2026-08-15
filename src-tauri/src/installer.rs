@@ -514,7 +514,10 @@ async fn install_with_winget(
         ));
     }
 
-    on_progress(100, "Última versión instalada correctamente".into(), false);
+    // Not "instalada correctamente": nothing is settled until Windows says so,
+    // and announcing it here put a success message on screen that the dialog
+    // then repeated a second later with its tick and its buttons.
+    on_progress(100, "Comprobando la instalación...".into(), false);
     Ok(true)
 }
 
@@ -1376,7 +1379,10 @@ pub async fn do_install(
         // Do not register the downloaded setup executable as if it were the app.
         let _ = fs::remove_dir_all(&install_path);
         let _ = fs::remove_dir_all(&download_path);
-        on_progress(100, format!("{name} instalado correctamente"), false);
+        // The setup is done, the installation is not: what follows is asking
+        // Windows whether it took. Saying "instalado correctamente" here was the
+        // first of the two success messages the user saw for one installation.
+        on_progress(100, "Comprobando la instalación...".into(), false);
         return Ok(InstallOutcome::system_managed());
     }
 
@@ -1415,7 +1421,9 @@ pub async fn do_install(
 
     let _ = fs::remove_dir_all(&download_path);
 
-    on_progress(100, format!("{name} instalado correctamente"), true);
+    // Announcing the result is the finished dialog's job, once Windows has
+    // confirmed it. Here the only honest thing to report is the step under way.
+    on_progress(100, "Comprobando la instalación...".into(), true);
     Ok(InstallOutcome {
         changed: true,
         registered: Some((app_id.to_string(), registered)),

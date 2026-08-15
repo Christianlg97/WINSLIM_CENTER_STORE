@@ -1070,8 +1070,8 @@ async function uninstallApp(id) {
       renderContent();
       showBackgroundOperationModal(
         app,
-        `Desinstalando ${app.name}`,
-        "Ejecutando lógica de desinstalación del programa...",
+        `Desinstalación de ${app.name}`,
+        "Desinstalando el programa...",
       );
       // Some uninstallers open their own window and wait for the user. Without
       // an escape hatch the modal stayed up forever with no way out, so after a
@@ -1079,8 +1079,7 @@ async function uninstallApp(id) {
       const escapeHatch = setTimeout(() => {
         const status = document.getElementById("package-operation-status");
         if (status) {
-          status.textContent =
-            "El desinstalador de Windows sigue abierto. Comprueba si pide confirmación en otra ventana.";
+          status.textContent = "Continúa desinstalando...";
         }
         const actions = document.getElementById("package-operation-actions");
         if (actions && !actions.querySelector("#operation-dismiss")) {
@@ -1316,6 +1315,7 @@ function showPackageOperationModal(app, isUpdate) {
     app,
     `${isUpdate ? "Actualizando" : "Instalando"} ${app.name}`,
     "Preparando el paquete...",
+    true,
   );
   const actions = document.getElementById("package-operation-actions");
   if (actions) {
@@ -1334,7 +1334,12 @@ function bindOperationCancel(appId, message) {
   });
 }
 
-function showBackgroundOperationModal(app, title, initialStatus) {
+/**
+ * `withProgress` is for the operations that can measure themselves. An
+ * uninstall cannot — the program's own uninstaller reports to nobody — and a
+ * bar sitting at zero throughout would say something untrue about it.
+ */
+function showBackgroundOperationModal(app, title, initialStatus, withProgress = false) {
   const avatar = renderAvatar(app, app.name?.[0] || "?");
   const accent = pickAccent(app, 0);
   const avatarBg = avatarBackground(app, accent);
@@ -1351,6 +1356,14 @@ function showBackgroundOperationModal(app, title, initialStatus) {
       </div>
       <div class="package-operation-dots" aria-hidden="true"><span></span><span></span><span></span></div>
       <p id="package-operation-status">${escapeHtml(initialStatus)}</p>
+      ${
+        withProgress
+          ? `<div class="package-operation-progress" id="package-operation-progress"
+                  role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+               <span class="package-operation-progress-fill" id="package-operation-progress-fill"></span>
+             </div>`
+          : ""
+      }
       <div class="package-operation-actions" id="package-operation-actions"></div>
     </div>
   `, false, true);
@@ -1372,8 +1385,20 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed }) {
   const dots = dialog.querySelector(".package-operation-dots");
   if (dots) {
     dots.classList.add("done");
-    dots.innerHTML = '<span aria-hidden="true">✓</span>';
+    // Drawn rather than typed: the ✓ of a text font arrives with whatever
+    // weight and shape that font happens to give it, and next to the rest of
+    // the interface it looked like a leftover character.
+    dots.innerHTML = `
+      <span aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M4.5 12.5 10 18 19.5 6.5" />
+        </svg>
+      </span>`;
   }
+  // Nothing left to measure: the tick and the sentence below it say everything
+  // a full bar would, and one more full-width element would only crowd them.
+  dialog.querySelector(".package-operation-progress")?.remove();
   const title = dialog.querySelector("h2");
   if (title && app) title.textContent = app.name;
   // The same dialog serves the Install and Update buttons, and WinGet answers a
@@ -1411,6 +1436,13 @@ function updatePackageOperation(tasks) {
   if (!task) return;
   const status = document.getElementById("package-operation-status");
   if (status) status.textContent = task.status || "Procesando paquete...";
+  const progress = document.getElementById("package-operation-progress");
+  if (progress) {
+    const value = Math.max(0, Math.min(100, Number(task.progress) || 0));
+    progress.setAttribute("aria-valuenow", String(value));
+    const fill = document.getElementById("package-operation-progress-fill");
+    if (fill) fill.style.width = `${value}%`;
+  }
   const actions = document.getElementById("package-operation-actions");
   if (!actions) return;
   actions.innerHTML = `

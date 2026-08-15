@@ -858,6 +858,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
             // not proof either: what Windows says afterwards decides, the same
             // test WinGet's own answer already gets above. Only then is the
             // full command Windows registered beside it worth running.
+            let mut ran_without_error = false;
             for (label, command) in [
                 ("Desinstalador registrado", uninstall_command),
                 ("Desinstalador completo", uninstall_command_full),
@@ -867,6 +868,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                 };
                 match installer::uninstall_system_app(&command) {
                     Ok(()) => {
+                        ran_without_error = true;
                         // Some uninstallers return before Windows has caught up
                         // with them; a moment's grace keeps a job well done from
                         // being repeated.
@@ -877,12 +879,22 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
                         logger::warn(
                             "uninstall",
                             format!(
-                                "{label} terminó sin error, pero Windows sigue registrando la aplicación; se continúa."
+                                "{label} terminó sin error, pero Windows sigue registrando la aplicación."
                             ),
                         );
                     }
                     Err(registry_error) => errors.push(format!("{label}: {registry_error}")),
                 }
+            }
+            // An uninstaller that ran without complaining is either still on
+            // screen waiting for the user — Winamp's NSIS stub exits the moment
+            // it relaunches itself, so it looks finished when it has not even
+            // started — or it has done all it intends to. Neither is a reason to
+            // go looking for another uninstaller inside the folder and open a
+            // second window on top of the first. Whether it worked is settled by
+            // the confirmation that follows, which waits.
+            if ran_without_error {
+                return Ok((None, Vec::new()));
             }
             // The fallback is attempted even without an indexed path: that is
             // exactly the case of portable programs, which Windows lists as
