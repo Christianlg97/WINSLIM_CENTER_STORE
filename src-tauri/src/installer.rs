@@ -253,6 +253,26 @@ fn interpret_installer_exit(
     ))
 }
 
+/// Joins arguments back into one command line, quoting the ones that need it.
+///
+/// The elevated path hands a single string to PowerShell, and an unquoted path
+/// with a space in it arrives as two arguments: on a machine whose user is
+/// called "Alejandro Donate" the package to install became `C:\Users\Alejandro`
+/// followed by something Windows Installer had no idea what to do with.
+fn quote_arguments(arguments: &[String]) -> String {
+    arguments
+        .iter()
+        .map(|argument| {
+            if argument.contains(' ') && !argument.starts_with('"') {
+                format!("\"{argument}\"")
+            } else {
+                argument.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// Where Windows Installer is asked to write its account of what it did.
 ///
 /// Beside the store's own logs rather than beside the package, because the
@@ -278,13 +298,48 @@ fn msi_log_path(app: &Value) -> Option<PathBuf> {
     )))
 }
 
+/// Turns the bytes of a Windows Installer log into text that can be searched.
+///
+/// The encoding depends on the build of Windows: some write UTF-16 with a byte
+/// order mark, the rest write the machine's code page. Neither is UTF-8, so
+/// anything but a lossy read throws away the file over one accented word.
+fn decode_installer_log(bytes: &[u8]) -> String {
+    let utf16 = |chunks: &mut dyn Iterator<Item = u16>| -> String {
+        char::decode_utf16(chunks.collect::<Vec<_>>())
+            .map(|character| character.unwrap_or(char::REPLACEMENT_CHARACTER))
+            .collect()
+    };
+    match bytes {
+        [0xFF, 0xFE, rest @ ..] => utf16(
+            &mut rest
+                .chunks_exact(2)
+                .map(|pair| u16::from_le_bytes([pair[0], pair[1]])),
+        ),
+        [0xFE, 0xFF, rest @ ..] => utf16(
+            &mut rest
+                .chunks_exact(2)
+                .map(|pair| u16::from_be_bytes([pair[0], pair[1]])),
+        ),
+        // Latin-1 covers the accented characters a Western code page puts in
+        // these messages, and leaves plain ASCII exactly as it was.
+        _ => bytes.iter().map(|byte| *byte as char).collect(),
+    }
+}
+
 /// The lines of a Windows Installer log that say what went wrong.
 ///
 /// A verbose MSI log runs to tens of thousands of lines of bookkeeping. What
 /// matters is the handful naming an error and the action that returned failure,
 /// which is what turns "código 1603" into something anybody can act on.
 fn msi_failure_summary(log: &Path) -> Option<String> {
-    let text = fs::read_to_string(log).ok()?;
+    // Read as bytes, not as text: Windows Installer writes its log in the
+    // machine's own code page, and on a Spanish Windows the first accented
+    // character makes it invalid UTF-8. `read_to_string` gave up on the whole
+    // file for it, and the store reported "sin detalle legible" about a log
+    // that said plenty. UTF-16 with a BOM, which some builds write instead, is
+    // handled the same way.
+    let bytes = fs::read(log).ok()?;
+    let text = decode_installer_log(&bytes);
     let mut found: Vec<String> = text
         .lines()
         .filter(|line| {
@@ -293,6 +348,7 @@ fn msi_failure_summary(log: &Path) -> Option<String> {
                 || lowered.contains("returned actual error")
                 || lowered.contains(" -- error ")
                 || lowered.contains("installation failed")
+                || lowered.contains("installation success or error status")
                 || (lowered.contains("return value 3") && lowered.contains("action ended"))
         })
         .map(|line| line.trim().to_string())
@@ -315,8 +371,12 @@ fn windows_installer_reason(code: i32) -> Option<&'static str> {
         // The generic failure, and by far the most common one on an update:
         // Windows Installer cannot replace a file that is in use, and run
         // silently there is no prompt offering to close the program.
+        // Windows Installer's catch-all. It is worth naming the usual suspect,
+        // but not asserting it: this same code came back on a clean install of
+        // Epic Games Launcher with nothing of it running at all. The reason is
+        // written in the log the store keeps beside its own.
         1603 => {
-            "Windows Installer no pudo completar la operación. Suele ser porque la aplicación seguía abierta, incluido su icono en la bandeja del sistema junto al reloj. Ciérrala del todo y vuelve a intentarlo."
+            "Windows Installer no pudo completar la operación. Lo más habitual es que la aplicación siguiera abierta —incluido su icono junto al reloj—, pero también puede ser un resto de una instalación anterior. El motivo exacto queda en el registro que la tienda guarda junto a sus logs."
         }
         1618 => "hay otra instalación en curso en el equipo. Espera a que termine y vuelve a intentarlo.",
         1619 => "el paquete de instalación no se pudo abrir; la descarga puede haber quedado incompleta.",
@@ -1085,7 +1145,7 @@ pub fn run_installer_in_background(
                 // cancellation instead of an unexplained "not installed".
                 let elevated_code = crate::process::run_elevated_and_wait(
                     installer_path,
-                    &args.join(" "),
+                    &quote_arguments(&args),
                     installer_path.parent(),
                 )
                 .map_err(|error| {
@@ -1140,7 +1200,7 @@ pub fn run_installer_in_background(
         }
     };
 
-    let exit_code = status.code();
+    let mut exit_code = status.code();
     crate::logger::info(
         "installer",
         format!(
@@ -1148,6 +1208,33 @@ pub fn run_installer_in_background(
             installer_path.display()
         ),
     );
+
+    // Windows Installer does not refuse to start when it lacks the rights to
+    // install for the whole machine: it starts, works for a few seconds and
+    // rolls the whole thing back with 1603. The uninstall side has always asked
+    // for UAC on these codes, while this one only did when Windows would not
+    // launch the process at all — so on any machine where the store is not
+    // already running elevated, every package of that kind failed and said
+    // nothing about permissions. Epic Games Launcher was one: its uninstall
+    // succeeded on the elevated retry and its install had no such retry to make.
+    if exit_code_requires_elevation(exit_code) {
+        crate::logger::warn(
+            "installer",
+            format!(
+                "El instalador terminó con {exit_code:?}, que en Windows suele significar que le faltan permisos; se reintenta con UAC."
+            ),
+        );
+        let elevated = crate::process::run_elevated_and_wait(
+            Path::new(&program),
+            &quote_arguments(&args),
+            installer_path.parent(),
+        )?;
+        crate::logger::info(
+            "installer",
+            format!("Instalador elevado finalizado: ruta={}, código={elevated:?}", installer_path.display()),
+        );
+        exit_code = elevated;
+    }
     // A Windows Installer that failed wrote down why; the number it returned
     // does not say. Reading its own account back is the difference between
     // "código 1603" and knowing which action gave up and on what.
@@ -3653,13 +3740,69 @@ mod tests {
     }
 
     #[test]
+    fn a_path_with_spaces_survives_the_elevated_retry() {
+        // What the store hands PowerShell when it asks for UAC. Unquoted, the
+        // package of a user called "Alejandro Donate" arrived as two arguments.
+        let arguments = vec![
+            "/i".to_string(),
+            r"C:\Users\Alejandro Donate\Downloads\app.msi".to_string(),
+            "/qn".to_string(),
+            "/norestart".to_string(),
+        ];
+        assert_eq!(
+            quote_arguments(&arguments),
+            r#"/i "C:\Users\Alejandro Donate\Downloads\app.msi" /qn /norestart"#
+        );
+        // Nothing that does not need quoting gets any.
+        assert_eq!(
+            quote_arguments(&["/qn".to_string(), r"C:\app.msi".to_string()]),
+            r"/qn C:\app.msi"
+        );
+    }
+
+    #[test]
+    fn a_windows_installer_log_is_read_whatever_it_was_written_in() {
+        let directory = std::env::temp_dir().join(format!("winslim-msi-{}", std::process::id()));
+        fs::create_dir_all(&directory).unwrap();
+
+        // A Spanish Windows writes its code page, and the accented word used to
+        // make the whole file unreadable as UTF-8.
+        let latin1 = directory.join("latin1.log");
+        let mut bytes = b"Action start 4:11:20: InstallValidate.\r\n".to_vec();
+        bytes.extend_from_slice(b"Error 1935. Ocurri\xF3 un error durante la instalaci\xF3n\r\n");
+        bytes.extend_from_slice(b"Action ended 4:11:26: InstallFinalize. Return value 3.\r\n");
+        fs::write(&latin1, bytes).unwrap();
+        let summary = msi_failure_summary(&latin1).expect("debería encontrar el fallo");
+        assert!(summary.contains("Return value 3"));
+
+        // Some builds write UTF-16 with a byte order mark instead.
+        let utf16 = directory.join("utf16.log");
+        let text = "Action ended 4:11:26: InstallFinalize. Return value 3.\r\n";
+        let mut wide = vec![0xFF, 0xFE];
+        for unit in text.encode_utf16() {
+            wide.extend_from_slice(&unit.to_le_bytes());
+        }
+        fs::write(&utf16, wide).unwrap();
+        assert!(msi_failure_summary(&utf16)
+            .expect("debería leerse en UTF-16")
+            .contains("Return value 3"));
+
+        // A log with nothing wrong in it says nothing rather than guessing.
+        let clean = directory.join("clean.log");
+        fs::write(&clean, b"Action start 4:11:20: InstallValidate.\r\n").unwrap();
+        assert!(msi_failure_summary(&clean).is_none());
+
+        let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
     fn windows_installer_codes_are_explained_rather_than_quoted() {
         let app = json!({ "name": "Epic Games Launcher" });
         // What an update of a launcher that was still running answers with.
         let busy = interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(1603))
             .unwrap_err();
         assert!(busy.contains("Epic Games Launcher"));
-        assert!(busy.contains("bandeja del sistema"));
+        assert!(busy.contains("junto al reloj"));
         assert!(!busy.contains("1603"));
         // Numbers nobody has a sentence for still say what they are.
         let unknown =
