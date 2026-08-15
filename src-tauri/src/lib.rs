@@ -1588,6 +1588,9 @@ async fn install_app(
         ),
     );
 
+    // Where the copy being replaced lives, so that whatever is running in that
+    // folder can be stopped before its installer tries to overwrite it.
+    let mut installed_at = None;
     let current_version = {
         let statuses = state.statuses.lock();
         if let Some(st) = statuses.get(&app_id) {
@@ -1600,6 +1603,12 @@ async fn install_app(
                 return Err(format!("'{name}' ya está instalada."));
             }
             if st.installed {
+                installed_at = st
+                    .install_location
+                    .clone()
+                    .filter(|location| !location.trim().is_empty())
+                    .or_else(|| Some(st.install_path.clone()))
+                    .filter(|location| !location.trim().is_empty());
                 Some(st.version.clone())
             } else {
                 None
@@ -1650,6 +1659,7 @@ async fn install_app(
             &flags_for_task,
             force_for_task,
             current_version,
+            installed_at,
             |progress, status, is_pausable| {
                 if last_logged_progress != Some(progress)
                     || last_progress_log.elapsed() >= std::time::Duration::from_secs(1)

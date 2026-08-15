@@ -315,6 +315,125 @@ pub fn run_hidden_and_wait(
     Ok(status.code())
 }
 
+/// What was running inside an application's folder before its installer ran, so
+/// that it can be put back afterwards.
+#[derive(Debug, Default, Clone)]
+pub struct StoppedApplication {
+    /// Windows services whose binary lives in the folder and were running.
+    pub services: Vec<String>,
+    /// Whether any ordinary process of the application was running.
+    pub had_processes: bool,
+}
+
+impl StoppedApplication {
+    pub fn was_running(&self) -> bool {
+        self.had_processes || !self.services.is_empty()
+    }
+}
+
+/// Stops everything running out of an application's own folder.
+///
+/// Windows Installer cannot replace a file another process holds open, and run
+/// silently it has no way to ask: it works for seventeen seconds and rolls the
+/// whole thing back with error 1603, which is what an Epic Games Launcher
+/// update did. An installer with a window would have offered to close the
+/// program; this is the store making the same offer on its behalf.
+///
+/// Only what lives inside the folder is touched, matched by the executable's
+/// real path rather than by name, so a program that merely shares a name with
+/// the one being updated is never in the line of fire.
+#[cfg(windows)]
+pub fn stop_application_at(folder: &Path) -> StoppedApplication {
+    let mut stopped = StoppedApplication::default();
+    let folder_text = folder.to_string_lossy().trim_end_matches('\\').to_string();
+    if folder_text.len() < 4 {
+        return stopped;
+    }
+    let quoted = folder_text.replace('\'', "''");
+    // The prefix is compared against the folder plus its separator, so that
+    // `…\Epic Games` cannot match `…\Epic Games Extra`.
+    let script = format!(
+        r#"$ErrorActionPreference='SilentlyContinue';
+$prefix = '{quoted}' + '\';
+$services = Get-CimInstance Win32_Service | Where-Object {{ $_.PathName -and ($_.PathName -replace '^"','') -like ($prefix + '*') -and $_.State -eq 'Running' }};
+foreach ($service in $services) {{ Stop-Service -Name $service.Name -Force; [Console]::Out.WriteLine('SERVICE:' + $service.Name) }};
+$processes = Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }};
+foreach ($process in $processes) {{ Stop-Process -Id $process.ProcessId -Force; [Console]::Out.WriteLine('PROCESS:' + $process.Name) }};"#
+    );
+    let Ok(output) = hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    ) else {
+        return stopped;
+    };
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        match line.trim().split_once(':') {
+            Some(("SERVICE", name)) => stopped.services.push(name.to_string()),
+            Some(("PROCESS", _)) => stopped.had_processes = true,
+            _ => {}
+        }
+    }
+    if stopped.was_running() {
+        crate::logger::info(
+            "process-stop",
+            format!(
+                "Detenido lo que corría en {}: servicios={:?}, procesos={}",
+                folder.display(),
+                stopped.services,
+                stopped.had_processes
+            ),
+        );
+    }
+    stopped
+}
+
+#[cfg(not(windows))]
+pub fn stop_application_at(_folder: &Path) -> StoppedApplication {
+    StoppedApplication::default()
+}
+
+/// Starts the services stopped above, once the installer has finished with
+/// them. A service the new version renamed or removed simply fails to start and
+/// is reported, never treated as a failed installation.
+#[cfg(windows)]
+pub fn start_services(services: &[String]) {
+    for name in services {
+        let script = format!("Start-Service -Name '{}'", name.replace('\'', "''"));
+        let started = hidden_output(
+            "powershell.exe",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script.as_str(),
+            ],
+        );
+        match started {
+            Ok(output) if output.success() => {
+                crate::logger::info("process-stop", format!("Servicio reiniciado: {name}"))
+            }
+            _ => crate::logger::warn(
+                "process-stop",
+                format!("No se pudo reiniciar el servicio {name}; puede que ya no exista."),
+            ),
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn start_services(_services: &[String]) {}
+
 pub fn terminate_process_tree(pid: u32) -> std::io::Result<()> {
     crate::logger::warn(
         "process",

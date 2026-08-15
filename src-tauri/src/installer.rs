@@ -240,6 +240,10 @@ fn interpret_installer_exit(
         ));
     }
 
+    if let Some(reason) = exit_code.and_then(windows_installer_reason) {
+        return Err(format!("No se pudo instalar {name}: {reason}"));
+    }
+
     Err(format!(
         "El instalador de {name} terminó con el código {} ({}).",
         exit_code
@@ -247,6 +251,82 @@ fn interpret_installer_exit(
             .unwrap_or_else(|| "desconocido".into()),
         family.label()
     ))
+}
+
+/// Where Windows Installer is asked to write its account of what it did.
+///
+/// Beside the store's own logs rather than beside the package, because the
+/// package folder is cleared as soon as the operation ends — including when it
+/// ends badly, which is precisely when the log is worth having.
+fn msi_log_path(app: &Value) -> Option<PathBuf> {
+    let app_id = app.get("id").and_then(Value::as_str).unwrap_or("paquete");
+    let safe: String = app_id
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let directory = crate::paths::app_dir().join("logs");
+    fs::create_dir_all(&directory).ok()?;
+    Some(directory.join(format!(
+        "msi-{safe}-{}.log",
+        chrono::Local::now().format("%Y%m%d-%H%M%S")
+    )))
+}
+
+/// The lines of a Windows Installer log that say what went wrong.
+///
+/// A verbose MSI log runs to tens of thousands of lines of bookkeeping. What
+/// matters is the handful naming an error and the action that returned failure,
+/// which is what turns "código 1603" into something anybody can act on.
+fn msi_failure_summary(log: &Path) -> Option<String> {
+    let text = fs::read_to_string(log).ok()?;
+    let mut found: Vec<String> = text
+        .lines()
+        .filter(|line| {
+            let lowered = line.to_ascii_lowercase();
+            lowered.contains("error status:")
+                || lowered.contains("returned actual error")
+                || lowered.contains(" -- error ")
+                || lowered.contains("installation failed")
+                || (lowered.contains("return value 3") && lowered.contains("action ended"))
+        })
+        .map(|line| line.trim().to_string())
+        .collect();
+    found.dedup();
+    // The last ones are the ones that ended it; the earlier lines are usually
+    // the same failure being reported on its way up.
+    let tail = found.split_off(found.len().saturating_sub(4));
+    (!tail.is_empty()).then(|| tail.join(" | "))
+}
+
+/// What Windows Installer means by the number it hands back.
+///
+/// These are the codes a store actually runs into, and they say something the
+/// user can act on — which "terminó con el código 1603" does not. WiX bundles
+/// and InstallShield wrap Windows Installer and hand the same numbers up, so
+/// they are read the same whatever built the setup.
+fn windows_installer_reason(code: i32) -> Option<&'static str> {
+    Some(match code {
+        // The generic failure, and by far the most common one on an update:
+        // Windows Installer cannot replace a file that is in use, and run
+        // silently there is no prompt offering to close the program.
+        1603 => {
+            "Windows Installer no pudo completar la operación. Suele ser porque la aplicación seguía abierta, incluido su icono en la bandeja del sistema junto al reloj. Ciérrala del todo y vuelve a intentarlo."
+        }
+        1618 => "hay otra instalación en curso en el equipo. Espera a que termine y vuelve a intentarlo.",
+        1619 => "el paquete de instalación no se pudo abrir; la descarga puede haber quedado incompleta.",
+        1620 => "el paquete de instalación no es válido; la descarga puede haber llegado dañada.",
+        1638 => "ya hay otra versión de este producto instalada. Desinstálala primero y vuelve a instalarla.",
+        1601 => "el servicio Windows Installer no está disponible en este equipo.",
+        1625 | 1643 => "una directiva del sistema impide instalar este paquete.",
+        1622 | 1623 => "el paquete no admite la configuración de este equipo.",
+        _ => return None,
+    })
 }
 
 fn app_installer_args(app: &Value, installer_path: &Path) -> Vec<String> {
@@ -894,6 +974,44 @@ pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
     upgrades
 }
 
+/// Runs an installer over a copy that is already there, getting whatever is
+/// running in that folder out of its way first and putting it back afterwards.
+///
+/// Windows Installer cannot replace a file another process holds open, and run
+/// silently it cannot ask: Epic Games Launcher's update worked for seventeen
+/// seconds and rolled back with 1603 because the launcher was still going. An
+/// installer with a window would have offered to close it.
+fn run_installer_over(
+    app: &Value,
+    installer_path: &Path,
+    flags: &Arc<DownloadFlags>,
+    installed_at: Option<&str>,
+) -> Result<(), String> {
+    let folder = installed_at
+        .map(str::trim)
+        .filter(|value| !value.is_empty() && !value.starts_with("shell:"))
+        .map(PathBuf::from)
+        .and_then(|path| {
+            if path.is_dir() {
+                Some(path)
+            } else {
+                path.parent().filter(|parent| parent.is_dir()).map(Path::to_path_buf)
+            }
+        });
+
+    let Some(folder) = folder else {
+        return run_installer_in_background(app, installer_path, flags);
+    };
+
+    let stopped = crate::process::stop_application_at(&folder);
+    let outcome = run_installer_in_background(app, installer_path, flags);
+    // Put the services back whether or not the installation worked: leaving a
+    // machine with a stopped service because an update failed would be a worse
+    // state than the one it started in.
+    crate::process::start_services(&stopped.services);
+    outcome
+}
+
 pub fn run_installer_in_background(
     app: &Value,
     installer_path: &Path,
@@ -912,6 +1030,14 @@ pub fn run_installer_in_background(
                 installer_path.to_string_lossy().to_string(),
             ];
             parts.extend(app_installer_args(app, installer_path));
+            // Windows Installer keeps its reasons to itself and hands back a
+            // number — 1603 for anything that went wrong. Asked for a verbose
+            // log it writes down exactly which action failed, and the store
+            // reads it back when the code is not zero.
+            if let Some(log) = msi_log_path(app) {
+                parts.push("/l*v".to_string());
+                parts.push(log.to_string_lossy().to_string());
+            }
             parts
         }),
         "exe" => (
@@ -1022,6 +1148,28 @@ pub fn run_installer_in_background(
             installer_path.display()
         ),
     );
+    // A Windows Installer that failed wrote down why; the number it returned
+    // does not say. Reading its own account back is the difference between
+    // "código 1603" and knowing which action gave up and on what.
+    if exit_code != Some(0) {
+        if let Some(log) = args
+            .iter()
+            .position(|argument| argument.eq_ignore_ascii_case("/l*v"))
+            .and_then(|index| args.get(index + 1))
+            .map(PathBuf::from)
+        {
+            match msi_failure_summary(&log) {
+                Some(summary) => crate::logger::error(
+                    "installer-msi",
+                    format!("Windows Installer informa: {summary}. Registro completo: {}", log.display()),
+                ),
+                None => crate::logger::warn(
+                    "installer-msi",
+                    format!("Sin detalle legible en el registro de Windows Installer: {}", log.display()),
+                ),
+            }
+        }
+    }
     interpret_installer_exit(app, family, exit_code)
 }
 
@@ -1068,6 +1216,10 @@ pub async fn do_install(
     flags: &Arc<DownloadFlags>,
     force_update: bool,
     current_version: Option<String>,
+    // `installed_at` is where the copy being replaced lives, when there is one:
+    // whatever runs in that folder is stopped before the installer starts and
+    // put back afterwards.
+    installed_at: Option<String>,
     mut on_progress: impl FnMut(u32, String, bool),
 ) -> Result<InstallOutcome, String> {
     let app_id = app.get("id").and_then(|v| v.as_str()).ok_or("App sin id")?;
@@ -1326,7 +1478,7 @@ pub async fn do_install(
         match wrapped_installer(app, &src)? {
             Some(installer) => {
                 on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
-                run_installer_in_background(app, &installer, flags)?;
+                run_installer_over(app, &installer, flags, installed_at.as_deref())?;
                 used_system_installer = true;
             }
             None => swap_into_install_path(&src, &install_path)?,
@@ -1340,7 +1492,7 @@ pub async fn do_install(
             on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
-            run_installer_in_background(app, &dest_file, flags)?;
+            run_installer_over(app, &dest_file, flags, installed_at.as_deref())?;
             used_system_installer = true;
         } else if looks_like_windows_executable(&dest_file) {
             // Kept as a separate case from the extension above because it is a
@@ -1359,7 +1511,7 @@ pub async fn do_install(
                 ),
             );
             on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
-            run_installer_in_background(app, &renamed, flags)?;
+            run_installer_over(app, &renamed, flags, installed_at.as_deref())?;
             used_system_installer = true;
         } else {
             let stage_dir = download_path.join("stage");
@@ -3498,6 +3650,22 @@ mod tests {
         let unknown = interpret_installer_exit(&app, InstallerFamily::Unknown, Some(2)).unwrap_err();
         assert!(!is_install_cancelled(&unknown));
         assert!(!is_install_interrupted(&unknown));
+    }
+
+    #[test]
+    fn windows_installer_codes_are_explained_rather_than_quoted() {
+        let app = json!({ "name": "Epic Games Launcher" });
+        // What an update of a launcher that was still running answers with.
+        let busy = interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(1603))
+            .unwrap_err();
+        assert!(busy.contains("Epic Games Launcher"));
+        assert!(busy.contains("bandeja del sistema"));
+        assert!(!busy.contains("1603"));
+        // Numbers nobody has a sentence for still say what they are.
+        let unknown =
+            interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(1234))
+                .unwrap_err();
+        assert!(unknown.contains("1234"));
     }
 
     #[test]
