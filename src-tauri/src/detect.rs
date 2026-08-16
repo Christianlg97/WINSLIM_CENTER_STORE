@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct SystemApp {
@@ -33,12 +34,16 @@ pub struct StartApp {
 /// package operation may have changed the result.
 static START_APPS_CACHE: parking_lot::Mutex<Option<(std::time::Instant, Vec<StartApp>)>> =
     parking_lot::Mutex::new(None);
+static START_APPS_SCAN_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+static DETECTION_CACHE_GENERATION: AtomicU64 = AtomicU64::new(0);
 
 const START_APPS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+const START_APPS_SCAN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Invalidate every detection cache. Called before confirming that an install
 /// or uninstall actually took effect.
 pub fn clear_detection_caches() {
+    DETECTION_CACHE_GENERATION.fetch_add(1, Ordering::AcqRel);
     *WINGET_CACHE.lock() = None;
     *START_APPS_CACHE.lock() = None;
 }
@@ -53,9 +58,21 @@ pub fn scan_start_apps() -> Vec<StartApp> {
             }
         }
     }
-    let apps = scan_start_apps_uncached();
-    *START_APPS_CACHE.lock() = Some((std::time::Instant::now(), apps.clone()));
-    apps
+    let _single_flight = START_APPS_SCAN_LOCK.lock();
+    loop {
+        // A second caller may have filled it while this one waited.
+        if let Some((timestamp, apps)) = START_APPS_CACHE.lock().as_ref() {
+            if timestamp.elapsed() < START_APPS_TTL {
+                return apps.clone();
+            }
+        }
+        let generation = DETECTION_CACHE_GENERATION.load(Ordering::Acquire);
+        let apps = scan_start_apps_uncached();
+        if generation == DETECTION_CACHE_GENERATION.load(Ordering::Acquire) {
+            *START_APPS_CACHE.lock() = Some((std::time::Instant::now(), apps.clone()));
+            return apps;
+        }
+    }
 }
 
 #[cfg(windows)]
@@ -67,7 +84,9 @@ fn scan_start_apps_uncached() -> Vec<StartApp> {
         "-Command",
         "Get-StartApps | Select-Object Name,AppID | ConvertTo-Json -Compress",
     ];
-    let Ok(output) = crate::process::hidden_output("powershell.exe", &args) else {
+    let Ok(output) =
+        crate::process::hidden_output_timeout("powershell.exe", &args, START_APPS_SCAN_TIMEOUT)
+    else {
         crate::logger::warn("detect-appx", "No se pudo consultar Get-StartApps.");
         return Vec::new();
     };
@@ -101,8 +120,10 @@ fn scan_start_apps_uncached() -> Vec<StartApp> {
 
 static WINGET_CACHE: parking_lot::Mutex<Option<(std::time::Instant, String)>> =
     parking_lot::Mutex::new(None);
+static WINGET_SCAN_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 const WINGET_LIST_TTL: std::time::Duration = std::time::Duration::from_secs(10);
+const WINGET_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 #[cfg(windows)]
 pub fn scan_winget_packages() -> String {
@@ -114,34 +135,46 @@ pub fn scan_winget_packages() -> String {
             }
         }
     }
-    let args = [
-        "list",
-        "--accept-source-agreements",
-        "--disable-interactivity",
-    ];
-    let result = match crate::process::hidden_output("winget.exe", &args) {
-        Ok(output) if output.success() => String::from_utf8_lossy(&output.stdout).to_string(),
-        Ok(output) => {
-            crate::logger::warn(
-                "detect-winget",
-                format!(
-                    "winget list terminó con código {:?}: {}",
-                    output.code,
-                    String::from_utf8_lossy(&output.stderr).trim()
-                ),
-            );
-            String::new()
+    let _single_flight = WINGET_SCAN_LOCK.lock();
+    loop {
+        if let Some((timestamp, text)) = WINGET_CACHE.lock().as_ref() {
+            if timestamp.elapsed() < WINGET_LIST_TTL {
+                return text.clone();
+            }
         }
-        Err(error) => {
-            crate::logger::warn(
-                "detect-winget",
-                format!("No se pudo ejecutar winget list: {error}"),
-            );
-            String::new()
+        let generation = DETECTION_CACHE_GENERATION.load(Ordering::Acquire);
+        let args = [
+            "list",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+        ];
+        let result = match crate::process::hidden_winget_output_timeout(&args, WINGET_LIST_TIMEOUT)
+        {
+            Ok(output) if output.success() => String::from_utf8_lossy(&output.stdout).to_string(),
+            Ok(output) => {
+                crate::logger::warn(
+                    "detect-winget",
+                    format!(
+                        "winget list terminó con código {:?}: {}",
+                        output.code,
+                        String::from_utf8_lossy(&output.stderr).trim()
+                    ),
+                );
+                String::new()
+            }
+            Err(error) => {
+                crate::logger::warn(
+                    "detect-winget",
+                    format!("No se pudo ejecutar winget list: {error}"),
+                );
+                String::new()
+            }
+        };
+        if generation == DETECTION_CACHE_GENERATION.load(Ordering::Acquire) {
+            *WINGET_CACHE.lock() = Some((std::time::Instant::now(), result.clone()));
+            return result;
         }
-    };
-    *WINGET_CACHE.lock() = Some((std::time::Instant::now(), result.clone()));
-    result
+    }
 }
 
 #[cfg(not(windows))]
@@ -694,6 +727,11 @@ pub fn build_statuses(
     winget_packages: &str,
 ) -> HashMap<String, AppStatus> {
     let mut map = HashMap::new();
+    // Both sources are shared by every catalog entry. Building their cheap
+    // indexes once avoids reparsing WinGet output and, more importantly,
+    // avoids probing every Start Menu path for every application.
+    let mut start_app_index = StartAppIndex::new(start_apps);
+    let winget_index = WingetPackageIndex::new(winget_packages);
 
     for entry in catalog {
         let Some(id) = entry.get("id").and_then(|v| v.as_str()) else {
@@ -799,64 +837,57 @@ pub fn build_statuses(
                 sys.version.clone()
             };
             let update = catalog_update_available(catalog_version, &ver);
-            let preferred_executable = entry
-                .get("launch_executable")
-                .and_then(|value| value.as_str());
-            let known_path = entry
-                .get("known_launch_paths")
-                .and_then(|v| v.as_array())
-                .and_then(|arr| {
-                    arr.iter()
-                        .filter_map(|item| item.as_str())
-                        .map(PathBuf::from)
-                        .find(|p| p.is_file())
-                })
-                .map(|p| p.to_string_lossy().to_string());
-
-            let launch_path = known_path.unwrap_or_else(|| {
-                system_launch_candidates(&sys)
-                    .into_iter()
-                    .find_map(|path| {
-                        crate::installer::resolve_launchable_path(&path, preferred_executable)
+            let launchable = is_launchable(entry);
+            let launch_path = if !launchable {
+                // A suite is never opened itself. Keep its recorded root as the
+                // cleanup target, but skip recursive executable resolution,
+                // indexed searches and Start Menu probing entirely.
+                sys.install_location.trim().to_string()
+            } else {
+                let preferred_executable = entry
+                    .get("launch_executable")
+                    .and_then(|value| value.as_str());
+                let known_path = entry
+                    .get("known_launch_paths")
+                    .and_then(|v| v.as_array())
+                    .and_then(|arr| {
+                        arr.iter()
+                            .filter_map(|item| item.as_str())
+                            .map(PathBuf::from)
+                            .find(|p| p.is_file())
                     })
-                    // Portable programs are indexed without a usable location:
-                    // the registry points at a folder that is not there any more
-                    // — or never was — and the only trace left of them is the
-                    // executable sitting on PATH or registered as an application
-                    // alias. Without this the store listed them as installed
-                    // while refusing to open them.
-                    .or_else(|| {
-                        crate::residue::find_indexed_executable(
-                            &crate::residue::AppIdentity::from_catalog(entry, None),
-                        )
-                    })
-                    // Asked before the Start Menu below, because this answer is
-                    // there the instant the installer finishes and that one
-                    // waits on an index Windows rebuilds when it feels like it:
-                    // 7-Zip took over a minute to become openable.
-                    .or_else(|| {
-                        let mut folder_names = vec![name.to_string()];
-                        folder_names.extend(detect_names.iter().cloned());
-                        program_folder_named_after(&folder_names).and_then(|folder| {
-                            crate::installer::resolve_launchable_path(
-                                &folder,
-                                preferred_executable,
+                    .map(|p| p.to_string_lossy().to_string());
+                let resolved = known_path.unwrap_or_else(|| {
+                    system_launch_candidates(&sys)
+                        .into_iter()
+                        .find_map(|path| {
+                            crate::installer::resolve_launchable_path(&path, preferred_executable)
+                        })
+                        .or_else(|| {
+                            crate::residue::find_indexed_executable(
+                                &crate::residue::AppIdentity::from_catalog(entry, None),
                             )
                         })
-                    })
-                    .map(|path| path.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            });
-            // An installer is free to register that its program is here without
-            // saying where: a WiX bundle points DisplayIcon and UninstallString
-            // at its own copy in the package cache, and an MSI routinely leaves
-            // InstallLocation empty. Moonlight was listed as installed with no
-            // way to open it for exactly that reason. The Start Menu entry
-            // Windows built for the same program does carry the path.
-            let launch_path = if launch_path.is_empty() {
-                start_menu_launch_path(entry, name, start_apps)
-            } else {
-                launch_path
+                        .or_else(|| {
+                            let mut folder_names = vec![name.to_string()];
+                            folder_names.extend(detect_names.iter().cloned());
+                            program_folder_named_after(&folder_names).and_then(|folder| {
+                                crate::installer::resolve_launchable_path(
+                                    &folder,
+                                    preferred_executable,
+                                )
+                            })
+                        })
+                        .map(|path| path.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                });
+                // An installer can register a program without a usable location;
+                // the Start Menu then provides its launch target.
+                if resolved.is_empty() {
+                    start_menu_launch_path_indexed(entry, name, &mut start_app_index)
+                } else {
+                    resolved
+                }
             };
             map.insert(
                 id.to_string(),
@@ -884,15 +915,18 @@ pub fn build_statuses(
                     // el catálogo los lista aparte. Microsoft 365 registra como
                     // icono su servicio de actualización, así que "Abrir" no
                     // llevaba a ninguna parte visible.
-                    can_launch: !launch_path.is_empty() && is_launchable(entry),
+                    can_launch: !launch_path.is_empty() && launchable,
                     uninstall_command: sys.uninstall_string.clone(),
                     uninstall_command_full: sys.full_uninstall_string.clone(),
                     install_location: Some(sys.install_location.trim().to_string())
                         .filter(|location| !location.is_empty()),
                 },
             );
-        } else if let Some(start_app) = match_start_app(entry, name, start_apps) {
-            let launch_target = start_app_launch_target(start_app);
+        } else if let Some(matched_index) = start_app_index.matching_index(entry, name) {
+            let start_app = &start_apps[matched_index];
+            let launch_target = start_app_index
+                .launch_target(matched_index)
+                .unwrap_or_default();
             map.insert(
                 id.to_string(),
                 AppStatus {
@@ -918,11 +952,11 @@ pub fn build_statuses(
                     install_location: None,
                 },
             );
-        } else if let Some(version) = installed_winget_version(entry, winget_packages) {
+        } else if let Some(version) = winget_index.installed_version(entry) {
             // WinGet knowing the package is proof that it is installed, not a
             // hint of where. The Start Menu is asked for the path rather than
             // leaving the application listed with no way to open it.
-            let launch_path = start_menu_launch_path(entry, name, start_apps);
+            let launch_path = start_menu_launch_path_indexed(entry, name, &mut start_app_index);
             map.insert(
                 id.to_string(),
                 AppStatus {
@@ -962,21 +996,42 @@ pub fn build_statuses(
     map
 }
 
+struct WingetPackageIndex {
+    versions: HashMap<String, String>,
+}
+
+impl WingetPackageIndex {
+    fn new(output: &str) -> Self {
+        let mut versions = HashMap::new();
+        for line in output.lines() {
+            let columns = line.split_whitespace().collect::<Vec<_>>();
+            // Package identifiers are the only stable column in WinGet's
+            // human-readable table. Record every token together with the token
+            // following it; catalog lookups then select only known identifiers.
+            for (index, column) in columns.iter().enumerate() {
+                versions
+                    .entry(column.to_ascii_lowercase())
+                    .or_insert_with(|| {
+                        columns
+                            .get(index + 1)
+                            .copied()
+                            .unwrap_or("latest")
+                            .to_string()
+                    });
+            }
+        }
+        Self { versions }
+    }
+
+    fn installed_version(&self, entry: &serde_json::Value) -> Option<String> {
+        let package_id = entry.get("winget_id").and_then(Value::as_str)?;
+        self.versions.get(&package_id.to_ascii_lowercase()).cloned()
+    }
+}
+
+#[cfg(test)]
 fn installed_winget_version(entry: &serde_json::Value, output: &str) -> Option<String> {
-    let package_id = entry.get("winget_id").and_then(|value| value.as_str())?;
-    output.lines().find_map(|line| {
-        let columns = line.split_whitespace().collect::<Vec<_>>();
-        let index = columns
-            .iter()
-            .position(|column| column.eq_ignore_ascii_case(package_id))?;
-        Some(
-            columns
-                .get(index + 1)
-                .copied()
-                .unwrap_or("latest")
-                .to_string(),
-        )
-    })
+    WingetPackageIndex::new(output).installed_version(entry)
 }
 
 /// The Start Menu lists entries whose identifier is a plain path, and it keeps
@@ -993,8 +1048,7 @@ fn installed_winget_version(entry: &serde_json::Value, output: &str) -> Option<S
 /// Start Menu is a shortcut: a leftover the store can clean up like any other.
 pub fn is_packaged_start_app(app_id: &str) -> bool {
     let trimmed = app_id.trim();
-    let desktop_entry = (trimmed.starts_with('{')
-        || std::path::Path::new(trimmed).is_absolute())
+    let desktop_entry = (trimmed.starts_with('{') || std::path::Path::new(trimmed).is_absolute())
         && trimmed.to_ascii_lowercase().ends_with(".exe");
     !desktop_entry
 }
@@ -1084,24 +1138,9 @@ fn start_app_path(app_id: &str) -> Option<PathBuf> {
 }
 
 /// The executable behind a Start Menu entry, if it is there.
+#[cfg(test)]
 fn start_app_executable(app_id: &str) -> Option<PathBuf> {
     start_app_path(app_id).filter(|path| path.is_file())
-}
-
-fn start_app_still_exists(app: &StartApp) -> bool {
-    let trimmed = app.app_id.trim();
-    // Programs publish an "Acerca de …" entry pointing at the vendor's website
-    // beside their own. Taking one for the program made the store offer to open
-    // `shell:AppsFolder\https://…`, which opens nothing.
-    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-        return false;
-    }
-    match start_app_path(trimmed) {
-        Some(path) => path.is_file(),
-        // A packaged identifier cannot be checked against the filesystem, so it
-        // stays trusted the way Windows states it.
-        None => true,
-    }
 }
 
 /// How a Start Menu entry is opened: its own executable when Windows named one,
@@ -1112,6 +1151,7 @@ fn start_app_still_exists(app: &StartApp) -> bool {
 /// by path, which names nothing: Explorer cannot open it and the store could not
 /// recognise it as a folder either, so uninstalling never found the application
 /// it had just been pointed at.
+#[cfg(test)]
 fn start_app_launch_target(start_app: &StartApp) -> String {
     match start_app_executable(&start_app.app_id) {
         Some(executable) => executable.to_string_lossy().to_string(),
@@ -1119,47 +1159,120 @@ fn start_app_launch_target(start_app: &StartApp) -> String {
     }
 }
 
+/// Per-scan view of the Start Menu.
+///
+/// Names are indexed eagerly because they live in memory and are cheap. Paths
+/// are deliberately resolved lazily, after a name has matched, and their result
+/// is cached. On a normal catalog this turns tens of thousands of `is_file`
+/// calls (including calls to disconnected drives) into one call for the handful
+/// of Start Menu entries that can actually belong to a catalog application.
+struct StartAppIndex<'a> {
+    apps: &'a [StartApp],
+    exact_names: HashMap<String, Vec<usize>>,
+    /// `None` means not inspected; `Some(None)` means stale/unusable; the inner
+    /// string is the already resolved launch target.
+    launch_targets: Vec<Option<Option<String>>>,
+}
+
+impl<'a> StartAppIndex<'a> {
+    fn new(apps: &'a [StartApp]) -> Self {
+        let mut exact_names: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, app) in apps.iter().enumerate() {
+            exact_names.entry(norm(&app.name)).or_default().push(index);
+        }
+        Self {
+            apps,
+            exact_names,
+            launch_targets: vec![None; apps.len()],
+        }
+    }
+
+    fn resolve_launch_target(app: &StartApp) -> Option<String> {
+        let trimmed = app.app_id.trim();
+        // Vendor web links are often published beside the real program. They
+        // cannot prove installation and `shell:AppsFolder` cannot open them.
+        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+            return None;
+        }
+        match start_app_path(trimmed) {
+            Some(path) if path.is_file() => Some(path.to_string_lossy().to_string()),
+            Some(_) => None,
+            // A packaged identifier has no filesystem representation; Windows
+            // resolves it through AppsFolder just as before.
+            None => Some(format!(r"shell:AppsFolder\{}", app.app_id)),
+        }
+    }
+
+    fn launch_target(&mut self, index: usize) -> Option<String> {
+        if self.launch_targets[index].is_none() {
+            self.launch_targets[index] = Some(Self::resolve_launch_target(&self.apps[index]));
+        }
+        self.launch_targets[index].clone().flatten()
+    }
+
+    fn is_real(&mut self, index: usize) -> bool {
+        self.launch_target(index).is_some()
+    }
+
+    fn matching_index(&mut self, entry: &Value, catalog_name: &str) -> Option<usize> {
+        let explicit = entry
+            .get("start_app_names")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        if !explicit.is_empty() {
+            // Preserve the original Start Menu order even when several aliases
+            // name the same program.
+            let mut indexes = explicit
+                .iter()
+                .filter_map(|candidate| self.exact_names.get(&norm(candidate)))
+                .flatten()
+                .copied()
+                .collect::<Vec<_>>();
+            indexes.sort_unstable();
+            indexes.dedup();
+            return indexes.into_iter().find(|index| self.is_real(*index));
+        }
+
+        let mut candidates = vec![catalog_name.to_string()];
+        candidates.extend(detect_names_from_entry(entry));
+        (0..self.apps.len()).find(|&index| {
+            // The ordering here is intentional: a path can be slow or can wake
+            // a disconnected drive. It is inspected only after the in-memory
+            // name comparison says this entry is a real candidate.
+            candidates
+                .iter()
+                .any(|candidate| names_match(candidate, &self.apps[index].name))
+                && self.is_real(index)
+        })
+    }
+}
+
 /// Where the Start Menu says an application can be opened, for the entries whose
 /// proof of being installed carries no usable path of its own.
-fn start_menu_launch_path(entry: &Value, catalog_name: &str, start_apps: &[StartApp]) -> String {
-    match_start_app(entry, catalog_name, start_apps)
-        .map(start_app_launch_target)
+fn start_menu_launch_path_indexed(
+    entry: &Value,
+    catalog_name: &str,
+    start_apps: &mut StartAppIndex<'_>,
+) -> String {
+    start_apps
+        .matching_index(entry, catalog_name)
+        .and_then(|index| start_apps.launch_target(index))
         .unwrap_or_default()
 }
 
+#[cfg(test)]
 fn match_start_app<'a>(
     entry: &serde_json::Value,
     catalog_name: &str,
     start_apps: &'a [StartApp],
 ) -> Option<&'a StartApp> {
-    let explicit = entry
-        .get("start_app_names")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
-        .filter_map(|value| value.as_str())
-        .collect::<Vec<_>>();
-    if !explicit.is_empty() {
-        return start_apps.iter().find(|app| {
-            explicit
-                .iter()
-                .any(|candidate| norm(candidate) == norm(&app.name))
-                && start_app_still_exists(app)
-        });
-    }
-    // The names the catalog gives for recognising the application count here
-    // too, not only in the registry. Windows calls Moonshot's assistant "Kimi"
-    // and the catalog calls it "Kimi AI", which match nowhere near closely
-    // enough on their own: the store listed it as installed with no way to open
-    // it and nothing to uninstall it with.
-    let mut candidates = vec![catalog_name.to_string()];
-    candidates.extend(detect_names_from_entry(entry));
-    start_apps.iter().find(|app| {
-        start_app_still_exists(app)
-            && candidates
-                .iter()
-                .any(|candidate| names_match(candidate, &app.name))
-    })
+    let mut index = StartAppIndex::new(start_apps);
+    index
+        .matching_index(entry, catalog_name)
+        .map(|matched| &start_apps[matched])
 }
 
 #[cfg(test)]
@@ -1219,8 +1332,14 @@ mod tests {
         let componente = &statuses["programa"];
         assert!(componente.installed);
         assert!(componente.can_launch, "el programa sí se abre");
-        assert!(!componente.can_uninstall, "y no se desinstala por su cuenta");
-        assert!(componente.install_path.to_lowercase().ends_with(r"\cmd.exe"));
+        assert!(
+            !componente.can_uninstall,
+            "y no se desinstala por su cuenta"
+        );
+        assert!(componente
+            .install_path
+            .to_lowercase()
+            .ends_with(r"\cmd.exe"));
 
         // La suite conoce los suyos, que es lo que usa el escritorio.
         assert_eq!(components_of(&entradas, "suite").len(), 1);
@@ -1250,7 +1369,10 @@ mod tests {
         assert!(names_match("7-Zip", "7-Zip 24.08 (x64)"));
         assert!(names_match("Anaconda", "Anaconda3 2024.02"));
         assert!(names_match("Epic Games", "Epic Games Launcher"));
-        assert!(names_match("Visual Studio Code", "Microsoft Visual Studio Code"));
+        assert!(names_match(
+            "Visual Studio Code",
+            "Microsoft Visual Studio Code"
+        ));
     }
 
     #[test]
@@ -1405,7 +1527,10 @@ mod tests {
             "",
         );
         let status = &statuses["rockstar"];
-        assert_eq!(status.uninstall_command.as_deref(), Some(r#""C:\RGL\uninstall.exe" /S"#));
+        assert_eq!(
+            status.uninstall_command.as_deref(),
+            Some(r#""C:\RGL\uninstall.exe" /S"#)
+        );
         assert_eq!(
             status.uninstall_command_full.as_deref(),
             Some(r#""C:\RGL\uninstall.exe" -enableFullMode -uninstall=launcher"#)
@@ -1440,14 +1565,19 @@ mod tests {
             install_location: String::new(),
             publisher: "Ejemplo".into(),
             display_icon: format!("{}\\EjemploInstaller.exe,0", cache.display()),
-            uninstall_string: Some(format!(r#""{}\Uninstall.exe" /uninstall"#, program.display())),
+            uninstall_string: Some(format!(
+                r#""{}\Uninstall.exe" /uninstall"#,
+                program.display()
+            )),
             full_uninstall_string: None,
         };
 
         let candidates = system_launch_candidates(&app);
         // The icon itself is an installer and is never offered as something to
         // open; the folder that only the uninstall command knows about is.
-        assert!(!candidates.iter().any(|path| path.ends_with("EjemploInstaller.exe")));
+        assert!(!candidates
+            .iter()
+            .any(|path| path.ends_with("EjemploInstaller.exe")));
         assert!(candidates.contains(&program));
     }
 
@@ -1486,7 +1616,10 @@ mod tests {
         let expected = std::env::var("ProgramW6432")
             .or_else(|_| std::env::var("ProgramFiles"))
             .unwrap();
-        assert_eq!(resolved, PathBuf::from(expected).join(r"Example\Example.exe"));
+        assert_eq!(
+            resolved,
+            PathBuf::from(expected).join(r"Example\Example.exe")
+        );
         // An identifier that is not a path stays one: only Windows can open it.
         assert!(start_app_path("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App").is_none());
     }
@@ -1589,6 +1722,25 @@ mod tests {
         assert_eq!(
             match_start_app(&entry, "Xbox", &apps).unwrap().app_id,
             "xbox!App"
+        );
+    }
+
+    #[test]
+    fn an_explicit_start_app_alias_skips_a_stale_earlier_path() {
+        let apps = vec![
+            StartApp {
+                name: "Ejemplo".into(),
+                app_id: r"D:\Borrado\Ejemplo.exe".into(),
+            },
+            StartApp {
+                name: "Ejemplo".into(),
+                app_id: "example.package!App".into(),
+            },
+        ];
+        let entry = serde_json::json!({ "start_app_names": ["Ejemplo"] });
+        assert_eq!(
+            match_start_app(&entry, "Ejemplo", &apps).unwrap().app_id,
+            "example.package!App"
         );
     }
 

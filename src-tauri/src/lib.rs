@@ -17,6 +17,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use store::{InstalledInfo, Settings};
 use tauri::async_runtime;
@@ -29,6 +30,22 @@ const CENTER_START_MENU_FOLDER: &str = "WinSlimCenter";
 /// The one catalog application the store also publishes in the Start Menu: it
 /// ships the terminal, so it is the only one it is entitled to advertise.
 const TERMINAL_APP_ID: &str = "winslim_terminal";
+
+const VISIBLE_CATALOG_SECTIONS: [&str; 9] = [
+    "Juegos",
+    "Emuladores",
+    "Navegadores",
+    "Desarrollo",
+    "IA",
+    "Utilidades",
+    "Multimedia",
+    "Productividad",
+    "Social y Comunicación",
+];
+
+fn is_visible_catalog_section(section: &str) -> bool {
+    VISIBLE_CATALOG_SECTIONS.contains(&section)
+}
 
 pub struct AppState {
     pub catalog_path: Mutex<PathBuf>,
@@ -73,135 +90,448 @@ fn emit_background_progress(
     );
 }
 
-fn emit_dl(app: &AppHandle, state: &AppState) {
-    let should_schedule_cleanup = {
+const DOWNLOAD_EVENT_INTERVAL: std::time::Duration = std::time::Duration::from_millis(200);
+
+struct DownloadEventThrottle {
+    last_emit: Option<std::time::Instant>,
+    scheduled: bool,
+}
+
+static DOWNLOAD_EVENT_THROTTLE: Mutex<DownloadEventThrottle> = Mutex::new(DownloadEventThrottle {
+    last_emit: None,
+    scheduled: false,
+});
+static DOWNLOAD_CLEANUP_SCHEDULED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+static DOWNLOAD_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+
+async fn acquire_download_slot(
+    flags: &download::DownloadFlags,
+) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    if flags.cancel.load(Ordering::SeqCst) {
+        return Err(installer::CANCELLED_MARKER.to_string());
+    }
+    // Keep one waiter registered with the fair semaphore. Recreating the
+    // acquire future on every cancellation poll moved a queued task to the back
+    // every 100 ms and could let newer downloads overtake it indefinitely.
+    let acquire = DOWNLOAD_SLOTS.acquire();
+    tokio::pin!(acquire);
+    loop {
+        tokio::select! {
+            permit = &mut acquire => {
+                return permit
+                    .map_err(|_| "La cola de descargas se cerró inesperadamente.".into());
+            }
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                if flags.cancel.load(Ordering::SeqCst) {
+                    return Err(installer::CANCELLED_MARKER.to_string());
+                }
+            }
+        }
+    }
+}
+
+fn emit_dl_now(app: &AppHandle, state: &AppState) {
+    let (tasks, should_schedule_cleanup) = {
         let mut downloads = state.downloads.lock();
         downloads.prune_finished();
-        downloads.has_cleanup_pending()
+        (downloads.snapshots(), downloads.has_cleanup_pending())
     };
-
-    let tasks = {
-        let downloads = state.downloads.lock();
-        downloads.snapshots()
-    };
+    // The downloads mutex is deliberately gone before invoking frontend code.
     let _ = app.emit("downloads-changed", DlEvent { tasks });
 
-    if should_schedule_cleanup {
+    if should_schedule_cleanup
+        && DOWNLOAD_CLEANUP_SCHEDULED
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    {
         let app_handle = app.clone();
-        let downloads = state.downloads.clone();
         async_runtime::spawn(async move {
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-            let mut downloads = downloads.lock();
-            downloads.prune_finished();
-            let tasks = downloads.snapshots();
-            let _ = app_handle.emit("downloads-changed", DlEvent { tasks });
+            DOWNLOAD_CLEANUP_SCHEDULED.store(false, Ordering::Release);
+            let state = app_handle.state::<AppState>();
+            emit_dl(&app_handle, &state);
         });
+    }
+}
+
+/// Coalesce progress bursts to five snapshots per second. State transitions are
+/// still delivered promptly, while fast network chunks no longer serialize and
+/// send hundreds of identical task arrays through IPC.
+fn emit_dl(app: &AppHandle, state: &AppState) {
+    let delay = {
+        let mut throttle = DOWNLOAD_EVENT_THROTTLE.lock();
+        let elapsed = throttle
+            .last_emit
+            .map(|last| last.elapsed())
+            .unwrap_or(DOWNLOAD_EVENT_INTERVAL);
+        if elapsed >= DOWNLOAD_EVENT_INTERVAL {
+            throttle.last_emit = Some(std::time::Instant::now());
+            throttle.scheduled = false;
+            None
+        } else if throttle.scheduled {
+            return;
+        } else {
+            throttle.scheduled = true;
+            Some(DOWNLOAD_EVENT_INTERVAL - elapsed)
+        }
+    };
+
+    if let Some(delay) = delay {
+        let app_handle = app.clone();
+        async_runtime::spawn(async move {
+            tokio::time::sleep(delay).await;
+            {
+                let mut throttle = DOWNLOAD_EVENT_THROTTLE.lock();
+                throttle.last_emit = Some(std::time::Instant::now());
+                throttle.scheduled = false;
+            }
+            let state = app_handle.state::<AppState>();
+            emit_dl_now(&app_handle, &state);
+        });
+    } else {
+        emit_dl_now(app, state);
+    }
+}
+
+// Detection is expensive and several UI/background actions can request it at
+// the same time. One worker performs it; requests that arrived while that scan
+// was running reuse its result. Catalog/installed mutations carry a separate
+// generation so a scan based on old inputs is never committed over new data.
+static STATUS_SCAN_LOCK: Mutex<()> = Mutex::new(());
+static STATUS_SOURCE_LOCK: Mutex<()> = Mutex::new(());
+static STATUS_SCAN_REQUESTED: AtomicU64 = AtomicU64::new(0);
+static STATUS_SCAN_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static STATUS_SOURCE_GENERATION: AtomicU64 = AtomicU64::new(0);
+static UPDATE_CHECK_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+static UPDATE_CHECK_REQUESTED: AtomicU64 = AtomicU64::new(0);
+static UPDATE_CHECK_COMPLETED: AtomicU64 = AtomicU64::new(0);
+static UPDATE_CHECK_COVERED_GENERATION: AtomicU64 = AtomicU64::new(0);
+static STARTUP_CLEANUP_SCHEDULED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn mark_status_sources_changed() {
+    STATUS_SOURCE_GENERATION.fetch_add(1, Ordering::AcqRel);
+}
+
+fn schedule_startup_cleanup(app: AppHandle) {
+    if STARTUP_CLEANUP_SCHEDULED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    // Initial detection owns the disk first. Package staging is disposable and
+    // can wait until the first complete scan has already reached the GUI.
+    async_runtime::spawn(async move {
+        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        loop {
+            // Do not put the four-permit maintenance waiter in front of work
+            // that is already visible in the user's queue. Tokio semaphores
+            // are fair, so such a waiter would otherwise head-of-line block
+            // every later one-permit download while it waited for all slots.
+            if app.state::<AppState>().downloads.lock().has_active_tasks() {
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                continue;
+            }
+            // Owning every slot closes the check/purge race: a new request may
+            // enter the visible queue, but cannot create staging until this
+            // cleanup has finished.
+            let Ok(all_slots) = DOWNLOAD_SLOTS.acquire_many(4).await else {
+                return;
+            };
+            let state = app.state::<AppState>();
+            if state.downloads.lock().has_active_tasks() {
+                drop(all_slots);
+                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                continue;
+            }
+            let _ = async_runtime::spawn_blocking(move || {
+                let _slots = all_slots;
+                let (removed, freed) = paths::purge_downloads();
+                if removed > 0 {
+                    logger::info(
+                        "startup-cleanup",
+                        format!(
+                            "Paquetes descargados eliminados: {removed}, espacio liberado: {:.1} MB",
+                            freed as f64 / (1024.0 * 1024.0)
+                        ),
+                    );
+                }
+            })
+            .await;
+            break;
+        }
+    });
+}
+
+fn scan_detection_sources(
+    app: Option<&AppHandle>,
+) -> (Vec<detect::SystemApp>, Vec<detect::StartApp>, String) {
+    // Registry, Start Menu and WinGet do not depend on one another. Starting
+    // them together makes the scan cost approximately the slowest source rather
+    // than the sum of all three.
+    std::thread::scope(|scope| {
+        let system_task = scope.spawn(detect::scan_installed_programs);
+        let start_apps_task = scope.spawn(detect::scan_start_apps);
+        let winget_task = scope.spawn(detect::scan_winget_packages);
+
+        emit_background_progress(
+            app,
+            "registry",
+            "Revisando aplicaciones registradas en Windows...",
+            15,
+        );
+        let system = system_task.join().unwrap_or_else(|_| {
+            logger::error(
+                "status",
+                "Falló la lectura paralela del registro de Windows.",
+            );
+            Vec::new()
+        });
+        emit_background_progress(
+            app,
+            "start-apps",
+            "Localizando aplicaciones y accesos ejecutables...",
+            40,
+        );
+        let start_apps = start_apps_task.join().unwrap_or_else(|_| {
+            logger::error("status", "Falló la lectura paralela del menú Inicio.");
+            Vec::new()
+        });
+        emit_background_progress(
+            app,
+            "winget",
+            "Consultando paquetes administrados por Winget...",
+            62,
+        );
+        let winget_packages = winget_task.join().unwrap_or_else(|_| {
+            logger::error("status", "Falló la consulta paralela de WinGet.");
+            String::new()
+        });
+        (system, start_apps, winget_packages)
+    })
+}
+
+fn preserve_update_metadata(
+    previous: &HashMap<String, AppStatus>,
+    rebuilt: &mut HashMap<String, AppStatus>,
+) {
+    for (app_id, status) in rebuilt.iter_mut() {
+        let Some(old) = previous.get(app_id) else {
+            continue;
+        };
+        if status.installed && old.installed && status.version == old.version {
+            status.update_available = old.update_available;
+            status.latest_version = old.latest_version.clone();
+        }
     }
 }
 
 fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
-    let started = std::time::Instant::now();
-    logger::debug("status", "Reconstruyendo estados de aplicaciones.");
-    emit_background_progress(
-        app,
-        "prepare",
-        "Preparando la comprobación del sistema...",
-        5,
-    );
-    let catalog = state.catalog.lock().clone();
-    // Prune and persist while holding the lock. Cloning first, mutating the
-    // clone and writing it back raced with concurrent installations, which then
-    // lost entries that had been registered in between.
-    let installed = {
-        let mut guard = state.installed.lock();
-        let before = guard.len();
-        guard.retain(|_, info| {
-            info.install_path.is_empty() || PathBuf::from(&info.install_path).exists()
-        });
-        if guard.len() != before {
-            let _ = store::save_installed(&guard);
-        }
-        guard.clone()
-    };
-    emit_background_progress(
-        app,
-        "registry",
-        "Revisando aplicaciones registradas en Windows...",
-        15,
-    );
-    let system = detect::scan_installed_programs();
-    emit_background_progress(
-        app,
-        "start-apps",
-        "Localizando aplicaciones y accesos ejecutables...",
-        40,
-    );
-    let start_apps = detect::scan_start_apps();
-    emit_background_progress(
-        app,
-        "winget",
-        "Consultando paquetes administrados por Winget...",
-        62,
-    );
-    let winget_packages = detect::scan_winget_packages();
-    emit_background_progress(
-        app,
-        "statuses",
-        "Actualizando botones, rutas y estados de instalación...",
-        78,
-    );
-    let mut statuses =
-        detect::build_statuses(&catalog, &installed, &system, &start_apps, &winget_packages);
-    // `build_statuses` only knows what the catalog and the registry say; it
-    // cannot repeat the WinGet and GitHub queries. Rebuilding after an install
-    // therefore used to throw away the verified result of the last
-    // `check_updates` and fall back to a guess, which is how finishing an
-    // install lit up the Updates badge for an app that had nothing pending.
-    // Anything still installed at the very same version keeps its verified
-    // answer; a version change invalidates it and the next check decides.
-    {
-        let previous = state.statuses.lock();
-        for (app_id, status) in statuses.iter_mut() {
-            let Some(old) = previous.get(app_id) else {
-                continue;
-            };
-            if status.installed && old.installed && status.version == old.version {
-                status.update_available = old.update_available;
-                status.latest_version = old.latest_version.clone();
-            }
-        }
+    let request = STATUS_SCAN_REQUESTED.fetch_add(1, Ordering::AcqRel) + 1;
+    let _scan = STATUS_SCAN_LOCK.lock();
+    if STATUS_SCAN_COMPLETED.load(Ordering::Acquire) >= request {
+        emit_background_progress(app, "complete", "Comprobación del sistema completada.", 100);
+        return;
     }
-    logger::info(
-        "status",
-        format!(
-            "Estados reconstruidos: catálogo={}, instaladas_centro={}, detectadas_sistema={}, apps_inicio={}, duración={} ms",
-            catalog.len(),
-            installed.len(),
-            system.len(),
-            start_apps.len(),
-            started.elapsed().as_millis()
-        ),
-    );
-    for (app_id, status) in statuses.iter().filter(|(_, status)| status.installed) {
-        logger::debug(
-            "status-detail",
+
+    loop {
+        let started = std::time::Instant::now();
+        logger::debug("status", "Reconstruyendo estados de aplicaciones.");
+        emit_background_progress(
+            app,
+            "prepare",
+            "Preparando la comprobación del sistema...",
+            5,
+        );
+
+        // Prune and persist from the live map. This function runs on the
+        // blocking pool for async callers, so the filesystem checks do not
+        // occupy a Tokio worker.
+        let (source_generation, catalog, installed) = {
+            let _source = STATUS_SOURCE_LOCK.lock();
+            let catalog = state.catalog.lock().clone();
+            let mut guard = state.installed.lock();
+            let before = guard.len();
+            guard.retain(|_, info| {
+                info.install_path.is_empty() || PathBuf::from(&info.install_path).exists()
+            });
+            if guard.len() != before {
+                let _ = store::save_installed(&guard);
+                mark_status_sources_changed();
+            }
+            (
+                STATUS_SOURCE_GENERATION.load(Ordering::Acquire),
+                catalog,
+                guard.clone(),
+            )
+        };
+        let (system, start_apps, winget_packages) = scan_detection_sources(app);
+        emit_background_progress(
+            app,
+            "statuses",
+            "Actualizando botones, rutas y estados de instalación...",
+            78,
+        );
+        let mut statuses =
+            detect::build_statuses(&catalog, &installed, &system, &start_apps, &winget_packages);
+
+        // Source mutation and the generation check share a tiny lock. A scan
+        // that began with an older catalog/installed map is discarded instead
+        // of briefly overwriting the current state.
+        let _source = STATUS_SOURCE_LOCK.lock();
+        if STATUS_SOURCE_GENERATION.load(Ordering::Acquire) != source_generation {
+            logger::debug(
+                "status",
+                "Resultado descartado porque catálogo o instalaciones cambiaron durante el escaneo.",
+            );
+            continue;
+        }
+
+        // Preserve authoritative update results and replace the detection map
+        // under one lock. `check_updates` can finish while this scan is running;
+        // separating the read from the write let this older snapshot overwrite
+        // the metadata that check had just committed.
+        let status_details = {
+            let mut live = state.statuses.lock();
+            preserve_update_metadata(&live, &mut statuses);
+            *live = statuses;
+            live.iter()
+                .filter(|(_, status)| status.installed)
+                .map(|(app_id, status)| {
+                    format!(
+                        "app_id={app_id}, origen={}, versión={}, ruta={}, abrir={}, desinstalar={}, actualización={}",
+                        status.origin,
+                        status.version,
+                        status.install_path,
+                        status.can_launch,
+                        status.can_uninstall,
+                        status.update_available
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        STATUS_SCAN_COMPLETED.store(
+            STATUS_SCAN_REQUESTED.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+        drop(_source);
+        logger::info(
+            "status",
             format!(
-                "app_id={app_id}, origen={}, versión={}, ruta={}, abrir={}, desinstalar={}, actualización={}",
-                status.origin,
-                status.version,
-                status.install_path,
-                status.can_launch,
-                status.can_uninstall,
-                status.update_available
+                "Estados reconstruidos: catálogo={}, instaladas_centro={}, detectadas_sistema={}, apps_inicio={}, duración={} ms",
+                catalog.len(),
+                installed.len(),
+                system.len(),
+                start_apps.len(),
+                started.elapsed().as_millis()
             ),
         );
+        for detail in status_details {
+            logger::debug("status-detail", detail);
+        }
+        emit_background_progress(app, "complete", "Comprobación del sistema completada.", 100);
+        return;
     }
-    *state.statuses.lock() = statuses;
-    emit_background_progress(app, "complete", "Comprobación del sistema completada.", 100);
 }
 
-fn rebuild_statuses(state: &AppState) {
-    rebuild_statuses_with_progress(state, None);
+async fn rebuild_statuses_async(
+    app: AppHandle,
+    report_progress: bool,
+) -> Result<HashMap<String, AppStatus>, String> {
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        rebuild_statuses_with_progress(&state, if report_progress { Some(&app) } else { None });
+        let statuses = state.statuses.lock().clone();
+        statuses
+    })
+    .await
+    .map_err(|error| format!("Falló la comprobación del sistema: {error}"))
+}
+
+/// Refresh one application while an install/uninstall is being confirmed.
+/// Building all ~250 catalog entries on every half-second poll dominated the
+/// operation even though the caller only inspected one result.
+fn probe_app_status(state: &AppState, app_id: &str) -> Option<AppStatus> {
+    let _scan = STATUS_SCAN_LOCK.lock();
+    loop {
+        let started = std::time::Instant::now();
+        let (source_generation, entry, installed) = {
+            let _source = STATUS_SOURCE_LOCK.lock();
+            let entry = state
+                .catalog
+                .lock()
+                .iter()
+                .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id))
+                .cloned()?;
+            (
+                STATUS_SOURCE_GENERATION.load(Ordering::Acquire),
+                entry,
+                state.installed.lock().clone(),
+            )
+        };
+
+        // Center-managed installs, web apps and components can often be
+        // confirmed from their exact path alone. Only an absent/system program
+        // needs registry, Start Menu and WinGet.
+        let provisional =
+            detect::build_statuses(std::slice::from_ref(&entry), &installed, &[], &[], "")
+                .remove(app_id);
+        let exact_path_source = matches!(
+            entry.get("source_type").and_then(Value::as_str),
+            Some("webapp" | "component")
+        );
+        let mut status = match provisional {
+            Some(status) if status.installed || exact_path_source => status,
+            _ => {
+                let (system, start_apps, winget_packages) = scan_detection_sources(None);
+                detect::build_statuses(
+                    std::slice::from_ref(&entry),
+                    &installed,
+                    &system,
+                    &start_apps,
+                    &winget_packages,
+                )
+                .remove(app_id)?
+            }
+        };
+
+        let _source = STATUS_SOURCE_LOCK.lock();
+        if STATUS_SOURCE_GENERATION.load(Ordering::Acquire) != source_generation {
+            continue;
+        }
+        let mut statuses = state.statuses.lock();
+        if let Some(previous) = statuses.get(app_id) {
+            if status.installed && previous.installed && status.version == previous.version {
+                status.update_available = previous.update_available;
+                status.latest_version = previous.latest_version.clone();
+            }
+        }
+        statuses.insert(app_id.to_string(), status.clone());
+        logger::debug(
+            "status-probe",
+            format!(
+                "app_id={app_id}, instalada={}, origen={}, duración={} ms",
+                status.installed,
+                status.origin,
+                started.elapsed().as_millis()
+            ),
+        );
+        return Some(status);
+    }
+}
+
+async fn probe_app_status_async(
+    app: AppHandle,
+    app_id: String,
+) -> Result<Option<AppStatus>, String> {
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        probe_app_status(&state, &app_id)
+    })
+    .await
+    .map_err(|error| format!("Falló la comprobación de la aplicación: {error}"))
 }
 
 #[tauri::command]
@@ -225,10 +555,12 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
 }
 
 #[tauri::command]
-fn refresh_statuses(app: AppHandle, state: State<'_, AppState>) -> HashMap<String, AppStatus> {
+async fn refresh_statuses(app: AppHandle) -> Result<HashMap<String, AppStatus>, String> {
     logger::info("status", "Refresco manual de estados solicitado.");
-    rebuild_statuses_with_progress(&state, Some(&app));
-    state.statuses.lock().clone()
+    let cleanup_app = app.clone();
+    let statuses = rebuild_statuses_async(app, true).await?;
+    schedule_startup_cleanup(cleanup_app);
+    Ok(statuses)
 }
 
 #[tauri::command]
@@ -248,13 +580,20 @@ fn reload_catalog(state: State<'_, AppState>) -> Result<Vec<Value>, String> {
             apps.len()
         ),
     );
-    *state.catalog.lock() = apps.clone();
-    rebuild_statuses(&state);
+    {
+        let _source = STATUS_SOURCE_LOCK.lock();
+        *state.catalog.lock() = apps.clone();
+        mark_status_sources_changed();
+    }
     Ok(apps)
 }
 
 #[tauri::command]
-fn save_catalog(state: State<'_, AppState>, apps: Vec<Value>) -> Result<String, String> {
+async fn save_catalog(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    apps: Vec<Value>,
+) -> Result<String, String> {
     logger::info(
         "catalog",
         format!("Guardado de catálogo solicitado: {} entradas", apps.len()),
@@ -279,6 +618,17 @@ fn save_catalog(state: State<'_, AppState>, apps: Vec<Value>) -> Result<String, 
         let id = entry.get("id").and_then(Value::as_str).unwrap_or_default();
         if !ids.insert(id) {
             return Err(format!("El identificador '{id}' está duplicado."));
+        }
+        let section = entry
+            .get("section")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Entrada {idx} ({id}) falta 'section'."))?;
+        if !is_visible_catalog_section(section) {
+            return Err(format!(
+                "Entrada {idx} ({id}) usa una sección no visible: '{section}'."
+            ));
         }
         let source_type = entry
             .get("source_type")
@@ -347,10 +697,19 @@ fn save_catalog(state: State<'_, AppState>, apps: Vec<Value>) -> Result<String, 
             path
         }
     };
-    store::save_json(&target, &apps)?;
-    *state.catalog_path.lock() = target.clone();
-    *state.catalog.lock() = apps;
-    rebuild_statuses(&state);
+    let (target, apps) = async_runtime::spawn_blocking(move || {
+        store::save_json(&target, &apps)?;
+        Ok::<_, String>((target, apps))
+    })
+    .await
+    .map_err(|error| format!("Falló el guardado del catálogo: {error}"))??;
+    {
+        let _source = STATUS_SOURCE_LOCK.lock();
+        *state.catalog_path.lock() = target.clone();
+        *state.catalog.lock() = apps;
+        mark_status_sources_changed();
+    }
+    rebuild_statuses_async(app, false).await?;
     Ok(target.to_string_lossy().to_string())
 }
 
@@ -446,6 +805,7 @@ fn open_url(app: AppHandle, url: String) -> Result<(), String> {
 const DETECTION_RESCAN_EVERY: u32 = 3;
 
 async fn confirm_uninstalled(
+    app: &AppHandle,
     state: &AppState,
     app_id: &str,
     name: &str,
@@ -455,11 +815,8 @@ async fn confirm_uninstalled(
         if attempt % DETECTION_RESCAN_EVERY == 1 {
             detect::clear_detection_caches();
         }
-        rebuild_statuses(state);
-        let installed = state
-            .statuses
-            .lock()
-            .get(app_id)
+        let installed = probe_app_status_async(app.clone(), app_id.to_string())
+            .await?
             .map(|status| status.installed)
             .unwrap_or(false);
         if !installed {
@@ -481,7 +838,9 @@ async fn confirm_uninstalled(
         .get(app_id)
         .filter(|status| status.installed)
         .map(|status| status.install_path.clone());
-    if let Some(target) = lingering_target.filter(|value| value.starts_with(residue::START_MENU_PREFIX)) {
+    if let Some(target) =
+        lingering_target.filter(|value| value.starts_with(residue::START_MENU_PREFIX))
+    {
         let names = vec![name.to_string()];
         let target_for_task = target.clone();
         let is_real = async_runtime::spawn_blocking(move || {
@@ -490,6 +849,18 @@ async fn confirm_uninstalled(
         .await
         .unwrap_or(true);
         if !is_real {
+            if let Some(status) = state.statuses.lock().get_mut(app_id) {
+                status.installed = false;
+                status.origin = "none".into();
+                status.install_path.clear();
+                status.update_available = false;
+                status.latest_version = None;
+                status.can_uninstall = false;
+                status.can_launch = false;
+                status.uninstall_command = None;
+                status.uninstall_command_full = None;
+                status.install_location = None;
+            }
             logger::info(
                 "uninstall-verify",
                 format!(
@@ -535,7 +906,7 @@ const INSTALL_CONFIRMATION_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// it installed anything or not. Only what Windows reports afterwards settles
 /// it.
 async fn confirm_installed(
-    state: &AppState,
+    app: &AppHandle,
     app_id: &str,
     name: &str,
     flags: &Arc<download::DownloadFlags>,
@@ -560,8 +931,7 @@ async fn confirm_installed(
         // Leaving "instalado correctamente" on screen throughout told the user
         // the operation was over long before it was.
         report("Comprobando la instalación...");
-        rebuild_statuses(state);
-        if let Some(status) = state.statuses.lock().get(app_id).cloned() {
+        if let Some(status) = probe_app_status_async(app.clone(), app_id.to_string()).await? {
             if status.installed {
                 logger::info(
                     "install-verify",
@@ -659,7 +1029,10 @@ async fn run_uninstall_cleanup(entry: Value, target: PathBuf) -> Result<Vec<Stri
     })
     .await
     .map_err(|error| format!("Falló la limpieza de accesos directos: {error}"))?;
-    Ok([shortcuts.err(), residuals.err()].into_iter().flatten().collect())
+    Ok([shortcuts.err(), residuals.err()]
+        .into_iter()
+        .flatten()
+        .collect())
 }
 
 /// Clears what the application left behind, confirms with Windows that it is
@@ -677,6 +1050,7 @@ async fn run_uninstall_cleanup(entry: Value, target: PathBuf) -> Result<Vec<Stri
 /// program was removed" from "the program was never on this computer and only
 /// its leftovers were".
 async fn finish_uninstall(
+    app: &AppHandle,
     state: &AppState,
     app_id: &str,
     app_name: &str,
@@ -689,17 +1063,34 @@ async fn finish_uninstall(
     if files_removed {
         warnings = run_uninstall_cleanup(entry.clone(), target.clone()).await?;
     }
-    confirm_uninstalled(state, app_id, app_name, &attempted).await?;
+    confirm_uninstalled(app, state, app_id, app_name, &attempted).await?;
     // Los accesos directos que la tienda puso por la suite se van con ella: sus
     // programas ya no están detrás.
-    remove_component_shortcuts(state, app_id);
+    let shortcut_handle = app.clone();
+    let shortcut_suite_id = app_id.to_string();
+    async_runtime::spawn_blocking(move || {
+        let state = shortcut_handle.state::<AppState>();
+        remove_component_shortcuts(&state, &shortcut_suite_id);
+    })
+    .await
+    .map_err(|error| format!("Falló la limpieza de accesos de componentes: {error}"))?;
     if !files_removed {
         warnings = run_uninstall_cleanup(entry, target).await?;
     }
+    let refresh_handle = app.clone();
+    let refresh_suite_id = app_id.to_string();
+    let package_id = app_id.to_string();
+    let package_cleanup = async_runtime::spawn_blocking(move || {
+        let state = refresh_handle.state::<AppState>();
+        refresh_component_statuses(&state, &refresh_suite_id);
+        installer::cleanup_package_download(&package_id)
+    })
+    .await
+    .map_err(|error| format!("Falló la actualización final de la desinstalación: {error}"))?;
     if !warnings.is_empty() {
         return Err(warnings.join("\n"));
     }
-    if let Err(error) = installer::cleanup_package_download(app_id) {
+    if let Err(error) = package_cleanup {
         logger::warn("cleanup", error);
     }
     Ok(if attempted.is_empty() {
@@ -716,7 +1107,11 @@ async fn finish_uninstall(
 }
 
 #[tauri::command]
-async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<String, String> {
+async fn uninstall_app(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    app_id: String,
+) -> Result<String, String> {
     logger::info(
         "uninstall",
         format!("Solicitud de desinstalación: app_id={app_id}"),
@@ -747,13 +1142,22 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
     // directos y el icono. No hay desinstalador que buscar ni residuos que
     // barrer, así que el resto de la cadena no tiene nada que hacer aquí.
     if catalog_entry.get("source_type").and_then(Value::as_str) == Some("webapp") {
-        webapp::uninstall(&catalog_entry)?;
-        {
+        let removal_handle = app.clone();
+        let removal_entry = catalog_entry.clone();
+        let removal_id = app_id.clone();
+        async_runtime::spawn_blocking(move || {
+            webapp::uninstall(&removal_entry)?;
+            let state = removal_handle.state::<AppState>();
+            let _source = STATUS_SOURCE_LOCK.lock();
             let mut installed = state.installed.lock();
-            installed.remove(&app_id);
-            let _ = store::save_installed(&installed);
-        }
-        rebuild_statuses(&state);
+            installed.remove(&removal_id);
+            store::save_installed(&installed)?;
+            mark_status_sources_changed();
+            Ok::<(), String>(())
+        })
+        .await
+        .map_err(|error| format!("Falló la desinstalación de la aplicación web: {error}"))??;
+        probe_app_status_async(app, app_id.clone()).await?;
         logger::info("uninstall", format!("Aplicación web eliminada: {app_name}"));
         return Ok(format!("{app_name} se ha desinstalado correctamente"));
     }
@@ -974,6 +1378,7 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
         // on the one that really existed, not on the one the store had indexed.
         let cleanup_target = PathBuf::from(handled_directory.unwrap_or(indexed_target));
         return finish_uninstall(
+            &app,
             &state,
             &app_id,
             &app_name,
@@ -1000,12 +1405,21 @@ async fn uninstall_app(state: State<'_, AppState>, app_id: String) -> Result<Str
     })
     .await
     .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
-    {
+    let bookkeeping_handle = app.clone();
+    let bookkeeping_id = app_id.clone();
+    async_runtime::spawn_blocking(move || {
+        let state = bookkeeping_handle.state::<AppState>();
+        let _source = STATUS_SOURCE_LOCK.lock();
         let mut installed = state.installed.lock();
-        installed.remove(&app_id);
+        installed.remove(&bookkeeping_id);
         store::save_installed(&installed)?;
-    }
+        mark_status_sources_changed();
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|error| format!("Falló el guardado de la desinstalación: {error}"))??;
     finish_uninstall(
+        &app,
         &state,
         &app_id,
         &app_name,
@@ -1021,13 +1435,37 @@ fn component_desktop_shortcut(name: &str) -> Option<PathBuf> {
     dirs::desktop_dir().map(|desktop| desktop.join(format!("{name}.lnk")))
 }
 
+fn refresh_component_statuses(state: &AppState, suite_id: &str) {
+    let catalog = state.catalog.lock().clone();
+    let components = detect::components_of(&catalog, suite_id)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return;
+    }
+    // Components are exact executable paths; they never need registry, Start
+    // Menu or WinGet. Folding this small result keeps their cards in sync after
+    // a suite install/uninstall without paying for a second global scan.
+    let component_statuses =
+        detect::build_statuses(&components, &state.installed.lock(), &[], &[], "");
+    state.statuses.lock().extend(component_statuses);
+}
+
 /// Puts every program a suite installed on the desktop.
 ///
 /// The icon is not set: a shortcut to `WINWORD.EXE` already wears Word's own,
 /// straight from the executable, which is sharper than anything downloadable.
 fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
     let catalog = state.catalog.lock().clone();
-    for component in detect::components_of(&catalog, suite_id) {
+    let components = detect::components_of(&catalog, suite_id)
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if components.is_empty() {
+        return;
+    }
+    for component in &components {
         let Some(name) = component.get("name").and_then(Value::as_str) else {
             continue;
         };
@@ -1045,7 +1483,10 @@ fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
         ) {
             Ok(()) => logger::info(
                 "componentes",
-                format!("Acceso directo en el escritorio: {name} -> {}", executable.display()),
+                format!(
+                    "Acceso directo en el escritorio: {name} -> {}",
+                    executable.display()
+                ),
             ),
             Err(error) => logger::warn(
                 "componentes",
@@ -1053,6 +1494,7 @@ fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
             ),
         }
     }
+    refresh_component_statuses(state, suite_id);
 }
 
 /// Removes them again when the suite goes.
@@ -1104,7 +1546,10 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
                 if path.is_file() {
                     logger::info(
                         "launch",
-                        format!("Usando ruta directa conocida del catálogo: {}", path.display()),
+                        format!(
+                            "Usando ruta directa conocida del catálogo: {}",
+                            path.display()
+                        ),
                     );
                     return installer::launch_path_with_preferred(&path, None);
                 }
@@ -1220,10 +1665,9 @@ fn cancel_download(app: AppHandle, state: State<'_, AppState>, app_id: String) {
         format!("Cancelación solicitada: app_id={app_id}"),
     );
     state.downloads.lock().cancel(&app_id);
-    let task_app_id = app_id.clone();
-    async_runtime::spawn_blocking(move || {
-        let _ = installer::cleanup_package_download(&task_app_id);
-    });
+    // The worker owns open download/archive handles and performs cleanup after
+    // it has observed the flag. Deleting its directory concurrently can turn a
+    // normal cancellation into an unrelated filesystem error.
     emit_dl(&app, &state);
 }
 
@@ -1244,28 +1688,34 @@ fn resume_all(app: AppHandle, state: State<'_, AppState>) {
 #[tauri::command]
 fn cancel_all(app: AppHandle, state: State<'_, AppState>) {
     logger::warn("download", "Cancelación global solicitada.");
-    let task_ids: Vec<String> = state
-        .downloads
-        .lock()
-        .snapshots()
-        .into_iter()
-        .map(|t| t.app_id)
-        .collect();
     state.downloads.lock().cancel_all();
-    async_runtime::spawn_blocking(move || {
-        for app_id in task_ids {
-            let _ = installer::cleanup_package_download(&app_id);
-        }
-    });
     emit_dl(&app, &state);
 }
 
-#[tauri::command]
-async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, AppStatus>, String> {
+fn completed_update_check_covers(
+    completed_request: u64,
+    request: u64,
+    covered_generation: u64,
+    source_generation: u64,
+) -> bool {
+    completed_request >= request && covered_generation == source_generation
+}
+
+fn update_check_result_is_reusable(request: u64, source_generation: u64) -> bool {
+    completed_update_check_covers(
+        UPDATE_CHECK_COMPLETED.load(Ordering::Acquire),
+        request,
+        UPDATE_CHECK_COVERED_GENERATION.load(Ordering::Acquire),
+        source_generation,
+    )
+}
+
+async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatus>, String> {
     let started = std::time::Instant::now();
     logger::info("updates", "Comprobando actualizaciones.");
     let catalog = state.catalog.lock().clone();
     let mut statuses = state.statuses.lock().clone();
+    let baseline_statuses = statuses.clone();
     // The scan used to be skipped unless a `source_type: winget` app was
     // installed. Most of the catalog ships a `winget_id` while installing from
     // its own download URL, and WinGet knows about those packages just the
@@ -1285,25 +1735,6 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
                 .map(|status| status.installed)
                 .unwrap_or(false)
     });
-    let winget_upgrades = if has_identified_install {
-        match installer::winget_available_updates().await {
-            Ok(output) => {
-                let parsed = installer::parse_winget_upgrades(&output);
-                logger::info(
-                    "updates",
-                    format!("WinGet reporta {} paquete(s) actualizable(s).", parsed.len()),
-                );
-                Some(parsed)
-            }
-            Err(error) => {
-                logger::warn("updates", format!("No se pudo consultar WinGet: {error}"));
-                None
-            }
-        }
-    } else {
-        None
-    };
-
     // Resolve every GitHub release with bounded concurrency instead of one
     // request after another. The cap keeps the unauthenticated API quota from
     // being spent in a single burst.
@@ -1334,23 +1765,51 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
         })
         .collect();
 
-    let github_lookups: Vec<(String, Result<String, String>)> =
-        futures_util::stream::iter(github_targets)
-            .map(|(id, repo, pattern)| async move {
-                let result = download::github_latest_release_asset(&repo, pattern.as_deref())
-                    .await
-                    .map(|(_url, tag)| tag);
-                (id, result)
-            })
-            .buffer_unordered(6)
-            .collect()
-            .await;
+    let winget_lookup = async {
+        if has_identified_install {
+            match installer::winget_available_updates().await {
+                Ok(output) => {
+                    let parsed = installer::parse_winget_upgrades(&output);
+                    logger::info(
+                        "updates",
+                        format!(
+                            "WinGet reporta {} paquete(s) actualizable(s).",
+                            parsed.len()
+                        ),
+                    );
+                    Some(parsed)
+                }
+                Err(error) => {
+                    logger::warn("updates", format!("No se pudo consultar WinGet: {error}"));
+                    None
+                }
+            }
+        } else {
+            None
+        }
+    };
+    let github_lookup = futures_util::stream::iter(github_targets)
+        .map(|(id, repo, pattern)| async move {
+            let result = download::github_latest_release_asset(&repo, pattern.as_deref())
+                .await
+                .map(|(_url, tag)| tag);
+            (id, result)
+        })
+        .buffer_unordered(6)
+        .collect::<Vec<(String, Result<String, String>)>>();
+
+    // WinGet is a local child process and GitHub is remote I/O. They are fully
+    // independent, so waiting for both concurrently removes one whole serial
+    // leg from every update check.
+    let (winget_upgrades, github_lookups) = tokio::join!(winget_lookup, github_lookup);
 
     // A single, explicit note beats one opaque failure per repository.
-    if github_lookups
-        .iter()
-        .any(|(_, result)| result.as_ref().err().is_some_and(|error| download::is_github_rate_limit(error)))
-    {
+    if github_lookups.iter().any(|(_, result)| {
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|error| download::is_github_rate_limit(error))
+    }) {
         logger::warn(
             "updates",
             "Se alcanzó el límite de la API pública de GitHub; algunas versiones no se pudieron comprobar.",
@@ -1406,6 +1865,31 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
         }
     }
 
+    // Merge only update metadata into the current detection map. An install or
+    // uninstall may have completed while the network requests were in flight;
+    // replacing the whole snapshot here used to resurrect its old state.
+    let statuses = {
+        let mut live = state.statuses.lock();
+        for (app_id, checked) in &statuses {
+            let Some(baseline) = baseline_statuses.get(app_id) else {
+                continue;
+            };
+            let Some(current) = live.get_mut(app_id) else {
+                continue;
+            };
+            if current.installed != baseline.installed || current.version != baseline.version {
+                continue;
+            }
+            current.update_available = checked.update_available;
+            current.latest_version = checked.latest_version.clone();
+            if !checked.version.is_empty()
+                && (current.version.is_empty() || current.version.eq_ignore_ascii_case("latest"))
+            {
+                current.version = checked.version.clone();
+            }
+        }
+        live.clone()
+    };
     let available = statuses
         .values()
         .filter(|status| status.update_available)
@@ -1417,8 +1901,37 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
             started.elapsed().as_millis()
         ),
     );
-    *state.statuses.lock() = statuses.clone();
     Ok(statuses)
+}
+
+#[tauri::command]
+async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, AppStatus>, String> {
+    let request = UPDATE_CHECK_REQUESTED.fetch_add(1, Ordering::AcqRel) + 1;
+    let _single_flight = UPDATE_CHECK_LOCK.lock().await;
+    let source_generation = STATUS_SOURCE_GENERATION.load(Ordering::Acquire);
+    if update_check_result_is_reusable(request, source_generation) {
+        logger::debug(
+            "updates",
+            format!(
+                "Comprobación concurrente reutilizada: solicitud={request}, generación={source_generation}"
+            ),
+        );
+        return Ok(state.statuses.lock().clone());
+    }
+
+    let result = check_updates_once(&state).await;
+    if result.is_ok() {
+        // Waiting callers may reuse this result only while the exact catalog /
+        // installed generation checked above is still current. If it changed
+        // during network I/O, the generation mismatch makes the next waiter run
+        // its own check against the new sources.
+        UPDATE_CHECK_COVERED_GENERATION.store(source_generation, Ordering::Release);
+        UPDATE_CHECK_COMPLETED.store(
+            UPDATE_CHECK_REQUESTED.load(Ordering::Acquire),
+            Ordering::Release,
+        );
+    }
+    result
 }
 
 /// Build published by the store's own repository, under the rolling `latest`
@@ -1510,47 +2023,53 @@ async fn check_store_update() -> Result<Option<StoreUpdate>, String> {
     }))
 }
 
-#[tauri::command]
-async fn update_center_app(app: AppHandle) -> Result<String, String> {
-    logger::info("self-update", "Actualización de WinSlimCenter solicitada.");
-    let app_handle = app.clone();
-    async_runtime::spawn(async move {
-        let result = async {
-            let package_dir = paths::package_download_dir("winslimcenter-update");
-            let download_path = package_dir.join("WINSLIMCENTER_latest.zip");
-            let staging_dir = package_dir.join("stage");
-            let script_path = package_dir.join("update_center.ps1");
-            let _ = std::fs::remove_dir_all(&package_dir);
-            std::fs::create_dir_all(&package_dir).map_err(|e| e.to_string())?;
+struct SelfUpdatePaths {
+    package_dir: PathBuf,
+    download_path: PathBuf,
+    staging_dir: PathBuf,
+    script_path: PathBuf,
+}
 
-            let flags = download::DownloadFlags::new();
-            download::download_url(GITHUB_LATEST_URL, &download_path, &flags, |_, _, _| {}).await?;
+fn prepare_self_update_download() -> Result<SelfUpdatePaths, String> {
+    let package_dir = paths::package_download_dir("winslimcenter-update");
+    let paths = SelfUpdatePaths {
+        download_path: package_dir.join("WINSLIMCENTER_latest.zip"),
+        staging_dir: package_dir.join("stage"),
+        script_path: package_dir.join("update_center.ps1"),
+        package_dir,
+    };
+    let _ = std::fs::remove_dir_all(&paths.package_dir);
+    std::fs::create_dir_all(&paths.package_dir).map_err(|error| error.to_string())?;
+    Ok(paths)
+}
 
-            std::fs::create_dir_all(&staging_dir).map_err(|e| e.to_string())?;
-            installer::extract_zip(&download_path, &staging_dir)?;
+fn prepare_and_launch_self_update(update_paths: SelfUpdatePaths) -> Result<(), String> {
+    std::fs::create_dir_all(&update_paths.staging_dir).map_err(|error| error.to_string())?;
+    installer::extract_zip(&update_paths.download_path, &update_paths.staging_dir)?;
 
-            let source_root = if let Ok(entries) = std::fs::read_dir(&staging_dir) {
-                let dirs: Vec<_> = entries
-                    .filter_map(Result::ok)
-                    .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
-                    .collect();
-                if dirs.len() == 1 {
-                    dirs[0].path()
-                } else {
-                    staging_dir.clone()
-                }
-            } else {
-                staging_dir.clone()
-            };
+    let source_root = if let Ok(entries) = std::fs::read_dir(&update_paths.staging_dir) {
+        let dirs: Vec<_> = entries
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
+            .collect();
+        if dirs.len() == 1 {
+            dirs[0].path()
+        } else {
+            update_paths.staging_dir.clone()
+        }
+    } else {
+        update_paths.staging_dir.clone()
+    };
 
-            let exe_dir = paths::exe_dir();
-            let exe_path = std::env::current_exe().map_err(|e| e.to_string())?;
-            // Wait for this very process to exit instead of guessing three
-            // seconds. With a fixed sleep, a slower shutdown left the files
-            // locked, the copy failed silently and the user was told the update
-            // had succeeded when nothing had changed.
-            let script = format!(
-                r#"
+    let exe_dir = paths::exe_dir();
+    let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
+    let powershell_path = |path: &std::path::Path| path.to_string_lossy().replace('\'', "''");
+    // Wait for this very process to exit instead of guessing three seconds.
+    // With a fixed sleep, a slower shutdown left the files locked, the copy
+    // failed silently and the user was told the update had succeeded when
+    // nothing had changed.
+    let script = format!(
+        r#"
 $ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Windows.Forms -ErrorAction SilentlyContinue
 $source = '{}'
@@ -1588,27 +2107,57 @@ Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -Recurse -ErrorAction SilentlyContinue
 Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
 "#,
-                source_root.to_string_lossy(),
-                exe_dir.to_string_lossy(),
-                exe_path.to_string_lossy(),
-                std::process::id(),
-                staging_dir.to_string_lossy(),
-                download_path.to_string_lossy(),
-                package_dir.to_string_lossy(),
-                script_path.to_string_lossy(),
-            );
-            std::fs::write(&script_path, script).map_err(|e| e.to_string())?;
-            let mut command = std::process::Command::new("powershell");
-            crate::process::background(&mut command);
-            let _ = command
-                .args([
-                    "-NoProfile",
-                    "-ExecutionPolicy",
-                    "Bypass",
-                    "-File",
-                    &script_path.to_string_lossy(),
-                ])
-                .spawn();
+        powershell_path(&source_root),
+        powershell_path(&exe_dir),
+        powershell_path(&exe_path),
+        std::process::id(),
+        powershell_path(&update_paths.staging_dir),
+        powershell_path(&update_paths.download_path),
+        powershell_path(&update_paths.package_dir),
+        powershell_path(&update_paths.script_path),
+    );
+    std::fs::write(&update_paths.script_path, script).map_err(|error| error.to_string())?;
+    let mut command = std::process::Command::new("powershell");
+    crate::process::background(&mut command);
+    command
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            &update_paths.script_path.to_string_lossy(),
+        ])
+        .spawn()
+        .map_err(|error| format!("No se pudo iniciar el aplicador de la actualización: {error}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_center_app(app: AppHandle) -> Result<String, String> {
+    logger::info("self-update", "Actualización de WinSlimCenter solicitada.");
+    let app_handle = app.clone();
+    async_runtime::spawn(async move {
+        let result = async {
+            let paths = async_runtime::spawn_blocking(prepare_self_update_download)
+                .await
+                .map_err(|error| {
+                    format!("No se pudo preparar la actualización en segundo plano: {error}")
+                })??;
+
+            let flags = download::DownloadFlags::new();
+            download::download_url(
+                GITHUB_LATEST_URL,
+                &paths.download_path,
+                &flags,
+                |_, _, _| {},
+            )
+            .await?;
+
+            async_runtime::spawn_blocking(move || prepare_and_launch_self_update(paths))
+                .await
+                .map_err(|error| {
+                    format!("No se pudo preparar la actualización en segundo plano: {error}")
+                })??;
             Ok::<(), String>(())
         }
         .await;
@@ -1616,10 +2165,17 @@ Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
             Ok(()) => app_handle.exit(0),
             Err(error) => {
                 logger::error("self-update", &error);
-                if let Err(cleanup_error) =
+                let cleanup = async_runtime::spawn_blocking(|| {
                     installer::cleanup_package_download("winslimcenter-update")
-                {
-                    logger::warn("cleanup", cleanup_error);
+                })
+                .await;
+                match cleanup {
+                    Ok(Ok(())) => {}
+                    Ok(Err(cleanup_error)) => logger::warn("cleanup", cleanup_error),
+                    Err(join_error) => logger::warn(
+                        "cleanup",
+                        format!("No se pudo esperar la limpieza de la actualización: {join_error}"),
+                    ),
                 }
             }
         }
@@ -1644,16 +2200,28 @@ async fn install_app(
     // Which build was asked for is settled here rather than in the interface, so
     // that the update check and a later reinstall reach for the same one.
     let app_entry = store::apply_variant(&app_entry, variant.as_deref());
-    if let Some(chosen) = app_entry.get("variant").and_then(Value::as_str) {
+    let settings_to_save = if let Some(chosen) = app_entry.get("variant").and_then(Value::as_str) {
         let mut settings = state.settings.lock();
         if settings.variants.get(&app_id).map(String::as_str) != Some(chosen) {
             settings.variants.insert(app_id.clone(), chosen.to_string());
-            if let Err(error) = store::save_settings(&settings) {
-                logger::warn(
-                    "install",
-                    format!("No se pudo recordar la edición elegida de {app_id}: {error}"),
-                );
-            }
+            Some(settings.clone())
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    if let Some(settings) = settings_to_save {
+        match async_runtime::spawn_blocking(move || store::save_settings(&settings)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => logger::warn(
+                "install",
+                format!("No se pudo recordar la edición elegida de {app_id}: {error}"),
+            ),
+            Err(error) => logger::warn(
+                "install",
+                format!("No se pudo esperar el guardado de la edición de {app_id}: {error}"),
+            ),
         }
     }
     let name = app_entry
@@ -1714,20 +2282,7 @@ async fn install_app(
     };
     emit_dl(&app, &state);
 
-    let downloads = state.downloads.clone();
     let app_handle = app.clone();
-
-    {
-        let mut dl = downloads.lock();
-        dl.update(
-            &app_id,
-            Some(TaskState::Downloading),
-            Some(0),
-            Some("Iniciando...".into()),
-            None,
-        );
-    }
-    emit_dl(&app_handle, &state);
 
     let app_entry_for_task = app_entry.clone();
     let app_id_for_task = app_id.clone();
@@ -1743,56 +2298,87 @@ async fn install_app(
         let mut last_logged_progress: Option<u32> = None;
         let mut last_progress_log = std::time::Instant::now();
 
-        let result = installer::do_install(
-            &app_entry_for_task,
-            &flags_for_task,
-            force_for_task,
-            current_version,
-            installed_at,
-            |progress, status, is_pausable| {
-                if last_logged_progress != Some(progress)
-                    || last_progress_log.elapsed() >= std::time::Duration::from_secs(1)
-                {
-                    logger::debug(
-                        "install-progress",
-                        format!(
-                            "app_id={app_id_for_task}, progreso={progress}%, pausable={is_pausable}, estado={status}"
-                        ),
-                    );
-                    last_logged_progress = Some(progress);
-                    last_progress_log = std::time::Instant::now();
-                }
-                let st = if status.to_lowercase().contains("extray")
-                    || status.to_lowercase().contains("registr")
-                    || status.to_lowercase().contains("instal")
-                    || status.to_lowercase().contains("winget")
-                {
-                    TaskState::Installing
-                } else if flags_for_task
-                    .pause
-                    .load(std::sync::atomic::Ordering::SeqCst)
-                    && is_pausable
-                {
-                    TaskState::Paused
-                } else {
-                    TaskState::Downloading
-                };
+        let result = match acquire_download_slot(&flags_for_task).await {
+            Ok(download_permit) => {
                 {
                     let mut dl = downloads.lock();
-                    dl.update_pausable(&app_id_for_task, is_pausable);
+                    // A queue item has no transfer semantics yet. Keep pause
+                    // disabled until the downloader's progress callback
+                    // explicitly reports that the current source supports it.
+                    dl.update_pausable(&app_id_for_task, false);
                     dl.update(
                         &app_id_for_task,
-                        Some(st),
-                        Some(progress),
-                        Some(status),
+                        Some(TaskState::Downloading),
+                        Some(0),
+                        Some("Iniciando...".into()),
                         None,
                     );
                 }
-                let tasks = downloads.lock().snapshots();
-                let _ = app_handle.emit("downloads-changed", DlEvent { tasks });
-            },
-        )
-        .await;
+                emit_dl(&app_handle, &app_state);
+                let result = installer::do_install(
+                    &app_entry_for_task,
+                    &flags_for_task,
+                    force_for_task,
+                    current_version,
+                    installed_at,
+                    Some(download_permit),
+                    installer::InstallCallbacks::new(
+                        |progress: u32, status: String, is_pausable: bool| {
+                            if last_logged_progress != Some(progress)
+                                || last_progress_log.elapsed()
+                                    >= std::time::Duration::from_secs(1)
+                            {
+                                logger::debug(
+                                    "install-progress",
+                                    format!(
+                                        "app_id={app_id_for_task}, progreso={progress}%, pausable={is_pausable}, estado={status}"
+                                    ),
+                                );
+                                last_logged_progress = Some(progress);
+                                last_progress_log = std::time::Instant::now();
+                            }
+                            let st = if status.to_lowercase().contains("extray")
+                                || status.to_lowercase().contains("registr")
+                                || status.to_lowercase().contains("instal")
+                                || status.to_lowercase().contains("winget")
+                            {
+                                TaskState::Installing
+                            } else if flags_for_task.pause.load(Ordering::SeqCst) && is_pausable {
+                                TaskState::Paused
+                            } else {
+                                TaskState::Downloading
+                            };
+                            {
+                                let mut dl = downloads.lock();
+                                dl.update_pausable(&app_id_for_task, is_pausable);
+                                dl.update(
+                                    &app_id_for_task,
+                                    Some(st),
+                                    Some(progress),
+                                    Some(status),
+                                    None,
+                                );
+                            }
+                            emit_dl(&app_handle, &app_state);
+                        },
+                        |is_cancelable: bool| {
+                            {
+                                let mut dl = downloads.lock();
+                                dl.update_cancelable(&app_id_for_task, is_cancelable);
+                            }
+                            // This action transition guards a UAC boundary and is
+                            // acknowledged by the installer worker. Deliver it now
+                            // so the elevated child is never started while the GUI
+                            // still advertises a cancellation it cannot guarantee.
+                            emit_dl_now(&app_handle, &app_state);
+                        },
+                    ),
+                )
+                .await;
+                result
+            }
+            Err(error) => Err(error),
+        };
 
         let result = match result {
             Ok(outcome) => {
@@ -1800,10 +2386,26 @@ async fn install_app(
                 // map, so a second installation finishing in parallel cannot
                 // overwrite this entry with its own stale snapshot.
                 if let Some((registered_id, info)) = outcome.registered {
-                    let mut installed = app_state.installed.lock();
-                    installed.insert(registered_id, info);
-                    if let Err(error) = store::save_installed(&installed) {
-                        logger::error("install", format!("No se pudo guardar installed.json: {error}"));
+                    let registration_handle = app_handle.clone();
+                    match async_runtime::spawn_blocking(move || {
+                        let state = registration_handle.state::<AppState>();
+                        let _source = STATUS_SOURCE_LOCK.lock();
+                        let mut installed = state.installed.lock();
+                        installed.insert(registered_id, info);
+                        mark_status_sources_changed();
+                        store::save_installed(&installed)
+                    })
+                    .await
+                    {
+                        Ok(Ok(())) => {}
+                        Ok(Err(error)) => logger::error(
+                            "install",
+                            format!("No se pudo guardar installed.json: {error}"),
+                        ),
+                        Err(error) => logger::error(
+                            "install",
+                            format!("No se pudo esperar el guardado de installed.json: {error}"),
+                        ),
                     }
                 }
                 if outcome.changed {
@@ -1821,11 +2423,11 @@ async fn install_app(
                                 None,
                             );
                         }
-                        let tasks = downloads_while_checking.lock().snapshots();
-                        let _ = handle_while_checking.emit("downloads-changed", DlEvent { tasks });
+                        let state = handle_while_checking.state::<AppState>();
+                        emit_dl(&handle_while_checking, &state);
                     };
                     match confirm_installed(
-                        &app_state,
+                        &app_handle,
                         &app_id_for_task,
                         &name_for_task,
                         &flags_for_task,
@@ -1854,20 +2456,44 @@ async fn install_app(
                         operation_started.elapsed().as_millis()
                     ),
                 );
-                rebuild_statuses(&app_state);
-
-                if let Err(error) = installer::cleanup_package_download(&app_id_for_task) {
-                    logger::warn(
+                let cleanup_id = app_id_for_task.clone();
+                match async_runtime::spawn_blocking(move || {
+                    installer::cleanup_package_download(&cleanup_id)
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => logger::warn(
                         "cleanup",
                         format!("Limpieza post-instalación de {app_id_for_task}: {error}"),
-                    );
+                    ),
+                    Err(error) => logger::warn(
+                        "cleanup",
+                        format!(
+                            "No se pudo esperar la limpieza post-instalación de {app_id_for_task}: {error}"
+                        ),
+                    ),
                 }
 
                 // Una suite deja sus programas instalados pero el escritorio
                 // vacío: Office publica en el menú Inicio y nada más. Los
                 // accesos directos de Word, Excel y compañía se crean aquí, uno
                 // por cada componente que de verdad quedó en el disco.
-                publish_component_shortcuts(&app_state, &app_id_for_task);
+                let shortcut_handle = app_handle.clone();
+                let shortcut_suite_id = app_id_for_task.clone();
+                if let Err(error) = async_runtime::spawn_blocking(move || {
+                    let state = shortcut_handle.state::<AppState>();
+                    publish_component_shortcuts(&state, &shortcut_suite_id);
+                })
+                .await
+                {
+                    logger::warn(
+                        "component-shortcuts",
+                        format!(
+                            "No se pudo esperar la publicación de accesos de {app_id_for_task}: {error}"
+                        ),
+                    );
+                }
 
                 // The terminal the store ships gets the same Start Menu folder
                 // the store gives itself, so Open-Shell indexes it and finds it
@@ -1913,19 +2539,32 @@ async fn install_app(
                         "install",
                         format!("Ejecutando automáticamente tras instalación WinGet: app_id={app_id_for_task}"),
                     );
-                    match launch_app_internal(&app_state, &app_id_for_task) {
-                        Ok(msg) => {
+                    let launch_handle = app_handle.clone();
+                    let launch_id = app_id_for_task.clone();
+                    match async_runtime::spawn_blocking(move || {
+                        let state = launch_handle.state::<AppState>();
+                        launch_app_internal(&state, &launch_id)
+                    })
+                    .await
+                    {
+                        Ok(Ok(msg)) => {
                             logger::info(
                                 "install",
                                 format!("Aplicación {app_id_for_task} iniciada correctamente tras WinGet: {msg}"),
                             );
                         }
-                        Err(err) => {
+                        Ok(Err(err)) => {
                             logger::warn(
                                 "install",
                                 format!("No se pudo iniciar automáticamente {app_id_for_task} tras WinGet: {err}"),
                             );
                         }
+                        Err(err) => logger::warn(
+                            "install",
+                            format!(
+                                "No se pudo esperar la apertura automática de {app_id_for_task}: {err}"
+                            ),
+                        ),
                     }
                 }
                 let completion = if force_for_task {
@@ -1970,12 +2609,28 @@ async fn install_app(
                 // to begin with. On a failed update `do_install` has already put
                 // the previous version back, and deleting it here would undo
                 // exactly the recovery that just happened.
-                let cleanup_error =
-                    installer::cleanup_failed_install(&app_id_for_task, !had_center_install).err();
-                rebuild_statuses(&app_state);
+                let failed_cleanup_id = app_id_for_task.clone();
+                let cleanup_error = match async_runtime::spawn_blocking(move || {
+                    installer::cleanup_failed_install(&failed_cleanup_id, !had_center_install)
+                })
+                .await
+                {
+                    Ok(result) => result.err(),
+                    Err(error) => Some(format!(
+                        "No se pudo esperar la limpieza de la instalación fallida: {error}"
+                    )),
+                };
+                if let Err(error) =
+                    probe_app_status_async(app_handle.clone(), app_id_for_task.clone()).await
+                {
+                    logger::warn(
+                        "status-probe",
+                        format!("No se pudo actualizar {app_id_for_task} tras el fallo: {error}"),
+                    );
+                }
                 let installation_cancelled = installer::is_install_cancelled(&e);
-                let download_cancelled = e == installer::CANCELLED_MARKER
-                    || e.starts_with("Descarga cancelada");
+                let download_cancelled =
+                    e == installer::CANCELLED_MARKER || e.starts_with("Descarga cancelada");
                 let cancelled = installation_cancelled || download_cancelled;
                 let interrupted = installer::is_install_interrupted(&e);
                 let mut display_error = installer::display_install_error(&e);
@@ -2050,6 +2705,10 @@ pub fn run() {
                 default_panic_hook(panic_info);
             }));
             logger::info("startup", format!("Registro iniciado en {}", log_path.display()));
+            // Los iconos del catálogo viajan con la interfaz dentro del
+            // ejecutable, y los accesos directos de las aplicaciones web los
+            // necesitan: esta es la única puerta a esos recursos.
+            webapp::remember_application(app.handle().clone());
             paths::ensure_dirs().map_err(|e| e.to_string())?;
             let resource_dir = app.path().resource_dir().ok();
             let catalog_path = paths::resolve_apps_json(resource_dir);
@@ -2071,24 +2730,6 @@ pub fn run() {
             );
             logger::info("startup", format!("Catálogo: {}", catalog_path.display()));
             logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::app_dir().display()));
-
-            // The packages downloaded for past installations are never read
-            // again — every installation fetches its own copy — and start-up is
-            // the one moment when none of them can be in use. It runs on a
-            // thread of its own so that hundreds of megabytes of old setups do
-            // not stand between the user and the first window.
-            std::thread::spawn(|| {
-                let (removed, freed) = paths::purge_downloads();
-                if removed > 0 {
-                    logger::info(
-                        "startup-cleanup",
-                        format!(
-                            "Paquetes descargados eliminados: {removed}, espacio liberado: {:.1} MB",
-                            freed as f64 / (1024.0 * 1024.0)
-                        ),
-                    );
-                }
-            });
 
             // Open-Shell only finds what has a shortcut under `shell:programs`,
             // so the store leaves one there the first time it runs. It goes on a
@@ -2153,6 +2794,56 @@ pub fn run() {
 mod tests {
     use super::*;
 
+    fn test_status(version: &str, update_available: bool, latest: Option<&str>) -> AppStatus {
+        AppStatus {
+            installed: true,
+            version: version.into(),
+            origin: "system".into(),
+            install_path: String::new(),
+            update_available,
+            latest_version: latest.map(str::to_string),
+            can_uninstall: true,
+            can_launch: false,
+            uninstall_command: None,
+            uninstall_command_full: None,
+            install_location: None,
+        }
+    }
+
+    #[test]
+    fn catalog_sections_match_the_sections_the_store_can_render() {
+        for section in VISIBLE_CATALOG_SECTIONS {
+            assert!(is_visible_catalog_section(section));
+        }
+        assert!(!is_visible_catalog_section("Destacados"));
+        assert!(!is_visible_catalog_section(" Juegos"));
+        assert!(!is_visible_catalog_section("Juegos "));
+        assert!(!is_visible_catalog_section(""));
+    }
+
+    #[test]
+    fn a_late_update_check_is_preserved_when_detection_commits() {
+        let previous = HashMap::from([("demo".to_string(), test_status("1.0", true, Some("2.0")))]);
+        let mut rebuilt = HashMap::from([("demo".to_string(), test_status("1.0", false, None))]);
+
+        preserve_update_metadata(&previous, &mut rebuilt);
+
+        assert!(rebuilt["demo"].update_available);
+        assert_eq!(rebuilt["demo"].latest_version.as_deref(), Some("2.0"));
+
+        rebuilt.insert("demo".into(), test_status("2.0", false, None));
+        preserve_update_metadata(&previous, &mut rebuilt);
+        assert!(!rebuilt["demo"].update_available);
+        assert_eq!(rebuilt["demo"].latest_version, None);
+    }
+
+    #[test]
+    fn update_check_coalescing_requires_the_same_source_generation() {
+        assert!(completed_update_check_covers(5, 4, 12, 12));
+        assert!(!completed_update_check_covers(3, 4, 12, 12));
+        assert!(!completed_update_check_covers(5, 4, 11, 12));
+    }
+
     #[test]
     fn the_version_is_read_from_the_notes_a_release_actually_carries() {
         // The published release, verbatim: the tag says nothing, the heading
@@ -2162,15 +2853,15 @@ mod tests {
             "<h1>### WinSlimCenter 1.6.0 ###</h1>\r\n\r\n- Primera Release Estable.\r\n\r\n",
             "<img width=\"1490\" height=\"999\" alt=\"image\" src=\"https://example.invalid/a.png\">"
         );
-        assert_eq!(
-            version_in_release_text(published).as_deref(),
-            Some("1.6.0")
-        );
+        assert_eq!(version_in_release_text(published).as_deref(), Some("1.6.0"));
     }
 
     #[test]
     fn a_release_that_never_names_a_version_is_not_mistaken_for_one() {
-        assert_eq!(version_in_release_text("latest\nlatest\nCorrecciones varias"), None);
+        assert_eq!(
+            version_in_release_text("latest\nlatest\nCorrecciones varias"),
+            None
+        );
         // Bare numbers are not versions, however many of them there are.
         assert_eq!(version_in_release_text("build 20260814 · 1490x999"), None);
     }

@@ -5,8 +5,9 @@ use chrono::Local;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
+use std::io::{BufWriter, Read};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use zip::ZipArchive;
 
 pub const INSTALL_CANCELLED_PREFIX: &str = "__WINSLIM_INSTALL_CANCELLED__:";
@@ -25,6 +26,7 @@ const WINGET_NO_APPLICABLE_UPDATE: i32 = 0x8A15_002B_u32 as i32;
 const WINGET_NO_INSTALLED_PACKAGE: i32 = 0x8A15_0014_u32 as i32;
 const WINGET_PACKAGE_ALREADY_INSTALLED: i32 = 0x8A15_0061_u32 as i32;
 const WIN32_ERROR_CANCELLED: i32 = 1223;
+const WINGET_METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn winget_says_already_current(code: Option<i32>, combined_output: &str) -> bool {
     if matches!(
@@ -113,9 +115,7 @@ impl InstallerFamily {
             // HRESULT_FROM_WIN32 forms bootstrappers return: 0x80070642, 0x800704C7.
             InstallerFamily::WindowsInstaller
             | InstallerFamily::Burn
-            | InstallerFamily::InstallShield => {
-                &[1602, 1223, -2_147_023_294, -2_147_023_673]
-            }
+            | InstallerFamily::InstallShield => &[1602, 1223, -2_147_023_294, -2_147_023_673],
             // 2: cancelled in the wizard before installing, or answered No to a
             // prompt. 5: cancelled during installation, or Abort on a retry box.
             // 6: the setup process was terminated.
@@ -156,20 +156,13 @@ fn detect_installer_family(installer_path: &Path) -> InstallerFamily {
         return InstallerFamily::Unknown;
     }
 
-    let contains = |needle: &[u8]| {
-        buffer
-            .windows(needle.len())
-            .any(|window| window == needle)
-    };
+    let contains = |needle: &[u8]| buffer.windows(needle.len()).any(|window| window == needle);
     // Version resources are UTF-16LE, so the same word is looked for both ways.
     let contains_text = |needle: &str| {
         if contains(needle.as_bytes()) {
             return true;
         }
-        let wide: Vec<u8> = needle
-            .bytes()
-            .flat_map(|byte| [byte, 0])
-            .collect();
+        let wide: Vec<u8> = needle.bytes().flat_map(|byte| [byte, 0]).collect();
         contains(&wide)
     };
 
@@ -429,53 +422,103 @@ async fn winget_expected_size(app: &Value) -> u64 {
     crate::download::content_length(&url).await.unwrap_or(0)
 }
 
-/// How much of the installer WinGet has written so far.
-///
-/// WinGet downloads into `%TEMP%\WinGet\<PackageIdentifier>.<Version>\` and
-/// deletes the folder once the installation is under way, so the file growing
-/// there is the only account of the download the store can give.
-fn winget_downloaded_bytes(package_id: &str, since: std::time::SystemTime) -> Option<u64> {
-    let root = std::env::temp_dir().join("WinGet");
-    let prefix = format!("{}.", package_id.to_ascii_lowercase());
-    let mut newest: Option<(std::time::SystemTime, u64)> = None;
-    for package in fs::read_dir(&root).ok()?.flatten() {
-        if !package
-            .file_name()
-            .to_string_lossy()
-            .to_ascii_lowercase()
-            .starts_with(&prefix)
-        {
-            continue;
-        }
-        let Ok(files) = fs::read_dir(package.path()) else {
-            continue;
-        };
-        for file in files.flatten() {
-            let Ok(metadata) = file.metadata() else {
-                continue;
-            };
-            let Ok(modified) = metadata.modified() else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-            // WinGet leaves these folders behind for good, so a copy downloaded
-            // days ago sits there at its full size. Taking one for the download
-            // in flight would report an installation that had not started.
-            if modified < since {
-                continue;
-            }
-            let better = match newest {
-                Some((seen, _)) => modified >= seen,
-                None => true,
-            };
-            if better {
-                newest = Some((modified, metadata.len()));
-            }
+/// Remembers WinGet's active file after the first discovery. Previously every
+/// 400 ms tick enumerated the complete `%TEMP%\WinGet` tree, including stale
+/// package folders WinGet deliberately leaves behind.
+struct WingetDownloadProbe {
+    root: PathBuf,
+    package_prefix: String,
+    active_directory: Option<PathBuf>,
+    active_file: Option<PathBuf>,
+}
+
+impl WingetDownloadProbe {
+    fn new(package_id: &str) -> Self {
+        Self {
+            root: std::env::temp_dir().join("WinGet"),
+            package_prefix: format!("{}.", package_id.to_ascii_lowercase()),
+            active_directory: None,
+            active_file: None,
         }
     }
-    newest.map(|(_, size)| size)
+
+    fn current_file(
+        path: &Path,
+        since: std::time::SystemTime,
+    ) -> Option<(std::time::SystemTime, u64)> {
+        let metadata = path.metadata().ok()?;
+        let modified = metadata.modified().ok()?;
+        (metadata.is_file() && modified >= since).then_some((modified, metadata.len()))
+    }
+
+    fn newest_file(
+        directory: &Path,
+        since: std::time::SystemTime,
+    ) -> Option<(PathBuf, std::time::SystemTime, u64)> {
+        fs::read_dir(directory)
+            .ok()?
+            .flatten()
+            .filter_map(|entry| {
+                Self::current_file(&entry.path(), since)
+                    .map(|(modified, size)| (entry.path(), modified, size))
+            })
+            .max_by_key(|(_, modified, _)| *modified)
+    }
+
+    fn downloaded_bytes(&mut self, since: std::time::SystemTime) -> Option<u64> {
+        if let Some(directory) = self.active_directory.as_deref() {
+            // WinGet may first create a small manifest/metadata file and then
+            // the actual installer beside it. Keeping the first existing file
+            // forever made that metadata look "finished" and switched the UI
+            // to Installing while the real download was only starting. Rescan
+            // the already-selected package directory (cheap) and follow the
+            // newest file whenever WinGet moves on to it.
+            if let Some((file, modified, size)) = Self::newest_file(directory, since) {
+                let keep_active = self.active_file.as_deref().and_then(|active| {
+                    Self::current_file(active, since).map(|(active_modified, active_size)| {
+                        (active, active_modified, active_size)
+                    })
+                });
+                if keep_active.is_some_and(|(active, active_modified, active_size)| {
+                    active != file
+                        && (active_modified > modified
+                            || (active_modified == modified && active_size > size))
+                }) {
+                    return keep_active.map(|(_, _, active_size)| active_size);
+                }
+                self.active_file = Some(file);
+                return Some(size);
+            }
+            self.active_file = None;
+            self.active_directory = None;
+        }
+
+        let mut newest: Option<(PathBuf, PathBuf, std::time::SystemTime, u64)> = None;
+        for package in fs::read_dir(&self.root).ok()?.flatten() {
+            if !package
+                .file_name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with(&self.package_prefix)
+            {
+                continue;
+            }
+            let directory = package.path();
+            let Some((file, modified, size)) = Self::newest_file(&directory, since) else {
+                continue;
+            };
+            if newest
+                .as_ref()
+                .is_none_or(|(_, _, seen, _)| modified >= *seen)
+            {
+                newest = Some((directory, file, modified, size));
+            }
+        }
+        let (directory, file, _, size) = newest?;
+        self.active_directory = Some(directory);
+        self.active_file = Some(file);
+        Some(size)
+    }
 }
 
 /// How long the file has to sit at the same size before the download is taken
@@ -503,6 +546,7 @@ async fn watch_winget_download(
     // of slack absorb the difference between this clock and the file times.
     let since = std::time::SystemTime::now() - std::time::Duration::from_secs(5);
     let mut rate = crate::download::TransferRate::new();
+    let probe = Arc::new(std::sync::Mutex::new(WingetDownloadProbe::new(package_id)));
     let mut ticker = tokio::time::interval(WINGET_TICK);
     ticker.tick().await;
     let mut previous: Option<u64> = None;
@@ -517,7 +561,15 @@ async fn watch_winget_download(
                 if installing {
                     continue;
                 }
-                let downloaded = winget_downloaded_bytes(package_id, since);
+                let tick_probe = probe.clone();
+                let downloaded = tokio::task::spawn_blocking(move || {
+                    tick_probe
+                        .lock()
+                        .ok()
+                        .and_then(|mut probe| probe.downloaded_bytes(since))
+                })
+                .await
+                .unwrap_or(None);
                 let finished_downloading = match (downloaded, previous) {
                     // Everything the server announced has arrived.
                     (Some(bytes), _) if expected_bytes > 0 && bytes >= expected_bytes => true,
@@ -601,8 +653,7 @@ async fn install_with_winget(
 
     let cancel_flags = flags.clone();
     let mut running = tokio::task::spawn_blocking(move || {
-        crate::process::hidden_output_cancelable(
-            "winget.exe",
+        crate::process::hidden_winget_output_cancelable(
             &[
                 verb.as_str(),
                 "--id",
@@ -684,8 +735,7 @@ async fn winget_installer_url(app: &Value) -> Result<String, String> {
     let queried_id = package_id.clone();
 
     let output = tokio::task::spawn_blocking(move || {
-        crate::process::hidden_output(
-            "winget.exe",
+        crate::process::hidden_winget_output_timeout(
             &[
                 "show",
                 "--id",
@@ -696,6 +746,7 @@ async fn winget_installer_url(app: &Value) -> Result<String, String> {
                 "--accept-source-agreements",
                 "--disable-interactivity",
             ],
+            WINGET_METADATA_TIMEOUT,
         )
     })
     .await
@@ -734,6 +785,35 @@ async fn winget_installer_url(app: &Value) -> Result<String, String> {
 /// and self-updating apps. `--include-pinned` surfaces the packages the user (or
 /// WinGet itself) pinned, which are listed apart and would otherwise look like
 /// "nothing to do".
+fn winget_rejects_include_pinned(output: &crate::process::CapturedOutput) -> bool {
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    )
+    .to_lowercase();
+    combined.contains("--include-pinned")
+        && [
+            "unknown option",
+            "unrecognized option",
+            "unknown argument",
+            "unrecognized argument",
+            "was not recognized",
+            "unexpected argument",
+            "invalid argument",
+            "option is not supported",
+            "no se reconoce",
+            "no se reconoció",
+            "opción desconocida",
+            "opcion desconocida",
+            "argumento desconocido",
+            "argumento no válido",
+            "argumento no valido",
+        ]
+        .iter()
+        .any(|indicator| combined.contains(indicator))
+}
+
 pub async fn winget_available_updates() -> Result<String, String> {
     let output = tokio::task::spawn_blocking(move || {
         let base = [
@@ -747,9 +827,12 @@ pub async fn winget_available_updates() -> Result<String, String> {
         // `--include-pinned` is newer than `--include-unknown`; an older WinGet
         // rejects the whole command rather than ignoring the flag, so the scan
         // retries without it instead of reporting "WinGet unavailable".
-        match crate::process::hidden_output("winget.exe", &full) {
+        match crate::process::hidden_winget_output_timeout(&full, WINGET_METADATA_TIMEOUT) {
             Ok(result) if result.success() => Ok(result),
-            Ok(_) | Err(_) => crate::process::hidden_output("winget.exe", &base),
+            Ok(result) if winget_rejects_include_pinned(&result) => {
+                crate::process::hidden_winget_output_timeout(&base, WINGET_METADATA_TIMEOUT)
+            }
+            other => other,
         }
     })
     .await
@@ -786,20 +869,17 @@ pub fn uninstall_with_winget(package_id: &str, source: &str) -> Result<WingetUni
         "winget-uninstall",
         format!("Iniciando: paquete={package_id}, origen={source}"),
     );
-    let output = crate::process::hidden_output(
-        "winget.exe",
-        &[
-            "uninstall",
-            "--id",
-            package_id,
-            "--exact",
-            "--source",
-            source,
-            "--accept-source-agreements",
-            "--disable-interactivity",
-            "--silent",
-        ],
-    )
+    let output = crate::process::hidden_winget_output(&[
+        "uninstall",
+        "--id",
+        package_id,
+        "--exact",
+        "--source",
+        source,
+        "--accept-source-agreements",
+        "--disable-interactivity",
+        "--silent",
+    ])
     .map_err(|error| format!("No se pudo iniciar WinGet para desinstalar {package_id}: {error}"))?;
 
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -947,7 +1027,11 @@ fn winget_column_starts(header: &[char]) -> Vec<usize> {
 }
 
 fn winget_is_separator(line: &[char]) -> bool {
-    let trimmed: Vec<char> = line.iter().copied().filter(|c| !c.is_whitespace()).collect();
+    let trimmed: Vec<char> = line
+        .iter()
+        .copied()
+        .filter(|c| !c.is_whitespace())
+        .collect();
     trimmed.len() >= 4 && trimmed.iter().all(|c| *c == '-')
 }
 
@@ -959,7 +1043,11 @@ fn winget_cell(line: &[char], start: usize, end: Option<usize>) -> String {
     if stop <= start {
         return String::new();
     }
-    line[start..stop].iter().collect::<String>().trim().to_string()
+    line[start..stop]
+        .iter()
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Parses the output of `winget upgrade` into structured rows.
@@ -1041,11 +1129,66 @@ pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
 /// silently it cannot ask: Epic Games Launcher's update worked for seventeen
 /// seconds and rolled back with 1603 because the launcher was still going. An
 /// installer with a window would have offered to close it.
+type InstallCancelabilityEvent = (bool, std::sync::mpsc::SyncSender<()>);
+type InstallCancelabilitySender = tokio::sync::mpsc::UnboundedSender<InstallCancelabilityEvent>;
+
+/// Changes the action exposed by the GUI and waits until the task model has
+/// committed it. The acknowledgement closes the race where a click could be
+/// accepted just as an elevated process — which a medium-integrity parent
+/// cannot reliably terminate — was about to start.
+fn report_install_cancelability(
+    events: &InstallCancelabilitySender,
+    is_cancelable: bool,
+) -> Result<(), String> {
+    let (acknowledge, acknowledged) = std::sync::mpsc::sync_channel(0);
+    events.send((is_cancelable, acknowledge)).map_err(|_| {
+        "No se pudo actualizar el control de cancelación del instalador".to_string()
+    })?;
+    acknowledged
+        .recv()
+        .map_err(|_| "La interfaz no confirmó el control de cancelación del instalador".to_string())
+}
+
+fn run_elevated_installer_and_wait(
+    executable: &Path,
+    arguments: &str,
+    working_directory: Option<&Path>,
+    flags: &DownloadFlags,
+    cancelability_events: &InstallCancelabilitySender,
+) -> Result<Option<i32>, String> {
+    // Killing the PowerShell helper does not guarantee that Windows will allow
+    // a medium-integrity process to terminate the high-integrity child. Hide
+    // the action for precisely this wait instead of offering a false promise.
+    report_install_cancelability(cancelability_events, false)?;
+
+    // A cancellation that won the task mutex immediately before the transition
+    // is observed before UAC is requested. A later request is rejected by the
+    // same task mutex while `is_cancelable` is false.
+    if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        let _ = report_install_cancelability(cancelability_events, true);
+        return Err(format!(
+            "{INSTALL_CANCELLED_PREFIX}La instalación fue cancelada desde WinSlimCenter"
+        ));
+    }
+
+    let outcome = crate::process::run_elevated_and_wait(executable, arguments, working_directory)
+        .map_err(|error| format!("{INSTALL_CANCELLED_PREFIX}{error}"));
+
+    if let Err(error) = report_install_cancelability(cancelability_events, true) {
+        crate::logger::warn(
+            "installer",
+            format!("No se pudo restaurar el control de cancelación: {error}"),
+        );
+    }
+    outcome
+}
+
 fn run_installer_over(
     app: &Value,
     installer_path: &Path,
     flags: &Arc<DownloadFlags>,
     installed_at: Option<&str>,
+    cancelability_events: &InstallCancelabilitySender,
 ) -> Result<(), String> {
     let folder = installed_at
         .map(str::trim)
@@ -1055,16 +1198,18 @@ fn run_installer_over(
             if path.is_dir() {
                 Some(path)
             } else {
-                path.parent().filter(|parent| parent.is_dir()).map(Path::to_path_buf)
+                path.parent()
+                    .filter(|parent| parent.is_dir())
+                    .map(Path::to_path_buf)
             }
         });
 
     let Some(folder) = folder else {
-        return run_installer_in_background(app, installer_path, flags);
+        return run_installer_in_background(app, installer_path, flags, cancelability_events);
     };
 
     let stopped = crate::process::stop_application_at(&folder);
-    let outcome = run_installer_in_background(app, installer_path, flags);
+    let outcome = run_installer_in_background(app, installer_path, flags, cancelability_events);
     // Put the services back whether or not the installation worked: leaving a
     // machine with a stopped service because an update failed would be a worse
     // state than the one it started in.
@@ -1072,10 +1217,47 @@ fn run_installer_over(
     outcome
 }
 
-pub fn run_installer_in_background(
+async fn run_installer_over_async(
     app: &Value,
     installer_path: &Path,
     flags: &Arc<DownloadFlags>,
+    installed_at: Option<&str>,
+    on_cancelability: &mut impl FnMut(bool),
+) -> Result<(), String> {
+    let app = app.clone();
+    let installer_path = installer_path.to_path_buf();
+    let flags = flags.clone();
+    let installed_at = installed_at.map(str::to_owned);
+    let (cancelability_sender, mut cancelability_events) = tokio::sync::mpsc::unbounded_channel();
+    let mut running = tokio::task::spawn_blocking(move || {
+        run_installer_over(
+            &app,
+            &installer_path,
+            &flags,
+            installed_at.as_deref(),
+            &cancelability_sender,
+        )
+    });
+
+    loop {
+        tokio::select! {
+            result = &mut running => {
+                return result
+                    .map_err(|error| format!("El proceso del instalador no pudo completarse: {error}"))?;
+            }
+            Some((is_cancelable, acknowledge)) = cancelability_events.recv() => {
+                on_cancelability(is_cancelable);
+                let _ = acknowledge.send(());
+            }
+        }
+    }
+}
+
+fn run_installer_in_background(
+    app: &Value,
+    installer_path: &Path,
+    flags: &Arc<DownloadFlags>,
+    cancelability_events: &InstallCancelabilitySender,
 ) -> Result<(), String> {
     let ext = installer_path
         .extension()
@@ -1138,19 +1320,21 @@ pub fn run_installer_in_background(
             if e.raw_os_error() == Some(740) {
                 crate::logger::info(
                     "installer",
-                    format!("Solicitando elevación UAC para instalador: {}", installer_path.display()),
+                    format!(
+                        "Solicitando elevación UAC para instalador: {}",
+                        installer_path.display()
+                    ),
                 );
                 // Waiting for the elevated process keeps its exit code, so a
                 // wizard cancelled after the UAC prompt is reported as a
                 // cancellation instead of an unexplained "not installed".
-                let elevated_code = crate::process::run_elevated_and_wait(
+                let elevated_code = run_elevated_installer_and_wait(
                     installer_path,
                     &quote_arguments(&args),
                     installer_path.parent(),
-                )
-                .map_err(|error| {
-                    format!("{INSTALL_CANCELLED_PREFIX}{error}")
-                })?;
+                    flags,
+                    cancelability_events,
+                )?;
                 crate::logger::info(
                     "installer",
                     format!(
@@ -1224,14 +1408,19 @@ pub fn run_installer_in_background(
                 "El instalador terminó con {exit_code:?}, que en Windows suele significar que le faltan permisos; se reintenta con UAC."
             ),
         );
-        let elevated = crate::process::run_elevated_and_wait(
+        let elevated = run_elevated_installer_and_wait(
             Path::new(&program),
             &quote_arguments(&args),
             installer_path.parent(),
+            flags,
+            cancelability_events,
         )?;
         crate::logger::info(
             "installer",
-            format!("Instalador elevado finalizado: ruta={}, código={elevated:?}", installer_path.display()),
+            format!(
+                "Instalador elevado finalizado: ruta={}, código={elevated:?}",
+                installer_path.display()
+            ),
         );
         exit_code = elevated;
     }
@@ -1248,11 +1437,17 @@ pub fn run_installer_in_background(
             match msi_failure_summary(&log) {
                 Some(summary) => crate::logger::error(
                     "installer-msi",
-                    format!("Windows Installer informa: {summary}. Registro completo: {}", log.display()),
+                    format!(
+                        "Windows Installer informa: {summary}. Registro completo: {}",
+                        log.display()
+                    ),
                 ),
                 None => crate::logger::warn(
                     "installer-msi",
-                    format!("Sin detalle legible en el registro de Windows Installer: {}", log.display()),
+                    format!(
+                        "Sin detalle legible en el registro de Windows Installer: {}",
+                        log.display()
+                    ),
                 ),
             }
         }
@@ -1266,6 +1461,70 @@ pub fn install_target_blocked(
     force_update: bool,
 ) -> bool {
     !force_update && resolve_launchable_path(install_path, preferred_executable).is_some()
+}
+
+async fn install_target_blocked_async(
+    install_path: &Path,
+    preferred_executable: Option<&str>,
+    force_update: bool,
+) -> Result<bool, String> {
+    let install_path = install_path.to_path_buf();
+    let preferred_executable = preferred_executable.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        install_target_blocked(&install_path, preferred_executable.as_deref(), force_update)
+    })
+    .await
+    .map_err(|error| format!("No se pudo comprobar la instalación existente: {error}"))
+}
+
+async fn resolve_launchable_path_async(
+    install_path: &Path,
+    preferred_executable: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
+    let install_path = install_path.to_path_buf();
+    let preferred_executable = preferred_executable.map(str::to_owned);
+    tokio::task::spawn_blocking(move || {
+        resolve_launchable_path(&install_path, preferred_executable.as_deref())
+    })
+    .await
+    .map_err(|error| format!("No se pudo resolver el ejecutable instalado: {error}"))
+}
+
+async fn inspect_extracted_payload_async(
+    app: &Value,
+    extract_dir: &Path,
+) -> Result<(PathBuf, Option<PathBuf>), String> {
+    let app = app.clone();
+    let extract_dir = extract_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let items: Vec<_> = fs::read_dir(&extract_dir)
+            .map_err(|error| error.to_string())?
+            .filter_map(Result::ok)
+            .collect();
+        let source = if items.len() == 1 && items[0].path().is_dir() {
+            items[0].path()
+        } else {
+            extract_dir
+        };
+        let installer = wrapped_installer(&app, &source)?;
+        Ok((source, installer))
+    })
+    .await
+    .map_err(|error| format!("No se pudo inspeccionar el paquete extraído: {error}"))?
+}
+
+async fn looks_like_windows_executable_async(path: &Path) -> Result<bool, String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || looks_like_windows_executable(&path))
+        .await
+        .map_err(|error| format!("No se pudo inspeccionar el paquete descargado: {error}"))
+}
+
+async fn remove_path_robust_async(path: &Path) -> Result<(), String> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || remove_path_robust(&path))
+        .await
+        .map_err(|error| format!("No se pudo esperar la limpieza del paquete: {error}"))?
 }
 
 /// Result of an installation.
@@ -1298,7 +1557,49 @@ impl InstallOutcome {
     }
 }
 
-pub async fn do_install(
+/// Downloads may run concurrently, but Windows installers, WinGet and the
+/// final portable-directory swap mutate system/application state and should not
+/// overlap. Keeping the permit inside this module makes that invariant hold for
+/// every caller.
+static INSTALL_STAGE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
+async fn acquire_install_stage(
+    flags: &DownloadFlags,
+) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
+    if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+        return Err(CANCELLED_MARKER.into());
+    }
+    let acquire = INSTALL_STAGE.acquire();
+    tokio::pin!(acquire);
+    loop {
+        tokio::select! {
+            permit = &mut acquire => {
+                return permit.map_err(|_| "La cola de instalación dejó de estar disponible".into());
+            }
+            _ = tokio::time::sleep(std::time::Duration::from_millis(150)) => {
+                if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(CANCELLED_MARKER.into());
+                }
+            }
+        }
+    }
+}
+
+pub struct InstallCallbacks<Progress, Cancelability> {
+    progress: Progress,
+    cancelability: Cancelability,
+}
+
+impl<Progress, Cancelability> InstallCallbacks<Progress, Cancelability> {
+    pub fn new(progress: Progress, cancelability: Cancelability) -> Self {
+        Self {
+            progress,
+            cancelability,
+        }
+    }
+}
+
+pub async fn do_install<Progress, Cancelability>(
     app: &Value,
     flags: &Arc<DownloadFlags>,
     force_update: bool,
@@ -1307,8 +1608,17 @@ pub async fn do_install(
     // whatever runs in that folder is stopped before the installer starts and
     // put back afterwards.
     installed_at: Option<String>,
-    mut on_progress: impl FnMut(u32, String, bool),
-) -> Result<InstallOutcome, String> {
+    mut download_permit: Option<tokio::sync::SemaphorePermit<'static>>,
+    callbacks: InstallCallbacks<Progress, Cancelability>,
+) -> Result<InstallOutcome, String>
+where
+    Progress: FnMut(u32, String, bool),
+    Cancelability: FnMut(bool),
+{
+    let InstallCallbacks {
+        progress: mut on_progress,
+        cancelability: mut on_cancelability,
+    } = callbacks;
     let app_id = app.get("id").and_then(|v| v.as_str()).ok_or("App sin id")?;
     let name = app.get("name").and_then(|v| v.as_str()).unwrap_or(app_id);
     let source_type = app
@@ -1325,6 +1635,8 @@ pub async fn do_install(
     // Una aplicación web no descarga nada: lo que se instala es el acceso
     // directo que la abre, así que este origen se resuelve entero aquí.
     if source_type == "webapp" {
+        drop(download_permit.take());
+        let _install_stage = acquire_install_stage(flags).await?;
         on_progress(30, format!("Creando el acceso directo de {name}..."), false);
         let registered = crate::webapp::install(app).await?;
         on_progress(100, "Comprobando la instalación...".into(), false);
@@ -1336,6 +1648,7 @@ pub async fn do_install(
 
     let mut winget_fallback_url = None;
     if source_type == "winget" {
+        let _install_stage = acquire_install_stage(flags).await?;
         if let Some(dependencies) = app.get("winget_dependencies").and_then(Value::as_array) {
             for dependency in dependencies {
                 let dependency_name = dependency
@@ -1401,9 +1714,9 @@ pub async fn do_install(
         .get("launch_executable")
         .and_then(|value| value.as_str());
 
-    on_progress(0, format!("Instalando {name}..."), true);
+    on_progress(0, format!("Instalando {name}..."), false);
 
-    if install_target_blocked(&install_path, preferred_executable, force_update) {
+    if install_target_blocked_async(&install_path, preferred_executable, force_update).await? {
         return Err(format!(
             "'{name}' ya está instalado en este equipo. Usa Actualizar para reemplazarlo."
         ));
@@ -1413,7 +1726,9 @@ pub async fn do_install(
     // is fully downloaded and extracted. Removing it up front meant a failed
     // update (a 404, a renamed asset, a dropped connection) destroyed the working
     // copy the user already had.
-    fs::create_dir_all(&download_path).map_err(|e| e.to_string())?;
+    tokio::fs::create_dir_all(&download_path)
+        .await
+        .map_err(|error| error.to_string())?;
     crate::logger::info(
         "download",
         format!(
@@ -1444,7 +1759,7 @@ pub async fn do_install(
                             .and_then(|current| crate::detect::is_newer(&tag, current))
                             == Some(false)
                     {
-                        let _ = fs::remove_dir_all(&download_path);
+                        let _ = tokio::fs::remove_dir_all(&download_path).await;
                         on_progress(
                             100,
                             format!("{name} ya está en la versión más reciente ({tag})"),
@@ -1533,13 +1848,18 @@ pub async fn do_install(
         })
         .await?;
     }
+    // From this point on only the separately serialized installation stage is
+    // active. Releasing here lets another queued package use all four download
+    // lanes while extraction/setup continues.
+    drop(download_permit.take());
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
-        let _ = fs::remove_dir_all(&download_path);
+        let _ = tokio::fs::remove_dir_all(&download_path).await;
         return Err(CANCELLED_MARKER.into());
     }
 
-    on_progress(80, "Extrayendo / copiando archivos...".into(), true);
+    let _install_stage = acquire_install_stage(flags).await?;
+    on_progress(80, "Extrayendo / copiando archivos...".into(), false);
 
     let is_archive = dest_file
         .extension()
@@ -1558,29 +1878,28 @@ pub async fn do_install(
             ),
         );
         let extract_dir = download_path.join("extract");
-        if extract_dir.exists() {
-            fs::remove_dir_all(&extract_dir).map_err(|e| e.to_string())?;
-        }
-        fs::create_dir_all(&extract_dir).map_err(|e| e.to_string())?;
+        let _ = tokio::fs::remove_dir_all(&extract_dir).await;
+        tokio::fs::create_dir_all(&extract_dir)
+            .await
+            .map_err(|error| error.to_string())?;
 
-        extract_archive(&dest_file, &extract_dir)?;
+        extract_archive_async(&dest_file, &extract_dir, flags).await?;
 
-        let items: Vec<_> = fs::read_dir(&extract_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .collect();
-        let src = if items.len() == 1 && items[0].path().is_dir() {
-            items[0].path()
-        } else {
-            extract_dir.clone()
-        };
-        match wrapped_installer(app, &src)? {
+        let (src, wrapped) = inspect_extracted_payload_async(app, &extract_dir).await?;
+        match wrapped {
             Some(installer) => {
                 on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
-                run_installer_over(app, &installer, flags, installed_at.as_deref())?;
+                run_installer_over_async(
+                    app,
+                    &installer,
+                    flags,
+                    installed_at.as_deref(),
+                    &mut on_cancelability,
+                )
+                .await?;
                 used_system_installer = true;
             }
-            None => swap_into_install_path(&src, &install_path)?,
+            None => swap_into_install_path_async(&src, &install_path).await?,
         }
     } else {
         let ext = dest_file
@@ -1591,17 +1910,27 @@ pub async fn do_install(
             on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
-            run_installer_over(app, &dest_file, flags, installed_at.as_deref())?;
+            run_installer_over_async(
+                app,
+                &dest_file,
+                flags,
+                installed_at.as_deref(),
+                &mut on_cancelability,
+            )
+            .await?;
             used_system_installer = true;
-        } else if looks_like_windows_executable(&dest_file) {
+        } else if looks_like_windows_executable_async(&dest_file).await? {
             // Kept as a separate case from the extension above because it is a
             // different claim: this one is what the file says it is rather than
             // what it is called. Battle.net's setup arrives as `getInstaller`,
             // and the store used to shelve it as a portable application and
             // report an installation that had never run.
             let renamed = dest_file.with_file_name(format!("{filename}.exe"));
-            fs::rename(&dest_file, &renamed)
-                .map_err(|error| format!("No se pudo preparar el instalador descargado: {error}"))?;
+            tokio::fs::rename(&dest_file, &renamed)
+                .await
+                .map_err(|error| {
+                    format!("No se pudo preparar el instalador descargado: {error}")
+                })?;
             crate::logger::info(
                 "installer",
                 format!(
@@ -1610,14 +1939,25 @@ pub async fn do_install(
                 ),
             );
             on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
-            run_installer_over(app, &renamed, flags, installed_at.as_deref())?;
+            run_installer_over_async(
+                app,
+                &renamed,
+                flags,
+                installed_at.as_deref(),
+                &mut on_cancelability,
+            )
+            .await?;
             used_system_installer = true;
         } else {
             let stage_dir = download_path.join("stage");
-            let _ = remove_path_robust(&stage_dir);
-            fs::create_dir_all(&stage_dir).map_err(|e| e.to_string())?;
-            fs::rename(&dest_file, stage_dir.join(&filename)).map_err(|e| e.to_string())?;
-            swap_into_install_path(&stage_dir, &install_path)?;
+            let _ = remove_path_robust_async(&stage_dir).await;
+            tokio::fs::create_dir_all(&stage_dir)
+                .await
+                .map_err(|error| error.to_string())?;
+            tokio::fs::rename(&dest_file, stage_dir.join(&filename))
+                .await
+                .map_err(|error| error.to_string())?;
+            swap_into_install_path_async(&stage_dir, &install_path).await?;
         }
     }
 
@@ -1628,8 +1968,8 @@ pub async fn do_install(
     if used_system_installer {
         // The actual application is installed by Windows in its vendor path.
         // Do not register the downloaded setup executable as if it were the app.
-        let _ = fs::remove_dir_all(&install_path);
-        let _ = fs::remove_dir_all(&download_path);
+        let _ = tokio::fs::remove_dir_all(&install_path).await;
+        let _ = tokio::fs::remove_dir_all(&download_path).await;
         // The setup is done, the installation is not: what follows is asking
         // Windows whether it took. Saying "instalado correctamente" here was the
         // first of the two success messages the user saw for one installation.
@@ -1637,7 +1977,7 @@ pub async fn do_install(
         return Ok(InstallOutcome::system_managed());
     }
 
-    on_progress(95, "Registrando aplicación...".into(), true);
+    on_progress(95, "Registrando aplicación...".into(), false);
 
     let version = resolved_version
         .or_else(|| {
@@ -1650,7 +1990,8 @@ pub async fn do_install(
     // Inspect architecture only once, after this package has been downloaded
     // and its own folder is complete. The cached executable avoids repeating
     // directory scans every time WinSlimCenter starts.
-    let launch_path = resolve_launchable_path(&install_path, preferred_executable)
+    let launch_path = resolve_launchable_path_async(&install_path, preferred_executable)
+        .await?
         .map(|path| path.to_string_lossy().to_string());
     crate::logger::info(
         "architecture",
@@ -1670,11 +2011,11 @@ pub async fn do_install(
         installed_at: Local::now().to_rfc3339(),
     };
 
-    let _ = fs::remove_dir_all(&download_path);
+    let _ = tokio::fs::remove_dir_all(&download_path).await;
 
     // Announcing the result is the finished dialog's job, once Windows has
     // confirmed it. Here the only honest thing to report is the step under way.
-    on_progress(100, "Comprobando la instalación...".into(), true);
+    on_progress(100, "Comprobando la instalación...".into(), false);
     Ok(InstallOutcome {
         changed: true,
         registered: Some((app_id.to_string(), registered)),
@@ -1765,6 +2106,14 @@ fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), Stri
             Err(error)
         }
     }
+}
+
+async fn swap_into_install_path_async(staged: &Path, install_path: &Path) -> Result<(), String> {
+    let staged = staged.to_path_buf();
+    let install_path = install_path.to_path_buf();
+    tokio::task::spawn_blocking(move || swap_into_install_path(&staged, &install_path))
+        .await
+        .map_err(|error| format!("No se pudo completar la copia de la aplicación: {error}"))?
 }
 
 /// Remove download and staging artifacts left by a cancelled or failed
@@ -1950,10 +2299,7 @@ fn remove_path_robust(target: &Path) -> Result<(), String> {
     })
 }
 
-pub fn cleanup_failed_install(
-    app_id: &str,
-    remove_install_path: bool,
-) -> Result<(), String> {
+pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result<(), String> {
     crate::logger::info(
         "cleanup",
         format!(
@@ -2024,9 +2370,21 @@ pub fn cleanup_package_download(app_id: &str) -> Result<(), String> {
 }
 
 pub fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
+    extract_zip_with_cancel(zip_path, dest, None)
+}
+
+fn extract_zip_with_cancel(
+    zip_path: &Path,
+    dest: &Path,
+    flags: Option<&DownloadFlags>,
+) -> Result<(), String> {
     let file = fs::File::open(zip_path).map_err(|e| e.to_string())?;
     let mut archive = ZipArchive::new(file).map_err(|e| e.to_string())?;
+    let mut buffer = vec![0_u8; 256 * 1024];
     for i in 0..archive.len() {
+        if flags.is_some_and(|flags| flags.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+            return Err(CANCELLED_MARKER.into());
+        }
         let mut file = archive.by_index(i).map_err(|e| e.to_string())?;
         let outpath = match file.enclosed_name() {
             Some(p) => dest.join(p),
@@ -2038,29 +2396,52 @@ pub fn extract_zip(zip_path: &Path, dest: &Path) -> Result<(), String> {
             if let Some(parent) = outpath.parent() {
                 fs::create_dir_all(parent).map_err(|e| e.to_string())?;
             }
-            let mut outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
-            std::io::copy(&mut file, &mut outfile).map_err(|e| e.to_string())?;
+            let outfile = fs::File::create(&outpath).map_err(|e| e.to_string())?;
+            let mut outfile = BufWriter::with_capacity(256 * 1024, outfile);
+            loop {
+                if flags.is_some_and(|flags| flags.cancel.load(std::sync::atomic::Ordering::SeqCst))
+                {
+                    return Err(CANCELLED_MARKER.into());
+                }
+                let read = file.read(&mut buffer).map_err(|e| e.to_string())?;
+                if read == 0 {
+                    break;
+                }
+                std::io::Write::write_all(&mut outfile, &buffer[..read])
+                    .map_err(|e| e.to_string())?;
+            }
+            std::io::Write::flush(&mut outfile).map_err(|e| e.to_string())?;
         }
     }
     Ok(())
 }
 
-fn extract_archive(archive_path: &Path, dest: &Path) -> Result<(), String> {
+fn extract_archive(
+    archive_path: &Path,
+    dest: &Path,
+    flags: Option<&DownloadFlags>,
+) -> Result<(), String> {
     let extension = archive_path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("");
     if extension.eq_ignore_ascii_case("zip") {
-        return extract_zip(archive_path, dest);
+        return extract_zip_with_cancel(archive_path, dest, flags);
     }
     if extension.eq_ignore_ascii_case("7z") {
         let archive = archive_path.to_string_lossy().to_string();
         let destination = dest.to_string_lossy().to_string();
-        let output = crate::process::hidden_output(
-            "tar.exe",
-            &["-xf", archive.as_str(), "-C", destination.as_str()],
-        )
+        let arguments = ["-xf", archive.as_str(), "-C", destination.as_str()];
+        let output = match flags {
+            Some(flags) => {
+                crate::process::hidden_output_cancelable("tar.exe", &arguments, &flags.cancel)
+            }
+            None => crate::process::hidden_output("tar.exe", &arguments),
+        }
         .map_err(|error| format!("Windows no pudo iniciar la extracción 7z: {error}"))?;
+        if flags.is_some_and(|flags| flags.cancel.load(std::sync::atomic::Ordering::SeqCst)) {
+            return Err(CANCELLED_MARKER.into());
+        }
         if output.success() {
             return Ok(());
         }
@@ -2072,6 +2453,19 @@ fn extract_archive(archive_path: &Path, dest: &Path) -> Result<(), String> {
         });
     }
     Err("Formato de archivo comprimido no compatible".into())
+}
+
+async fn extract_archive_async(
+    archive_path: &Path,
+    dest: &Path,
+    flags: &Arc<DownloadFlags>,
+) -> Result<(), String> {
+    let archive_path = archive_path.to_path_buf();
+    let dest = dest.to_path_buf();
+    let flags = flags.clone();
+    tokio::task::spawn_blocking(move || extract_archive(&archive_path, &dest, Some(&flags)))
+        .await
+        .map_err(|error| format!("No se pudo completar la extracción: {error}"))?
 }
 
 pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
@@ -2171,20 +2565,20 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
         ),
     );
 
-    let code = match crate::process::run_hidden_and_wait(&executable, &arguments, executable.parent())
-    {
-        Ok(code) => code,
-        // Windows refuses to even start a per-machine uninstaller from a process
-        // that is not elevated. The retry below already knows how to ask for UAC,
-        // so the refusal is carried as the exit code it corresponds to.
-        Err(error) if error.raw_os_error() == Some(740) => Some(740),
-        Err(error) => {
-            return Err(format!(
-                "No se pudo ejecutar el desinstalador '{}': {error}",
-                executable.display()
-            ))
-        }
-    };
+    let code =
+        match crate::process::run_hidden_and_wait(&executable, &arguments, executable.parent()) {
+            Ok(code) => code,
+            // Windows refuses to even start a per-machine uninstaller from a process
+            // that is not elevated. The retry below already knows how to ask for UAC,
+            // so the refusal is carried as the exit code it corresponds to.
+            Err(error) if error.raw_os_error() == Some(740) => Some(740),
+            Err(error) => {
+                return Err(format!(
+                    "No se pudo ejecutar el desinstalador '{}': {error}",
+                    executable.display()
+                ))
+            }
+        };
     crate::logger::info(
         "uninstall-process",
         format!("Comando registrado finalizado: código={code:?}"),
@@ -2206,11 +2600,8 @@ pub fn uninstall_system_app(uninstall_command: &str) -> Result<(), String> {
             "uninstall-process",
             format!("El desinstalador requiere elevación (código {code:?}); reintentando con UAC"),
         );
-        let elevated_code = crate::process::run_elevated_and_wait(
-            &executable,
-            &arguments,
-            executable.parent(),
-        )?;
+        let elevated_code =
+            crate::process::run_elevated_and_wait(&executable, &arguments, executable.parent())?;
         let elevated_ok = elevated_code == Some(0)
             || (is_msi
                 && matches!(
@@ -2422,18 +2813,17 @@ pub fn validate_removable_install_dir(install_dir: &Path, names: &[String]) -> R
     // A root itself is a container for many programs, never one program's folder.
     // `%LOCALAPPDATA%\Programs` must be rejected even though it also sits below
     // `%LOCALAPPDATA%`, which is a root as well.
-    if roots
-        .iter()
-        .any(|root| normalized_path_key(root) == target)
-    {
+    if roots.iter().any(|root| normalized_path_key(root) == target) {
         return Err(format!(
             "Se bloqueó el acceso a una carpeta general protegida: {}",
             install_dir.display()
         ));
     }
-    let directly_in_a_root = install_dir
-        .parent()
-        .is_some_and(|parent| roots.iter().any(|root| normalized_path_key(root) == normalized_path_key(parent)));
+    let directly_in_a_root = install_dir.parent().is_some_and(|parent| {
+        roots
+            .iter()
+            .any(|root| normalized_path_key(root) == normalized_path_key(parent))
+    });
     if directly_in_a_root || crate::residue::folder_matches_application(install_dir, names) {
         return Ok(());
     }
@@ -2825,30 +3215,70 @@ enum ExecutableArchitecture {
     Unknown,
 }
 
-fn executable_architecture(path: &Path) -> ExecutableArchitecture {
+/// The two PE fields used to choose a launcher. Reading them together means a
+/// candidate is opened once, rather than once for architecture and again for
+/// subsystem while ranking a directory.
+#[derive(Debug, Clone, Copy)]
+struct ExecutableMetadata {
+    architecture: ExecutableArchitecture,
+    subsystem: ExecutableSubsystem,
+}
+
+impl Default for ExecutableMetadata {
+    fn default() -> Self {
+        Self {
+            architecture: ExecutableArchitecture::Unknown,
+            subsystem: ExecutableSubsystem::Unknown,
+        }
+    }
+}
+
+fn executable_metadata(path: &Path) -> ExecutableMetadata {
     use std::io::{Read, Seek, SeekFrom};
 
     let Ok(mut file) = fs::File::open(path) else {
-        return ExecutableArchitecture::Unknown;
+        return ExecutableMetadata::default();
     };
     let mut dos = [0_u8; 64];
     if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" {
-        return ExecutableArchitecture::Unknown;
+        return ExecutableMetadata::default();
     }
     let pe_offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
     if file.seek(SeekFrom::Start(pe_offset)).is_err() {
-        return ExecutableArchitecture::Unknown;
+        return ExecutableMetadata::default();
     }
     let mut header = [0_u8; 6];
     if file.read_exact(&mut header).is_err() || &header[..4] != b"PE\0\0" {
-        return ExecutableArchitecture::Unknown;
+        return ExecutableMetadata::default();
     }
-    match u16::from_le_bytes([header[4], header[5]]) {
+    let architecture = match u16::from_le_bytes([header[4], header[5]]) {
         0x8664 => ExecutableArchitecture::X64,
         0x014c => ExecutableArchitecture::X86,
         0xaa64 | 0x01c0 | 0x01c4 => ExecutableArchitecture::Arm,
         _ => ExecutableArchitecture::Unknown,
+    };
+    let subsystem = if file.seek(SeekFrom::Start(pe_offset + 4 + 20 + 68)).is_ok() {
+        let mut value = [0_u8; 2];
+        if file.read_exact(&mut value).is_ok() {
+            match u16::from_le_bytes(value) {
+                2 => ExecutableSubsystem::Gui,
+                3 => ExecutableSubsystem::Console,
+                _ => ExecutableSubsystem::Unknown,
+            }
+        } else {
+            ExecutableSubsystem::Unknown
+        }
+    } else {
+        ExecutableSubsystem::Unknown
+    };
+    ExecutableMetadata {
+        architecture,
+        subsystem,
     }
+}
+
+fn executable_architecture(path: &Path) -> ExecutableArchitecture {
+    executable_metadata(path).architecture
 }
 
 pub fn executable_architecture_label(path: &Path) -> &'static str {
@@ -2861,7 +3291,11 @@ pub fn executable_architecture_label(path: &Path) -> &'static str {
 }
 
 fn executable_architecture_score(path: &Path) -> i32 {
-    match executable_architecture(path) {
+    executable_architecture_score_with(path, executable_architecture(path))
+}
+
+fn executable_architecture_score_with(path: &Path, architecture: ExecutableArchitecture) -> i32 {
+    match architecture {
         ExecutableArchitecture::X64 => return 1_000,
         ExecutableArchitecture::X86 => return -1_000,
         ExecutableArchitecture::Arm => return -2_000,
@@ -2905,34 +3339,6 @@ enum ExecutableSubsystem {
     Unknown,
 }
 
-/// Reads the Subsystem field of the PE optional header, which sits at the same
-/// offset in the 32- and 64-bit variants: four bytes of signature, twenty of
-/// COFF header, and sixty-eight into the optional header itself.
-fn executable_subsystem(path: &Path) -> ExecutableSubsystem {
-    use std::io::{Read, Seek, SeekFrom};
-
-    let Ok(mut file) = fs::File::open(path) else {
-        return ExecutableSubsystem::Unknown;
-    };
-    let mut dos = [0_u8; 64];
-    if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" {
-        return ExecutableSubsystem::Unknown;
-    }
-    let pe_offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
-    if file.seek(SeekFrom::Start(pe_offset + 4 + 20 + 68)).is_err() {
-        return ExecutableSubsystem::Unknown;
-    }
-    let mut subsystem = [0_u8; 2];
-    if file.read_exact(&mut subsystem).is_err() {
-        return ExecutableSubsystem::Unknown;
-    }
-    match u16::from_le_bytes(subsystem) {
-        2 => ExecutableSubsystem::Gui,
-        3 => ExecutableSubsystem::Console,
-        _ => ExecutableSubsystem::Unknown,
-    }
-}
-
 /// How much the subsystem recommends an executable as the one to open.
 ///
 /// What the user asks for when pressing "Abrir" is the program with a window.
@@ -2942,8 +3348,8 @@ fn executable_subsystem(path: &Path) -> ExecutableSubsystem {
 /// Deliberately worth less than the executable named after its own folder: a
 /// command-line program is entitled to be the answer when the installation is
 /// plainly named after it, and only then.
-fn subsystem_score(path: &Path) -> i32 {
-    match executable_subsystem(path) {
+fn subsystem_score(subsystem: ExecutableSubsystem) -> i32 {
+    match subsystem {
         ExecutableSubsystem::Gui => 45,
         ExecutableSubsystem::Console => -20,
         ExecutableSubsystem::Unknown => 0,
@@ -3016,14 +3422,20 @@ pub fn prefer_x64_executable(path: &Path) -> Option<PathBuf> {
 pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
     let mut exes = Vec::new();
     collect_exes(install_dir, &mut exes);
-    exes.retain(|path| {
-        !is_installer_artifact(path) && executable_architecture_score(path) >= -1_000
-    });
-    // Scoring reads each file's headers, so it runs once per candidate instead
-    // of on every comparison the sort makes.
     let mut ranked = exes
         .into_iter()
-        .map(|path| (launcher_score(install_dir, &path), path))
+        .filter(|path| !is_installer_artifact(path))
+        .filter_map(|path| {
+            let metadata = executable_metadata(&path);
+            let architecture_score =
+                executable_architecture_score_with(&path, metadata.architecture);
+            (architecture_score >= -1_000).then(|| {
+                (
+                    launcher_score(install_dir, &path, architecture_score, metadata.subsystem),
+                    path,
+                )
+            })
+        })
         .collect::<Vec<_>>();
     // Candidates that score the same are ordered by path rather than by
     // whatever order the directory happened to be read in: Maxima's launcher
@@ -3035,7 +3447,12 @@ pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
 }
 
 /// How much an executable looks like the one the user means by "open it".
-fn launcher_score(install_dir: &Path, path: &Path) -> i32 {
+fn launcher_score(
+    install_dir: &Path,
+    path: &Path,
+    architecture_score: i32,
+    subsystem: ExecutableSubsystem,
+) -> i32 {
     let name = path
         .file_name()
         .and_then(|n| n.to_str())
@@ -3045,8 +3462,8 @@ fn launcher_score(install_dir: &Path, path: &Path) -> i32 {
     // Architecture decides between variants of the same application, but
     // must not make an unrelated x64 helper outrank the real neutral-name
     // launcher.
-    s += executable_architecture_score(path) / 3;
-    s += subsystem_score(path);
+    s += architecture_score / 3;
+    s += subsystem_score(subsystem);
     if name.contains("setup") || name.contains("installer") || name.contains("install") {
         s -= 50;
     }
@@ -3215,7 +3632,8 @@ fn wrapped_installer(app: &Value, extracted: &Path) -> Result<Option<PathBuf>, S
             ),
         );
     }
-    let wrapper_declared = declared_name.is_some() || declared.and_then(Value::as_bool) == Some(true);
+    let wrapper_declared =
+        declared_name.is_some() || declared.and_then(Value::as_bool) == Some(true);
 
     let entries: Vec<PathBuf> = fs::read_dir(extracted)
         .map_err(|error| format!("No se pudo leer el paquete extraído: {error}"))?
@@ -3259,6 +3677,26 @@ fn wrapped_installer(app: &Value, extracted: &Path) -> Result<Option<PathBuf>, S
     }
 }
 
+#[derive(Clone, Hash, PartialEq, Eq)]
+struct LaunchCacheKey {
+    root: PathBuf,
+    preferred: Option<String>,
+}
+
+struct LaunchCacheEntry {
+    root_modified: Option<std::time::SystemTime>,
+    resolved: PathBuf,
+    stored_at: std::time::Instant,
+}
+
+static LAUNCH_CACHE: OnceLock<parking_lot::Mutex<HashMap<LaunchCacheKey, LaunchCacheEntry>>> =
+    OnceLock::new();
+const LAUNCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn launch_cache() -> &'static parking_lot::Mutex<HashMap<LaunchCacheKey, LaunchCacheEntry>> {
+    LAUNCH_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+}
+
 pub fn resolve_launchable_path(
     install_path: &Path,
     preferred_executable: Option<&str>,
@@ -3266,22 +3704,69 @@ pub fn resolve_launchable_path(
     if !install_path.exists() {
         return None;
     }
-    if install_path.is_file() {
-        return (!is_installer_artifact(install_path)
+    let cache_key = LaunchCacheKey {
+        root: install_path.to_path_buf(),
+        preferred: preferred_executable
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.to_ascii_lowercase()),
+    };
+    let root_modified = install_path
+        .metadata()
+        .ok()
+        .and_then(|metadata| metadata.modified().ok());
+    {
+        let mut cache = launch_cache().lock();
+        if let Some(entry) = cache.get(&cache_key) {
+            let fresh = entry.root_modified == root_modified
+                && entry.stored_at.elapsed() < LAUNCH_CACHE_TTL
+                && entry.resolved.is_file();
+            if fresh {
+                return Some(entry.resolved.clone());
+            }
+        }
+        cache.remove(&cache_key);
+    }
+
+    let resolved = if install_path.is_file() {
+        (!is_installer_artifact(install_path)
             && install_path
                 .extension()
                 .and_then(|value| value.to_str())
                 .map(|value| value.eq_ignore_ascii_case("exe"))
                 .unwrap_or(false))
         .then(|| prefer_x64_executable(install_path))
-        .flatten();
-    }
-    if let Some(relative) = preferred_executable.filter(|value| !value.trim().is_empty()) {
-        if let Some(executable) = preferred_in_tree(install_path, relative) {
-            return Some(executable);
+        .flatten()
+    } else {
+        let preferred = preferred_executable
+            .filter(|value| !value.trim().is_empty())
+            .and_then(|relative| preferred_in_tree(install_path, relative));
+        preferred.or_else(|| find_executable(install_path))
+    };
+
+    // A miss is deliberately not cached. Installers commonly create their
+    // final executable inside an already existing subdirectory, and changing a
+    // descendant does not update the root directory's timestamp. Remembering a
+    // negative answer here could therefore hide a program that appeared a
+    // moment later for the whole TTL.
+    if let Some(executable) = resolved.as_ref() {
+        let mut cache = launch_cache().lock();
+        if cache.len() >= 512 {
+            cache.retain(|_, entry| entry.stored_at.elapsed() < LAUNCH_CACHE_TTL);
+            if cache.len() >= 512 {
+                cache.clear();
+            }
         }
+        cache.insert(
+            cache_key,
+            LaunchCacheEntry {
+                root_modified,
+                resolved: executable.clone(),
+                stored_at: std::time::Instant::now(),
+            },
+        );
     }
-    find_executable(install_path)
+    resolved
 }
 
 /// The executable the catalog names, wherever the installation keeps it.
@@ -3318,23 +3803,51 @@ fn preferred_in_tree(install_path: &Path, relative: &str) -> Option<PathBuf> {
         .and_then(|found| prefer_x64_executable(&found))
 }
 
+const MAX_EXECUTABLE_DEPTH: usize = 12;
+
 fn collect_exes(dir: &Path, out: &mut Vec<PathBuf>) {
+    collect_exes_at_depth(dir, out, 0);
+}
+
+fn collect_exes_at_depth(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     let Ok(rd) = fs::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
         let path = entry.path();
-        if path.is_dir() {
-            collect_exes(&path, out);
-        } else if path
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.eq_ignore_ascii_case("exe"))
-            .unwrap_or(false)
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            if depth < MAX_EXECUTABLE_DEPTH && !directory_is_reparse_point(&path) {
+                collect_exes_at_depth(&path, out, depth + 1);
+            }
+        } else if (!file_type.is_symlink() || path.is_file())
+            && path
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.eq_ignore_ascii_case("exe"))
+                .unwrap_or(false)
         {
             out.push(path);
         }
     }
+}
+
+#[cfg(windows)]
+fn directory_is_reparse_point(path: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .unwrap_or(true)
+}
+
+#[cfg(not(windows))]
+fn directory_is_reparse_point(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .map(|metadata| metadata.file_type().is_symlink())
+        .unwrap_or(true)
 }
 
 pub fn launch_path_with_preferred(
@@ -3644,7 +4157,10 @@ mod tests {
         // Recognized by its name, without the catalog saying anything.
         let setup = test_dir.join("LosslessScaling_3.2.2_Setup.exe");
         fs::write(&setup, []).unwrap();
-        assert_eq!(wrapped_installer(&json!({}), &test_dir).unwrap(), Some(setup));
+        assert_eq!(
+            wrapped_installer(&json!({}), &test_dir).unwrap(),
+            Some(setup)
+        );
 
         // A neutrally named setup needs the catalog to declare the wrapper.
         let renamed = test_dir.join("LosslessScaling_3.2.2_Setup.exe");
@@ -3665,8 +4181,10 @@ mod tests {
 
     #[test]
     fn a_declared_wrapper_without_an_installer_fails_instead_of_installing_leftovers() {
-        let test_dir = std::env::temp_dir()
-            .join(format!("winslimcenter-wrapper-empty-{}", std::process::id()));
+        let test_dir = std::env::temp_dir().join(format!(
+            "winslimcenter-wrapper-empty-{}",
+            std::process::id()
+        ));
         let _ = fs::remove_dir_all(&test_dir);
         fs::create_dir_all(&test_dir).unwrap();
         fs::write(test_dir.join("readme.txt"), []).unwrap();
@@ -3715,7 +4233,10 @@ mod tests {
         for code in [2, 5, 6] {
             let error =
                 interpret_installer_exit(&app, InstallerFamily::InnoSetup, Some(code)).unwrap_err();
-            assert!(is_install_cancelled(&error), "Inno {code} debería ser cancelación");
+            assert!(
+                is_install_cancelled(&error),
+                "Inno {code} debería ser cancelación"
+            );
             assert!(error.contains("Cancelaste la instalación de Ejemplo"));
             assert!(!display_install_error(&error).contains("código"));
         }
@@ -3746,7 +4267,8 @@ mod tests {
         }
 
         // The same code 2 is NOT a cancellation for an unknown technology.
-        let unknown = interpret_installer_exit(&app, InstallerFamily::Unknown, Some(2)).unwrap_err();
+        let unknown =
+            interpret_installer_exit(&app, InstallerFamily::Unknown, Some(2)).unwrap_err();
         assert!(!is_install_cancelled(&unknown));
         assert!(!is_install_interrupted(&unknown));
     }
@@ -3817,9 +4339,8 @@ mod tests {
         assert!(busy.contains("junto al reloj"));
         assert!(!busy.contains("1603"));
         // Numbers nobody has a sentence for still say what they are.
-        let unknown =
-            interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(1234))
-                .unwrap_err();
+        let unknown = interpret_installer_exit(&app, InstallerFamily::WindowsInstaller, Some(1234))
+            .unwrap_err();
         assert!(unknown.contains("1234"));
     }
 
@@ -3834,15 +4355,14 @@ mod tests {
     #[test]
     fn the_catalog_can_still_declare_extra_cancel_codes() {
         let app = json!({ "name": "mGBA", "installer_cancel_exit_codes": [1] });
-        let error =
-            interpret_installer_exit(&app, InstallerFamily::Unknown, Some(1)).unwrap_err();
+        let error = interpret_installer_exit(&app, InstallerFamily::Unknown, Some(1)).unwrap_err();
         assert!(is_install_cancelled(&error));
     }
 
     #[test]
     fn installer_technology_is_recognized_from_its_binary_markers() {
-        let test_dir = std::env::temp_dir()
-            .join(format!("winslimcenter-family-test-{}", std::process::id()));
+        let test_dir =
+            std::env::temp_dir().join(format!("winslimcenter-family-test-{}", std::process::id()));
         fs::create_dir_all(&test_dir).unwrap();
 
         let write = |name: &str, marker: &[u8]| {
@@ -3905,7 +4425,9 @@ mod tests {
         // Cleaning shortcuts must be a no-op rather than a PowerShell exception.
         assert_eq!(cleanup_shortcuts_for_install_target(packaged), Ok(0));
         // And the folder fallback must refuse it instead of guessing a path.
-        assert!(uninstall_from_install_path(packaged, &crate::residue::AppIdentity::default()).is_err());
+        assert!(
+            uninstall_from_install_path(packaged, &crate::residue::AppIdentity::default()).is_err()
+        );
         // Declared residual paths must not anchor to it either.
         let app = json!({ "residual_paths": ["{install_dir}\\cache"] });
         assert!(cleanup_declared_residual_paths(&app, packaged).is_err());
@@ -3934,7 +4456,9 @@ mod tests {
             PathBuf::from(&system_root).join("System32").join("drivers"),
             PathBuf::from(&program_files),
             PathBuf::from(&program_files).join("Common Files"),
-            PathBuf::from(&program_files).join("Common Files").join("Vendor"),
+            PathBuf::from(&program_files)
+                .join("Common Files")
+                .join("Vendor"),
         ] {
             assert!(
                 validate_removable_install_dir(&blocked, &[]).is_err(),
@@ -3974,10 +4498,11 @@ mod tests {
             .join("win-capture");
         assert!(validate_removable_install_dir(&plugin_dir, &names).is_err());
         // The program's own folder is still removable.
-        assert!(
-            validate_removable_install_dir(&PathBuf::from(&program_files).join("obs-studio"), &names)
-                .is_ok()
-        );
+        assert!(validate_removable_install_dir(
+            &PathBuf::from(&program_files).join("obs-studio"),
+            &names
+        )
+        .is_ok());
     }
 
     #[test]
@@ -4087,7 +4612,9 @@ mod tests {
         let chrome = upgrades
             .iter()
             .find(|upgrade| upgrade.matches("google.chrome"))
-            .expect("WinGet prints the identifier as it pleases; the catalog need not match its case");
+            .expect(
+                "WinGet prints the identifier as it pleases; the catalog need not match its case",
+            );
         assert_eq!(chrome.installed, "151.0.7922.109");
         assert_eq!(chrome.available, "151.0.7922.138");
         // A package missing from the table has no update pending.
@@ -4124,6 +4651,91 @@ mod tests {
         ));
         assert!(!winget_says_already_current(Some(1), "something broke"));
         assert!(!winget_says_not_installed(Some(1), "something broke"));
+    }
+
+    #[test]
+    fn winget_only_retries_when_include_pinned_is_unsupported() {
+        let unsupported = crate::process::CapturedOutput {
+            stdout: Vec::new(),
+            stderr: b"Unrecognized argument: --include-pinned".to_vec(),
+            code: Some(1),
+        };
+        assert!(winget_rejects_include_pinned(&unsupported));
+
+        let unsupported_english = crate::process::CapturedOutput {
+            stdout: Vec::new(),
+            stderr: b"Argument name was not recognized for the current command: '--include-pinned'"
+                .to_vec(),
+            code: Some(1),
+        };
+        assert!(winget_rejects_include_pinned(&unsupported_english));
+
+        let unsupported_spanish = crate::process::CapturedOutput {
+            stdout: Vec::new(),
+            stderr:
+                "No se reconoció el nombre del argumento para el comando actual: '--include-pinned'"
+                    .as_bytes()
+                    .to_vec(),
+            code: Some(1),
+        };
+        assert!(winget_rejects_include_pinned(&unsupported_spanish));
+
+        let real_failure = crate::process::CapturedOutput {
+            stdout: Vec::new(),
+            stderr: b"Failed when opening source; --include-pinned was requested".to_vec(),
+            code: Some(1),
+        };
+        assert!(!winget_rejects_include_pinned(&real_failure));
+    }
+
+    #[test]
+    fn winget_progress_follows_the_new_installer_file_after_metadata() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-winget-progress-{}-{}",
+            std::process::id(),
+            Local::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+        let package = root.join("vendor.demo.1.0");
+        fs::create_dir_all(&package).unwrap();
+        let metadata = package.join("manifest.yaml");
+        fs::write(&metadata, b"metadata").unwrap();
+
+        let mut probe = WingetDownloadProbe::new("Vendor.Demo");
+        probe.root = root.clone();
+        assert_eq!(
+            probe.downloaded_bytes(std::time::SystemTime::UNIX_EPOCH),
+            Some(8)
+        );
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let installer = package.join("setup.exe");
+        fs::write(&installer, vec![0_u8; 4096]).unwrap();
+        assert_eq!(
+            probe.downloaded_bytes(std::time::SystemTime::UNIX_EPOCH),
+            Some(4096),
+            "el manifiesto aún existe, pero el progreso debe seguir el archivo nuevo"
+        );
+        assert_eq!(probe.active_file.as_deref(), Some(installer.as_path()));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cancellation_while_waiting_for_the_install_stage_is_preserved() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let held = INSTALL_STAGE.acquire().await.unwrap();
+            let flags = DownloadFlags::new();
+            flags
+                .cancel
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let result = acquire_install_stage(&flags).await;
+            assert_eq!(result.err().as_deref(), Some(CANCELLED_MARKER));
+            drop(held);
+        });
     }
 
     #[test]

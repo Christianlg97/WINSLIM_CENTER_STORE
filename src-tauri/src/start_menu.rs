@@ -288,8 +288,10 @@ mod tests {
 
     #[test]
     fn publishing_something_that_is_not_there_fails_instead_of_leaving_a_dead_entry() {
-        let root = std::env::temp_dir()
-            .join(format!("winslimcenter-startmenu-dead-{}", std::process::id()));
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-startmenu-dead-{}",
+            std::process::id()
+        ));
         let programs = root.join("Programs");
         std::fs::create_dir_all(&programs).unwrap();
 

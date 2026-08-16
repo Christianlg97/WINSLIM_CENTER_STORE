@@ -79,15 +79,34 @@ echo [INFO] CLI de Tauri: cargo-tauri
 goto :cli_ready
 
 :cli_ready
+set "TAURI_PROD_CONFIG="
+where node.exe >nul 2>&1
+if errorlevel 1 goto :frontend_ready
+
+echo [INFO] Preparando frontend optimizado...
+call node "%~dp0scratch\build_frontend.mjs"
+if errorlevel 1 goto :err_build
+set "TAURI_PROD_CONFIG=%~dp0src-tauri\tauri.prod.conf.json"
+
+:frontend_ready
 echo [INFO] Iniciando compilacion de WinSlimCenter...
 if "%TAURI_MODE%"=="cargo" goto :build_with_cargo
 
-call node "%TAURI_JS%" build
+if defined TAURI_PROD_CONFIG (
+  call node "%TAURI_JS%" build --config "%TAURI_PROD_CONFIG%"
+) else (
+  call node "%TAURI_JS%" build
+)
 if errorlevel 1 goto :err_build
 goto :build_done
 
 :build_with_cargo
-call cargo tauri build
+if defined TAURI_PROD_CONFIG (
+  call cargo tauri build --config "%TAURI_PROD_CONFIG%"
+) else (
+  echo [ADVERTENCIA] Node.js no esta disponible; se compilara el frontend fuente sin minificar.
+  call cargo tauri build
+)
 if errorlevel 1 goto :err_build
 
 :build_done

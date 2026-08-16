@@ -10,6 +10,7 @@
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 /// The folder inside the Start Menu where these shortcuts are grouped, so that
 /// uninstalling one removes a folder the store itself created.
@@ -163,16 +164,35 @@ fn ico_from_png(png: &[u8]) -> Option<Vec<u8>> {
     Some(ico)
 }
 
-/// Downloads the catalog icon and leaves it beside the shortcut as an `.ico`.
+/// The application, kept so that the icons bundled with the interface can be
+/// read from here.
 ///
-/// A missing icon is not a failed installation: the shortcut still works, it
-/// just wears the browser's icon, so every problem here ends in `None`.
-async fn prepare_icon(entry: &Value, directory: &Path) -> Option<PathBuf> {
-    let url = entry.get("icon_url").and_then(Value::as_str)?;
-    let response = reqwest::Client::builder()
-        .build()
+/// The catalog's icons ship inside the executable as part of the frontend, and
+/// only Tauri knows how to open that shelf.
+static APPLICATION: OnceLock<tauri::AppHandle> = OnceLock::new();
+
+/// Remembers the application while it starts, before anything can install.
+pub fn remember_application(handle: tauri::AppHandle) {
+    let _ = APPLICATION.set(handle);
+}
+
+/// The icon the catalog names, whether it travels inside the executable or
+/// lives on the web.
+///
+/// An entry that names a file, `assets/catalog/netflix.png` and the like, is
+/// pointing at the interface's own resources; anything with a scheme is a
+/// download. A catalog edited by hand may still hold either.
+async fn icon_bytes(reference: &str) -> Option<Vec<u8>> {
+    if !reference.contains("://") {
+        let asset = APPLICATION
+            .get()?
+            .asset_resolver()
+            .get(reference.trim_start_matches('/').to_string())?;
+        return Some(asset.bytes);
+    }
+    let response = crate::download::http_client()
         .ok()?
-        .get(url)
+        .get(reference)
         .timeout(std::time::Duration::from_secs(20))
         .send()
         .await
@@ -180,10 +200,19 @@ async fn prepare_icon(entry: &Value, directory: &Path) -> Option<PathBuf> {
     if !response.status().is_success() {
         return None;
     }
-    let bytes = response.bytes().await.ok()?;
+    Some(response.bytes().await.ok()?.to_vec())
+}
+
+/// Leaves the catalog icon beside the shortcut as an `.ico`.
+///
+/// A missing icon is not a failed installation: the shortcut still works, it
+/// just wears the browser's icon, so every problem here ends in `None`.
+async fn prepare_icon(entry: &Value, directory: &Path) -> Option<PathBuf> {
+    let reference = entry.get("icon_url").and_then(Value::as_str)?;
+    let bytes = icon_bytes(reference).await?;
     let ico = shortcut_icon(&bytes)?;
     let path = directory.join("icon.ico");
-    std::fs::write(&path, ico).ok()?;
+    tokio::fs::write(&path, ico).await.ok()?;
     Some(path)
 }
 
@@ -201,7 +230,8 @@ pub async fn install(entry: &Value) -> Result<crate::store::InstalledInfo, Strin
         .ok_or("Windows no indica cuál es el navegador predeterminado del usuario")?;
 
     let directory = install_dir(app_id);
-    std::fs::create_dir_all(&directory)
+    tokio::fs::create_dir_all(&directory)
+        .await
         .map_err(|error| format!("No se pudo crear {}: {error}", directory.display()))?;
     let icon = prepare_icon(entry, &directory).await;
     if icon.is_none() {
@@ -212,23 +242,39 @@ pub async fn install(entry: &Value) -> Result<crate::store::InstalledInfo, Strin
     }
 
     let arguments = arguments_for(&browser, &url);
-    let extras = crate::start_menu::Extras {
-        arguments: Some(arguments.as_str()),
-        icon: icon.as_deref(),
-    };
-    let shortcut =
-        crate::start_menu::publish_with(&start_menu_folder(name), name, &browser.path, &extras)?;
-    // The desktop copy is what a browser leaves too, and it is the one the user
-    // drags to the taskbar: Windows stopped letting a program pin anything there
-    // by itself years ago.
-    if let Some(path) = desktop_shortcut(name) {
-        if let Err(error) = crate::start_menu::write_shortcut(&path, &browser.path, name, &extras) {
-            crate::logger::warn(
-                "webapp",
-                format!("No se pudo crear el acceso directo del escritorio: {error}"),
-            );
+    let shortcut_name = name.to_string();
+    let shortcut_browser = browser.path.clone();
+    let shortcut_arguments = arguments.clone();
+    let shortcut_icon = icon.clone();
+    // Shortcut creation invokes Windows' shell integration and is blocking.
+    // Keep it away from the async workers that also drive download progress.
+    let shortcut = tokio::task::spawn_blocking(move || {
+        let extras = crate::start_menu::Extras {
+            arguments: Some(shortcut_arguments.as_str()),
+            icon: shortcut_icon.as_deref(),
+        };
+        let shortcut = crate::start_menu::publish_with(
+            &start_menu_folder(&shortcut_name),
+            &shortcut_name,
+            &shortcut_browser,
+            &extras,
+        )?;
+        // The desktop copy is what a browser leaves too, and it is the one the
+        // user drags to the taskbar.
+        if let Some(path) = desktop_shortcut(&shortcut_name) {
+            if let Err(error) =
+                crate::start_menu::write_shortcut(&path, &shortcut_browser, &shortcut_name, &extras)
+            {
+                crate::logger::warn(
+                    "webapp",
+                    format!("No se pudo crear el acceso directo del escritorio: {error}"),
+                );
+            }
         }
-    }
+        Ok::<PathBuf, String>(shortcut)
+    })
+    .await
+    .map_err(|error| format!("No se pudo preparar el acceso directo: {error}"))??;
     crate::logger::info(
         "webapp",
         format!(
@@ -357,7 +403,13 @@ mod tests {
         );
         let output = crate::process::hidden_output(
             "powershell.exe",
-            &["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script.as_str()],
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                script.as_str(),
+            ],
         )
         .unwrap();
         let text = String::from_utf8_lossy(&output.stdout);
@@ -390,10 +442,19 @@ mod tests {
 
         let shortcut = PathBuf::from(&info.install_path);
         assert!(shortcut.is_file(), "el acceso directo debe existir");
-        assert!(shortcut_of(&entry).is_some(), "y la tienda debe encontrarlo");
+        assert!(
+            shortcut_of(&entry).is_some(),
+            "y la tienda debe encontrarlo"
+        );
         let (target, arguments) = shortcut_fields(&shortcut);
-        assert_eq!(target.to_lowercase(), browser.path.to_string_lossy().to_lowercase());
-        assert_eq!(arguments, arguments_for(&browser, "https://example.com/login"));
+        assert_eq!(
+            target.to_lowercase(),
+            browser.path.to_string_lossy().to_lowercase()
+        );
+        assert_eq!(
+            arguments,
+            arguments_for(&browser, "https://example.com/login")
+        );
 
         uninstall(&entry).unwrap();
         assert!(!shortcut.exists(), "no debe quedar el acceso directo");

@@ -259,6 +259,106 @@ mod tests {
     }
 
     #[test]
+    fn every_catalog_entry_belongs_to_a_visible_store_section() {
+        const VISIBLE_SECTIONS: [&str; 9] = [
+            "Juegos",
+            "Emuladores",
+            "Navegadores",
+            "Desarrollo",
+            "IA",
+            "Utilidades",
+            "Multimedia",
+            "Productividad",
+            "Social y Comunicación",
+        ];
+
+        let catalog = parse_catalog_json(DEFAULT_CATALOG_JSON);
+        assert!(!catalog.is_empty());
+        for entry in &catalog {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or("?");
+            let section = entry
+                .get("section")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                VISIBLE_SECTIONS.contains(&section),
+                "{id} queda fuera de la navegación: sección '{section}'"
+            );
+        }
+
+        for section in VISIBLE_SECTIONS {
+            assert!(
+                catalog
+                    .iter()
+                    .any(|entry| entry.get("section").and_then(Value::as_str) == Some(section)),
+                "la sección visible '{section}' no contiene ninguna aplicación"
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_categories_are_assigned_to_their_expected_sections() {
+        let catalog = parse_catalog_json(DEFAULT_CATALOG_JSON);
+        for entry in &catalog {
+            let id = entry.get("id").and_then(Value::as_str).unwrap_or("?");
+            let category = entry
+                .get("category")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let section = entry
+                .get("section")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let allowed: &[&str] = match category {
+                "API y redes"
+                | "Bases de datos"
+                | "Cálculo científico"
+                | "Contenedores"
+                | "Control de versiones"
+                | "Desarrollo Android"
+                | "Editores e IDE"
+                | "Herramientas de línea de comandos"
+                | "Lenguajes y runtimes"
+                | "Motores de videojuegos"
+                | "Shells y terminal" => &["Desarrollo"],
+                "Asistentes de IA" | "Desarrollo con IA" => &["IA"],
+                "Audio" | "Imagen y diseño" | "Streaming" | "Vídeo" => &["Multimedia"],
+                "Documentos" | "E-learning" | "Notas y organización" | "Ofimática" => {
+                    &["Productividad"]
+                }
+                "Correo" | "Mensajería" => &["Social y Comunicación"],
+                "Emuladores" => &["Emuladores"],
+                "Navegadores" => &["Navegadores"],
+                "Periféricos"
+                | "Plataformas de juegos"
+                | "Streaming de juegos"
+                | "Utilidades de juego" => &["Juegos"],
+                // Xenos is a general Windows analysis/injection utility while
+                // the other entries in this category are game-specific tools.
+                "Modding" => &["Juegos", "Utilidades"],
+                "Benchmark y diagnóstico"
+                | "Compresión"
+                | "Controladores y GPU"
+                | "Descargas"
+                | "Discos y almacenamiento"
+                | "Escritorio remoto"
+                | "Hardware y monitorización"
+                | "Limpieza"
+                | "Nube y sincronización"
+                | "Redes y VPN"
+                | "Seguridad"
+                | "Sistema"
+                | "Virtualización" => &["Utilidades"],
+                _ => panic!("{id} usa una categoría sin asignación: '{category}'"),
+            };
+            assert!(
+                allowed.contains(&section),
+                "{id} ({category}) está en '{section}', se esperaba {allowed:?}"
+            );
+        }
+    }
+
+    #[test]
     fn migrates_legacy_blue_settings_to_plata() {
         let legacy = Settings {
             theme: "midnight".into(),

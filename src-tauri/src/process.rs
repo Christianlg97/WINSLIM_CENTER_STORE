@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct CapturedOutput {
     pub stdout: Vec<u8>,
@@ -163,6 +163,12 @@ pub fn launch_as_interactive_user(
 /// directly, which avoids five temporary files and two extra processes per call.
 const APP_EXECUTION_ALIASES: [&str; 1] = ["winget.exe"];
 
+/// WinGet shares source/package state across invocations. Running catalog
+/// detection, update checks and an installation at the same time adds heavy
+/// contention and has produced inconsistent results, so every in-process
+/// invocation goes through this gate.
+static WINGET_EXECUTION_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
 fn needs_script_host(program: &str) -> bool {
     let name = program
         .rsplit(['\\', '/'])
@@ -178,7 +184,7 @@ fn needs_script_host(program: &str) -> bool {
 /// window style 0, because CREATE_NO_WINDOW alone still lets them pop up Windows
 /// Terminal. Every other program is spawned directly with CREATE_NO_WINDOW.
 pub fn hidden_output(program: &str, args: &[&str]) -> std::io::Result<CapturedOutput> {
-    hidden_output_impl(program, args, None)
+    hidden_output_impl(program, args, None, None)
 }
 
 pub fn hidden_output_cancelable(
@@ -186,7 +192,79 @@ pub fn hidden_output_cancelable(
     args: &[&str],
     cancel: &AtomicBool,
 ) -> std::io::Result<CapturedOutput> {
-    hidden_output_impl(program, args, Some(cancel))
+    hidden_output_impl(program, args, Some(cancel), None)
+}
+
+/// Runs a read-only helper with a hard upper bound. This is intended for
+/// discovery/metadata probes; installers and uninstallers have their own
+/// cancellation and waiting semantics and must not be routed through it.
+pub fn hidden_output_timeout(
+    program: &str,
+    args: &[&str],
+    timeout: Duration,
+) -> std::io::Result<CapturedOutput> {
+    hidden_output_impl(program, args, None, Some(timeout))
+}
+
+pub fn hidden_winget_output(args: &[&str]) -> std::io::Result<CapturedOutput> {
+    let _guard = WINGET_EXECUTION_LOCK.lock();
+    hidden_output_impl("winget.exe", args, None, None)
+}
+
+pub fn hidden_winget_output_cancelable(
+    args: &[&str],
+    cancel: &AtomicBool,
+) -> std::io::Result<CapturedOutput> {
+    loop {
+        if cancel.load(Ordering::SeqCst) {
+            return Ok(CapturedOutput {
+                stdout: Vec::new(),
+                stderr: b"Operation cancelled by the user".to_vec(),
+                code: Some(1223),
+            });
+        }
+        if let Some(_guard) = WINGET_EXECUTION_LOCK.try_lock_for(Duration::from_millis(100)) {
+            // Avoid launching a process if cancellation raced with acquisition.
+            if cancel.load(Ordering::SeqCst) {
+                return Ok(CapturedOutput {
+                    stdout: Vec::new(),
+                    stderr: b"Operation cancelled by the user".to_vec(),
+                    code: Some(1223),
+                });
+            }
+            return hidden_output_impl("winget.exe", args, Some(cancel), None);
+        }
+    }
+}
+
+/// The deadline covers both waiting for the serialized WinGet slot and the
+/// probe itself. Read-only metadata work therefore remains bounded even while
+/// another operation owns WinGet.
+pub fn hidden_winget_output_timeout(
+    args: &[&str],
+    timeout: Duration,
+) -> std::io::Result<CapturedOutput> {
+    let started = Instant::now();
+    let Some(_guard) = WINGET_EXECUTION_LOCK.try_lock_for(timeout) else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "WinGet no quedó disponible durante {} segundos",
+                timeout.as_secs()
+            ),
+        ));
+    };
+    let remaining = timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "WinGet no quedó disponible durante {} segundos",
+                timeout.as_secs()
+            ),
+        ));
+    }
+    hidden_output_impl("winget.exe", args, None, Some(remaining))
 }
 
 /// Runs an elevated command through UAC and waits for it to finish, returning
@@ -206,10 +284,7 @@ pub fn run_elevated_and_wait(
             escape(&executable.to_string_lossy())
         );
         if !arguments.trim().is_empty() {
-            start_process.push_str(&format!(
-                " -ArgumentList '{}'",
-                escape(arguments.trim())
-            ));
+            start_process.push_str(&format!(" -ArgumentList '{}'", escape(arguments.trim())));
         }
         // A bare program name such as `MsiExec.exe` has an empty parent, and
         // PowerShell rejects an empty -WorkingDirectory.
@@ -492,6 +567,7 @@ fn direct_hidden_output(
     program: &str,
     args: &[&str],
     cancel: Option<&AtomicBool>,
+    timeout: Option<Duration>,
 ) -> std::io::Result<CapturedOutput> {
     use std::io::Read;
 
@@ -526,20 +602,35 @@ fn direct_hidden_output(
             .map(|stream| Box::new(stream) as Box<dyn Read + Send>),
     );
 
+    let started = Instant::now();
     let mut cancelled = false;
-    loop {
-        if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-            cancelled = true;
-            let _ = terminate_process_tree(child.id());
-            break;
+    let mut timed_out = false;
+    let status = if cancel.is_some() || timeout.is_some() {
+        loop {
+            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                cancelled = true;
+                if terminate_process_tree(child.id()).is_err() {
+                    let _ = child.kill();
+                }
+                break child.wait()?;
+            }
+            if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                timed_out = true;
+                if terminate_process_tree(child.id()).is_err() {
+                    let _ = child.kill();
+                }
+                break child.wait()?;
+            }
+            match child.try_wait()? {
+                Some(status) => break status,
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
         }
-        if child.try_wait()?.is_some() {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-
-    let status = child.wait()?;
+    } else {
+        // Most probes are not cancellable. Let the OS wake this thread when
+        // they finish instead of polling every 100 ms for their whole lifetime.
+        child.wait()?
+    };
     // The readers end on their own once the process closes its side of the pipe,
     // which killing the tree also guarantees.
     let collect = |reader: Option<std::thread::JoinHandle<Vec<u8>>>| {
@@ -572,6 +663,15 @@ fn direct_hidden_output(
                 .collect::<String>()
         ),
     );
+    if timed_out {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!(
+                "El proceso {program} superó el tiempo límite de {} segundos",
+                timeout.unwrap_or_default().as_secs()
+            ),
+        ));
+    }
     Ok(CapturedOutput {
         stdout: output.stdout,
         stderr,
@@ -611,6 +711,30 @@ mod tests {
     }
 
     #[test]
+    fn a_read_only_probe_is_terminated_when_its_deadline_expires() {
+        let started = Instant::now();
+        let error = hidden_output_timeout(
+            "powershell.exe",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 30",
+            ],
+            Duration::from_millis(300),
+        )
+        .err()
+        .expect("el proceso debió superar el tiempo límite");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "el proceso de prueba no fue terminado a tiempo"
+        );
+    }
+
+    #[test]
     fn a_registered_uninstaller_whose_path_has_spaces_really_runs() {
         let root = std::env::temp_dir().join(format!(
             "winslimcenter-uninstall-test-{}",
@@ -637,6 +761,7 @@ fn hidden_output_impl(
     program: &str,
     args: &[&str],
     cancel: Option<&AtomicBool>,
+    timeout: Option<Duration>,
 ) -> std::io::Result<CapturedOutput> {
     #[cfg(windows)]
     {
@@ -649,7 +774,7 @@ fn hidden_output_impl(
         );
 
         if !needs_script_host(program) {
-            return direct_hidden_output(program, args, cancel);
+            return direct_hidden_output(program, args, cancel, timeout);
         }
 
         let unique = format!(
@@ -673,9 +798,7 @@ fn hidden_output_impl(
 
         // `cmd.exe` expands %VAR% inside a batch file, so every literal percent
         // sign coming from data has to be doubled or the argument is corrupted.
-        let quote = |value: &str| {
-            format!("\"{}\"", value.replace('"', "\"\"").replace('%', "%%"))
-        };
+        let quote = |value: &str| format!("\"{}\"", value.replace('"', "\"\"").replace('%', "%%"));
         let mut invocation = quote(program);
         for arg in args {
             invocation.push(' ');
@@ -706,16 +829,32 @@ fn hidden_output_impl(
                 child.id()
             ),
         );
-        let run_result: std::io::Result<()> = loop {
-            if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
-                let _ = terminate_process_tree(child.id());
-                let _ = child.wait();
-                break Ok(());
+        let started = Instant::now();
+        let mut timed_out = false;
+        let run_result: std::io::Result<()> = if cancel.is_some() || timeout.is_some() {
+            loop {
+                if cancel.is_some_and(|flag| flag.load(Ordering::SeqCst)) {
+                    if terminate_process_tree(child.id()).is_err() {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                    break Ok(());
+                }
+                if timeout.is_some_and(|limit| started.elapsed() >= limit) {
+                    timed_out = true;
+                    if terminate_process_tree(child.id()).is_err() {
+                        let _ = child.kill();
+                    }
+                    let _ = child.wait();
+                    break Ok(());
+                }
+                match child.try_wait()? {
+                    Some(_) => break Ok(()),
+                    None => std::thread::sleep(Duration::from_millis(150)),
+                }
             }
-            match child.try_wait()? {
-                Some(_) => break Ok(()),
-                None => std::thread::sleep(Duration::from_millis(150)),
-            }
+        } else {
+            child.wait().map(|_| ())
         };
         let stdout = fs::read(&stdout_path).unwrap_or_default();
         let mut stderr = fs::read(&stderr_path).unwrap_or_default();
@@ -729,6 +868,15 @@ fn hidden_output_impl(
 
         let _ = fs::remove_dir_all(&temp);
         run_result?;
+        if timed_out {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "El proceso {program} superó el tiempo límite de {} segundos",
+                    timeout.unwrap_or_default().as_secs()
+                ),
+            ));
+        }
         crate::logger::debug(
             "process",
             format!(
@@ -746,6 +894,6 @@ fn hidden_output_impl(
 
     #[cfg(not(windows))]
     {
-        direct_hidden_output(program, args, cancel)
+        direct_hidden_output(program, args, cancel, timeout)
     }
 }

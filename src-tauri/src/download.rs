@@ -1,14 +1,40 @@
 use futures_util::StreamExt;
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use wildmatch::WildMatch;
 
 const USER_AGENT: &str = "CenterAppStore/5.0";
+const HTTP_METADATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+const DOWNLOAD_HEADERS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const DOWNLOAD_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// One connection pool for every HTTP operation performed by the store.
+///
+/// Constructing a client for every icon, HEAD request and GitHub lookup threw
+/// away DNS/TCP/TLS sessions just before the next request to the same host. A
+/// `reqwest::Client` is designed to be shared and is safe to use concurrently.
+static HTTP_CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
+
+pub fn http_client() -> Result<&'static reqwest::Client, String> {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .connect_timeout(std::time::Duration::from_secs(10))
+                .pool_idle_timeout(std::time::Duration::from_secs(90))
+                .pool_max_idle_per_host(8)
+                .tcp_keepalive(std::time::Duration::from_secs(30))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -61,6 +87,10 @@ pub struct DownloadTask {
     pub status: String,
     pub error: Option<String>,
     pub is_pausable: bool,
+    /// Some Windows stages run above this process' integrity level. During
+    /// those stages WinSlimCenter cannot truthfully promise that it can stop
+    /// the child, so cancellation is temporarily unavailable.
+    pub is_cancelable: bool,
     pub flags: Arc<DownloadFlags>,
 }
 
@@ -75,13 +105,14 @@ impl DownloadTask {
             error: self.error.clone(),
             can_pause: self.is_pausable && self.state == TaskState::Downloading,
             can_resume: self.state == TaskState::Paused,
-            can_cancel: matches!(
-                self.state,
-                TaskState::Queued
-                    | TaskState::Downloading
-                    | TaskState::Paused
-                    | TaskState::Installing
-            ),
+            can_cancel: self.is_cancelable
+                && matches!(
+                    self.state,
+                    TaskState::Queued
+                        | TaskState::Downloading
+                        | TaskState::Paused
+                        | TaskState::Installing
+                ),
             is_pausable: self.is_pausable,
             accent: self.accent.clone(),
         }
@@ -112,6 +143,15 @@ impl DownloadManager {
         })
     }
 
+    pub fn has_active_tasks(&self) -> bool {
+        self.tasks.values().any(|task| {
+            !matches!(
+                task.state,
+                TaskState::Done | TaskState::Error | TaskState::Cancelled
+            )
+        })
+    }
+
     pub fn begin(
         &mut self,
         app_id: &str,
@@ -133,11 +173,12 @@ impl DownloadManager {
                 status: "En cola...".into(),
                 error: None,
                 is_pausable: true,
+                is_cancelable: true,
                 flags: flags.clone(),
             },
         );
         self.cleanup_timers.remove(app_id);
-        if !self.order.contains(&app_id.to_string()) {
+        if !self.order.iter().any(|item| item == app_id) {
             self.order.push(app_id.to_string());
         }
         Some(flags)
@@ -145,7 +186,25 @@ impl DownloadManager {
 
     pub fn update_pausable(&mut self, app_id: &str, is_pausable: bool) {
         if let Some(t) = self.tasks.get_mut(app_id) {
+            // A pause request only makes sense while the active transfer knows
+            // how to observe it. Moving from a resumable HTTP download to an
+            // installer/WinGet stage must not leave a stale pause bit behind:
+            // `update` would otherwise keep presenting the task as Paused even
+            // though that stage cannot consume the request.
+            if !is_pausable {
+                t.flags.pause.store(false, Ordering::SeqCst);
+                if t.state == TaskState::Paused {
+                    t.state = TaskState::Downloading;
+                    t.status = "Reanudando...".into();
+                }
+            }
             t.is_pausable = is_pausable;
+        }
+    }
+
+    pub fn update_cancelable(&mut self, app_id: &str, is_cancelable: bool) {
+        if let Some(task) = self.tasks.get_mut(app_id) {
+            task.is_cancelable = is_cancelable;
         }
     }
 
@@ -195,7 +254,7 @@ impl DownloadManager {
             if let Some(e) = error {
                 t.error = Some(e);
             }
-            if t.flags.pause.load(Ordering::SeqCst) {
+            if t.is_pausable && t.flags.pause.load(Ordering::SeqCst) {
                 t.state = TaskState::Paused;
             } else if let Some(s) = state {
                 t.state = s;
@@ -223,22 +282,17 @@ impl DownloadManager {
 
     pub fn prune_finished(&mut self) {
         let now = std::time::Instant::now();
-        let expired: Vec<String> = self
-            .cleanup_timers
-            .iter()
-            .filter_map(|(id, started)| {
-                if now.duration_since(*started) >= std::time::Duration::from_secs(2) {
-                    Some(id.clone())
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        for id in expired {
-            self.cleanup_timers.remove(&id);
-            self.tasks.remove(&id);
-            self.order.retain(|item| item != &id);
+        let mut expired = HashSet::new();
+        self.cleanup_timers.retain(|id, started| {
+            let keep = now.duration_since(*started) < std::time::Duration::from_secs(2);
+            if !keep {
+                expired.insert(id.clone());
+            }
+            keep
+        });
+        if !expired.is_empty() {
+            self.tasks.retain(|id, _| !expired.contains(id));
+            self.order.retain(|id| !expired.contains(id));
         }
     }
 
@@ -268,6 +322,9 @@ impl DownloadManager {
 
     pub fn cancel(&mut self, app_id: &str) {
         if let Some(t) = self.tasks.get_mut(app_id) {
+            if !t.is_cancelable {
+                return;
+            }
             if matches!(
                 t.state,
                 TaskState::Queued
@@ -368,6 +425,63 @@ mod tests {
     }
 
     #[test]
+    fn a_non_pausable_stage_clears_a_stale_pause_request() {
+        let mut manager = DownloadManager::new();
+        let flags = manager.begin("demo", "Demo", None).unwrap();
+        manager.update(
+            "demo",
+            Some(TaskState::Downloading),
+            Some(25),
+            Some("Descargando".into()),
+            None,
+        );
+        manager.pause("demo");
+        assert!(flags.pause.load(Ordering::SeqCst));
+        assert_eq!(manager.snapshots()[0].state, TaskState::Paused);
+
+        manager.update_pausable("demo", false);
+        manager.update(
+            "demo",
+            Some(TaskState::Installing),
+            Some(30),
+            Some("Instalando".into()),
+            None,
+        );
+
+        let snapshot = &manager.snapshots()[0];
+        assert!(!flags.pause.load(Ordering::SeqCst));
+        assert!(!snapshot.is_pausable);
+        assert!(!snapshot.can_pause);
+        assert!(!snapshot.can_resume);
+        assert_eq!(snapshot.state, TaskState::Installing);
+    }
+
+    #[test]
+    fn an_elevated_stage_rejects_cancel_until_it_is_safe_again() {
+        let mut manager = DownloadManager::new();
+        let flags = manager.begin("demo", "Demo", None).unwrap();
+        manager.update(
+            "demo",
+            Some(TaskState::Installing),
+            Some(90),
+            Some("Instalando".into()),
+            None,
+        );
+
+        manager.update_cancelable("demo", false);
+        assert!(!manager.snapshots()[0].can_cancel);
+        manager.cancel("demo");
+        assert!(!flags.cancel.load(Ordering::SeqCst));
+        assert_eq!(manager.snapshots()[0].state, TaskState::Installing);
+
+        manager.update_cancelable("demo", true);
+        assert!(manager.snapshots()[0].can_cancel);
+        manager.cancel("demo");
+        assert!(flags.cancel.load(Ordering::SeqCst));
+        assert_eq!(manager.snapshots()[0].state, TaskState::Cancelling);
+    }
+
+    #[test]
     fn curl_args_include_output_and_failure_flags() {
         let dest = PathBuf::from("downloads/app.exe");
         let args = curl_args_for_url("https://example.com/app.exe", &dest);
@@ -378,6 +492,15 @@ mod tests {
         assert!(args.contains(&"downloads/app.exe".to_string()));
         assert!(args.contains(&"-A".to_string()));
         assert!(args.contains(&USER_AGENT.to_string()));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--connect-timeout" && pair[1] == "10"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--speed-limit" && pair[1] == "1"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--speed-time" && pair[1] == "60"));
     }
 
     #[test]
@@ -480,11 +603,9 @@ impl TransferRate {
     pub fn sample(&mut self, downloaded: u64) -> Option<f64> {
         let now = std::time::Instant::now();
         self.samples.push_back((now, downloaded));
-        while self
-            .samples
-            .front()
-            .is_some_and(|(seen, _)| self.samples.len() > 1 && now.duration_since(*seen) > Self::WINDOW)
-        {
+        while self.samples.front().is_some_and(|(seen, _)| {
+            self.samples.len() > 1 && now.duration_since(*seen) > Self::WINDOW
+        }) {
             self.samples.pop_front();
         }
         let (started, first) = *self.samples.front()?;
@@ -536,12 +657,13 @@ pub fn transfer_status(label: &str, downloaded: u64, total: u64, speed: Option<f
 /// the installer to its own temporary folder and says nothing about how big it
 /// is — so that the bar can still show a percentage and a remaining time.
 pub async fn content_length(url: &str) -> Option<u64> {
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
+    let client = http_client().ok()?;
+    let response = client
+        .head(url)
         .timeout(std::time::Duration::from_secs(10))
-        .build()
+        .send()
+        .await
         .ok()?;
-    let response = client.head(url).send().await.ok()?;
     response
         .status()
         .is_success()
@@ -565,6 +687,14 @@ fn curl_args_for_url(url: &str, dest: &Path) -> Vec<String> {
         "--location".into(),
         "--silent".into(),
         "--show-error".into(),
+        "--connect-timeout".into(),
+        "10".into(),
+        // Abort only a truly idle transfer. Large downloads remain unbounded as
+        // long as at least one byte per second keeps arriving.
+        "--speed-limit".into(),
+        "1".into(),
+        "--speed-time".into(),
+        "60".into(),
         "-A".into(),
         USER_AGENT.into(),
         "--output".into(),
@@ -580,10 +710,15 @@ fn curl_args_for_url(url: &str, dest: &Path) -> Vec<String> {
 /// cost, and a failure here is not a failure of anything: it only means a bar
 /// that counts megabytes instead of a percentage.
 async fn announced_size(url: &str) -> u64 {
-    let Ok(client) = reqwest::Client::builder().user_agent(USER_AGENT).build() else {
+    let Ok(client) = http_client() else {
         return 0;
     };
-    match client.head(url).send().await {
+    match client
+        .head(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
         // The header is read by hand on purpose: `content_length()` answers from
         // the body, and a HEAD has none, so it reports nothing for every server
         // that did announce the size.
@@ -637,10 +772,16 @@ pub async fn download_with_curl(
             let _ = tokio::fs::remove_file(dest).await;
             return Err("Descarga cancelada".into());
         }
-        match child
-            .try_wait()
-            .map_err(|error| format!("No se pudo consultar curl (pid={pid}): {error}"))?
-        {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                let _ = crate::process::terminate_process_tree(pid);
+                let _ = child.wait();
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(format!("No se pudo consultar curl (pid={pid}): {error}"));
+            }
+        };
+        match status {
             Some(_) => break,
             None => {
                 // curl writes into the file as it goes, so how far it has got is
@@ -666,9 +807,13 @@ pub async fn download_with_curl(
             }
         }
     }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("No se pudo recoger la salida de curl: {error}"))?;
+    let output = match child.wait_with_output() {
+        Ok(output) => output,
+        Err(error) => {
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(format!("No se pudo recoger la salida de curl: {error}"));
+        }
+    };
 
     if flags.cancel.load(Ordering::SeqCst) {
         let _ = tokio::fs::remove_file(dest).await;
@@ -713,6 +858,7 @@ pub async fn download_with_curl(
         "curl falló{}",
         detail.map(|d| format!(": {d}")).unwrap_or_default()
     );
+    let _ = tokio::fs::remove_file(dest).await;
     crate::logger::error("download", &error);
     Err(error)
 }
@@ -754,16 +900,33 @@ pub async fn download_url(
             .map_err(|e| e.to_string())?;
     }
 
-    on_progress(0, "Iniciando descarga...".into(), true);
+    // Whether pause is valid is learned from the response headers. Do not
+    // expose it while DNS/connect/header negotiation is still in progress.
+    on_progress(0, "Iniciando descarga...".into(), false);
 
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
 
-    let resp = match client.get(url).send().await {
-        Ok(resp) => resp,
-        Err(err) => {
+    // Bound only DNS/connect/response-header latency. A RequestBuilder timeout
+    // would also cap the streamed body and break legitimately large downloads.
+    let request = client.get(url).send();
+    tokio::pin!(request);
+    let header_deadline = tokio::time::sleep(DOWNLOAD_HEADERS_TIMEOUT);
+    tokio::pin!(header_deadline);
+    let response = loop {
+        tokio::select! {
+            response = &mut request => break Some(response),
+            _ = &mut header_deadline => break None,
+            _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                if flags.cancel.load(Ordering::SeqCst) {
+                    let _ = tokio::fs::remove_file(dest).await;
+                    return Err("Descarga cancelada".into());
+                }
+            }
+        }
+    };
+    let resp = match response {
+        Some(Ok(resp)) => resp,
+        Some(Err(err)) => {
             // Written down even when curl goes on to succeed: a fallback that
             // works silently hides why the first attempt did not, and the log is
             // the only place left to find out.
@@ -774,6 +937,17 @@ pub async fn download_url(
             return download_with_curl(url, dest, flags, on_progress)
                 .await
                 .map_err(|curl_err| format!("Error de red: {err}; {curl_err}"));
+        }
+        None => {
+            crate::logger::warn(
+                "download",
+                "El servidor no envió las cabeceras HTTP en 30 segundos; continúa curl.",
+            );
+            return download_with_curl(url, dest, flags, on_progress)
+                .await
+                .map_err(|curl_err| {
+                    format!("Tiempo de espera agotado al iniciar la descarga; {curl_err}")
+                });
         }
     };
 
@@ -816,11 +990,16 @@ pub async fn download_url(
         Some(ref v) if v == "bytes" => true,
         _ => total > 0,
     };
+    on_progress(0, "Iniciando descarga...".into(), is_pausable);
 
     let mut stream = resp.bytes_stream();
-    let mut file = tokio::fs::File::create(dest)
+    let file = tokio::fs::File::create(dest)
         .await
         .map_err(|e| e.to_string())?;
+    // Network chunks are commonly only a few KiB. Buffering them avoids a
+    // Tokio filesystem submission for every chunk without changing the bytes
+    // that eventually reach disk.
+    let mut file = tokio::io::BufWriter::with_capacity(256 * 1024, file);
     let mut downloaded: u64 = 0;
     let mut rate = TransferRate::new();
     // A chunk arrives every few hundred microseconds on a fast link, and
@@ -832,25 +1011,97 @@ pub async fn download_url(
 
     use tokio::io::AsyncWriteExt;
 
-    while let Some(chunk) = stream.next().await {
+    loop {
+        // Keep one `Stream::next` future alive while polling the atomic control
+        // flags. Cancellation must not wait for a stalled server's 60-second
+        // idle deadline, and time spent deliberately paused is not network idle.
+        let next_chunk = {
+            let next = stream.next();
+            tokio::pin!(next);
+            let idle = tokio::time::sleep(DOWNLOAD_IDLE_TIMEOUT);
+            tokio::pin!(idle);
+            loop {
+                tokio::select! {
+                    chunk = &mut next => break chunk,
+                    _ = &mut idle => {
+                        if flags.cancel.load(Ordering::SeqCst) {
+                            drop(file);
+                            let _ = tokio::fs::remove_file(dest).await;
+                            return Err("Descarga cancelada".into());
+                        }
+                        if is_pausable && flags.pause.load(Ordering::SeqCst) {
+                            if let Err(error) = wait_if_paused(flags).await {
+                                drop(file);
+                                let _ = tokio::fs::remove_file(dest).await;
+                                return Err(error);
+                            }
+                            idle.as_mut().reset(tokio::time::Instant::now() + DOWNLOAD_IDLE_TIMEOUT);
+                            continue;
+                        }
+                        drop(file);
+                        let _ = tokio::fs::remove_file(dest).await;
+                        return Err(
+                            "La descarga se detuvo porque el servidor no envió datos durante 60 segundos"
+                                .into(),
+                        );
+                    }
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(100)) => {
+                        if flags.cancel.load(Ordering::SeqCst) {
+                            drop(file);
+                            let _ = tokio::fs::remove_file(dest).await;
+                            return Err("Descarga cancelada".into());
+                        }
+                        if is_pausable && flags.pause.load(Ordering::SeqCst) {
+                            if let Err(error) = wait_if_paused(flags).await {
+                                drop(file);
+                                let _ = tokio::fs::remove_file(dest).await;
+                                return Err(error);
+                            }
+                            idle.as_mut().reset(tokio::time::Instant::now() + DOWNLOAD_IDLE_TIMEOUT);
+                        }
+                    }
+                }
+            }
+        };
+        let Some(chunk) = next_chunk else {
+            break;
+        };
         if flags.cancel.load(Ordering::SeqCst) {
+            drop(file);
             let _ = tokio::fs::remove_file(dest).await;
             return Err("Descarga cancelada".into());
         }
         if is_pausable {
-            wait_if_paused(flags).await?;
+            if let Err(error) = wait_if_paused(flags).await {
+                drop(file);
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(error);
+            }
         }
 
-        let chunk = chunk.map_err(|e| e.to_string())?;
-        file.write_all(&chunk).await.map_err(|e| e.to_string())?;
+        let chunk = match chunk {
+            Ok(chunk) => chunk,
+            Err(error) => {
+                drop(file);
+                let _ = tokio::fs::remove_file(dest).await;
+                return Err(error.to_string());
+            }
+        };
+        if let Err(error) = file.write_all(&chunk).await {
+            drop(file);
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(error.to_string());
+        }
         downloaded += chunk.len() as u64;
 
-        let speed = rate.sample(downloaded);
         let due = last_report.is_none_or(|last| last.elapsed() >= REPORT_EVERY);
         if !due {
             continue;
         }
         last_report = Some(std::time::Instant::now());
+        // Sampling only when a human-readable update is due keeps this path
+        // independent of the server's (often thousands-per-second) chunk rate.
+        let speed = rate.sample(downloaded);
 
         let percent = downloaded
             .saturating_mul(100)
@@ -868,21 +1119,28 @@ pub async fn download_url(
         on_progress(percent, msg, is_pausable);
     }
 
-    file.flush().await.map_err(|e| e.to_string())?;
-    if downloaded == 0 {
+    if flags.cancel.load(Ordering::SeqCst) {
         drop(file);
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err("Descarga cancelada".into());
+    }
+    if let Err(error) = file.flush().await {
+        drop(file);
+        let _ = tokio::fs::remove_file(dest).await;
+        return Err(error.to_string());
+    }
+    drop(file);
+    if downloaded == 0 {
         let _ = tokio::fs::remove_file(dest).await;
         return Err("El servidor respondió sin contenido descargable".into());
     }
     if total > 0 && downloaded != total {
-        drop(file);
         let _ = tokio::fs::remove_file(dest).await;
         return Err(format!(
             "La descarga quedó incompleta: se esperaban {total} bytes y se recibieron {downloaded}"
         ));
     }
     if file_looks_like_html(dest).await {
-        drop(file);
         let _ = tokio::fs::remove_file(dest).await;
         return Err("El servidor devolvió una página HTML en lugar del instalador".into());
     }
@@ -1068,7 +1326,8 @@ fn github_response_error(response: &reqwest::Response) -> Option<String> {
         .get("x-ratelimit-remaining")
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.trim() == "0");
-    if (status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
+    if (status == reqwest::StatusCode::FORBIDDEN
+        || status == reqwest::StatusCode::TOO_MANY_REQUESTS)
         && exhausted
     {
         let minutes = response
@@ -1098,6 +1357,7 @@ async fn fetch_github_json<T: for<'de> Deserialize<'de>>(
     let response = client
         .get(url)
         .header("Accept", "application/vnd.github.v3+json")
+        .timeout(HTTP_METADATA_TIMEOUT)
         .send()
         .await
         .map_err(|e| e.to_string())?;
@@ -1121,12 +1381,9 @@ async fn fetch_github_json<T: for<'de> Deserialize<'de>>(
 /// quota gone. The feed is served by the web host, does not count against that
 /// budget, and carries the same notes.
 pub async fn github_release_text(repo: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
 
-    match github_releases_feed(&client, repo).await {
+    match github_releases_feed(client, repo).await {
         Ok(feed) => Ok(feed),
         Err(feed_error) => {
             crate::logger::warn(
@@ -1136,7 +1393,7 @@ pub async fn github_release_text(repo: &str) -> Result<String, String> {
                 ),
             );
             let release = fetch_github_json::<GhRelease>(
-                &client,
+                client,
                 &format!("https://api.github.com/repos/{repo}/releases/latest"),
             )
             .await?;
@@ -1154,6 +1411,7 @@ pub async fn github_release_text(repo: &str) -> Result<String, String> {
 async fn github_releases_feed(client: &reqwest::Client, repo: &str) -> Result<String, String> {
     let response = client
         .get(format!("https://github.com/{repo}/releases.atom"))
+        .timeout(HTTP_METADATA_TIMEOUT)
         .send()
         .await
         .map_err(|error| error.to_string())?;
@@ -1184,13 +1442,10 @@ pub async fn github_latest_release_asset(
         "github",
         format!("Consultando última versión: repositorio={repo}, patrón={asset_pattern:?}"),
     );
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let client = http_client()?;
 
     let latest = fetch_github_json::<GhRelease>(
-        &client,
+        client,
         &format!("https://api.github.com/repos/{repo}/releases/latest"),
     )
     .await;
@@ -1229,7 +1484,7 @@ pub async fn github_latest_release_asset(
     // actually contains the requested Windows package. This costs a second
     // request, so it only runs when the first one genuinely had no match.
     let releases: Vec<GhRelease> = match fetch_github_json(
-        &client,
+        client,
         &format!("https://api.github.com/repos/{repo}/releases?per_page=20"),
     )
     .await

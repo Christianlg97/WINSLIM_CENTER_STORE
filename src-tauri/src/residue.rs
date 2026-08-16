@@ -354,7 +354,10 @@ fn matching_shortcut_target(names: &[String]) -> Option<PathBuf> {
     shortcut_entries()
         .into_iter()
         .find(|(label, _, target)| {
-            target.is_file() && names.iter().any(|name| crate::detect::names_match(name, label))
+            target.is_file()
+                && names
+                    .iter()
+                    .any(|name| crate::detect::names_match(name, label))
         })
         .map(|(_, _, target)| {
             crate::logger::info(
@@ -550,7 +553,10 @@ pub fn purge_stale_index_entries(identity: &AppIdentity) -> usize {
 fn remove_dangling_shortcuts(names: &[String]) -> usize {
     let mut removed = 0;
     for (label, link, target) in shortcut_entries() {
-        if !names.iter().any(|name| crate::detect::names_match(name, &label)) {
+        if !names
+            .iter()
+            .any(|name| crate::detect::names_match(name, &label))
+        {
             continue;
         }
         if target.exists() || !volume_is_available(&target) {
@@ -1045,7 +1051,8 @@ fn report_machine_path_entries(install_dir: &Path) {
 
     const MACHINE_ENVIRONMENT: &str =
         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
-    let Ok(environment) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(MACHINE_ENVIRONMENT) else {
+    let Ok(environment) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(MACHINE_ENVIRONMENT)
+    else {
         return;
     };
     let Ok(current) = environment.get_raw_value("Path") else {
@@ -1080,9 +1087,15 @@ mod tests {
             root,
             Path::new(r"C:\Program Files\Ejemplo\bin\app.exe")
         ));
-        assert!(is_inside(root, Path::new(r"c:/program files/ejemplo/app.exe")));
+        assert!(is_inside(
+            root,
+            Path::new(r"c:/program files/ejemplo/app.exe")
+        ));
         // `EjemploExtra` starts the same way, but it is a different program.
-        assert!(!is_inside(root, Path::new(r"C:\Program Files\EjemploExtra")));
+        assert!(!is_inside(
+            root,
+            Path::new(r"C:\Program Files\EjemploExtra")
+        ));
         // An empty root must not take ownership of the whole disk.
         assert!(!is_inside(Path::new(""), Path::new(r"C:\Windows")));
     }
@@ -1147,7 +1160,8 @@ mod tests {
         assert!(volume_is_available(Path::new(&system_root)));
         // A drive that is not mounted holds a program that is merely
         // disconnected; deleting its shortcut would lose it for good.
-        if let Some(letter) = ('D'..='Z').find(|letter| !Path::new(&format!("{letter}:\\")).exists())
+        if let Some(letter) =
+            ('D'..='Z').find(|letter| !Path::new(&format!("{letter}:\\")).exists())
         {
             assert!(!volume_is_available(&PathBuf::from(format!(
                 "{letter}:\\Portables\\Ejemplo\\app.exe"

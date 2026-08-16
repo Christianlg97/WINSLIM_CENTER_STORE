@@ -7,6 +7,9 @@ cargo-target/
 # Node & Frontend dependencies / build outputs
 node_modules/
 dist/
+dist.tmp-*/
+scratch/.frontend-maps/
+scratch/.icon-report.json
 build/
 Build/
 

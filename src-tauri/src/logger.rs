@@ -1,17 +1,101 @@
 use chrono::Local;
 use parking_lot::Mutex;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{BufWriter, Write};
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-static SESSION_LOG: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+const FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 
-fn slot() -> &'static Mutex<Option<PathBuf>> {
+enum WriterCommand {
+    Line {
+        contents: String,
+        flush: bool,
+        acknowledgement: Option<mpsc::Sender<()>>,
+    },
+    Flush(mpsc::Sender<()>),
+    Shutdown(mpsc::Sender<()>),
+}
+
+struct LogSession {
+    path: PathBuf,
+    sender: mpsc::Sender<WriterCommand>,
+    worker: Option<JoinHandle<()>>,
+}
+
+static SESSION_LOG: OnceLock<Mutex<Option<LogSession>>> = OnceLock::new();
+
+fn slot() -> &'static Mutex<Option<LogSession>> {
     SESSION_LOG.get_or_init(|| Mutex::new(None))
 }
 
+fn writer_loop(file: File, receiver: mpsc::Receiver<WriterCommand>) {
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
+    loop {
+        match receiver.recv_timeout(FLUSH_INTERVAL) {
+            Ok(WriterCommand::Line {
+                contents,
+                flush,
+                acknowledgement,
+            }) => {
+                let _ = writer.write_all(contents.as_bytes());
+                if flush {
+                    let _ = writer.flush();
+                }
+                if let Some(sender) = acknowledgement {
+                    let _ = sender.send(());
+                }
+            }
+            Ok(WriterCommand::Flush(acknowledgement)) => {
+                let _ = writer.flush();
+                let _ = acknowledgement.send(());
+            }
+            Ok(WriterCommand::Shutdown(acknowledgement)) => {
+                let _ = writer.flush();
+                let _ = acknowledgement.send(());
+                break;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = writer.flush();
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = writer.flush();
+                break;
+            }
+        }
+    }
+}
+
+fn close_session() {
+    let Some(mut session) = slot().lock().take() else {
+        return;
+    };
+    let (acknowledge, received) = mpsc::channel();
+    let worker_stopped = if session
+        .sender
+        .send(WriterCommand::Shutdown(acknowledge))
+        .is_ok()
+    {
+        received.recv_timeout(Duration::from_secs(2)).is_ok()
+    } else {
+        // A disconnected receiver means the worker has already returned.
+        true
+    };
+    if let Some(worker) = session.worker.take() {
+        // Never turn a slow or stuck filesystem into an unbounded application
+        // shutdown. Once the worker acknowledged its flush, joining is
+        // immediate; otherwise dropping the handle detaches it and process exit
+        // remains able to finish.
+        if worker_stopped {
+            let _ = worker.join();
+        }
+    }
+}
+
 pub fn init() -> Result<PathBuf, String> {
+    close_session();
     let directory = crate::paths::app_dir().join("logs");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     prune_old_logs(&directory, 20);
@@ -20,8 +104,22 @@ pub fn init() -> Result<PathBuf, String> {
         Local::now().format("%Y%m%d-%H%M%S"),
         std::process::id()
     ));
-    fs::write(&path, "").map_err(|error| error.to_string())?;
-    *slot().lock() = Some(path.clone());
+    let file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&path)
+        .map_err(|error| error.to_string())?;
+    let (sender, receiver) = mpsc::channel();
+    let worker = std::thread::Builder::new()
+        .name("winslim-log-writer".into())
+        .spawn(move || writer_loop(file, receiver))
+        .map_err(|error| error.to_string())?;
+    *slot().lock() = Some(LogSession {
+        path: path.clone(),
+        sender,
+        worker: Some(worker),
+    });
 
     info(
         "session",
@@ -55,6 +153,7 @@ pub fn init() -> Result<PathBuf, String> {
         "session",
         "============================================================",
     );
+    flush();
     Ok(path)
 }
 
@@ -83,24 +182,58 @@ fn prune_old_logs(directory: &std::path::Path, keep: usize) {
 }
 
 pub fn path() -> Option<PathBuf> {
-    slot().lock().clone()
+    slot().lock().as_ref().map(|session| session.path.clone())
 }
 
 pub fn log(level: &str, area: &str, message: impl AsRef<str>) {
-    let Some(path) = path() else {
+    let level = level.to_ascii_uppercase();
+    let force_flush = matches!(level.as_str(), "WARN" | "ERROR");
+    // Keep formatting and enqueueing under the same short lock. This gives the
+    // file one exact order even when background downloads log concurrently.
+    let guard = slot().lock();
+    let Some(session) = guard.as_ref() else {
         return;
     };
     let message = message.as_ref().replace('\0', "\\0");
     let line = format!(
         "{} [{:<5}] [{:<18}] {}\r\n",
         Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
-        level.to_ascii_uppercase(),
+        level,
         area,
         message
     );
-    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
-        let _ = file.write_all(line.as_bytes());
-        let _ = file.flush();
+    let (acknowledgement, received) = if force_flush {
+        let (sender, receiver) = mpsc::channel();
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
+    let sent = session.sender.send(WriterCommand::Line {
+        contents: line,
+        flush: force_flush,
+        acknowledgement,
+    });
+    drop(guard);
+    // Warnings, errors and panic-hook entries must already be durable when the
+    // call returns. Ordinary diagnostic chatter is flushed together every
+    // quarter second by the writer thread.
+    if sent.is_ok() {
+        if let Some(receiver) = received {
+            let _ = receiver.recv_timeout(Duration::from_secs(2));
+        }
+    }
+}
+
+pub fn flush() {
+    let guard = slot().lock();
+    let Some(session) = guard.as_ref() else {
+        return;
+    };
+    let (acknowledgement, received) = mpsc::channel();
+    let sent = session.sender.send(WriterCommand::Flush(acknowledgement));
+    drop(guard);
+    if sent.is_ok() {
+        let _ = received.recv_timeout(Duration::from_secs(2));
     }
 }
 
@@ -143,7 +276,7 @@ pub fn shutdown() {
         "session",
         "Cierre normal solicitado; conservando el registro de diagnóstico.",
     );
-    *slot().lock() = None;
+    close_session();
 }
 
 #[cfg(test)]
@@ -169,6 +302,7 @@ mod tests {
         let created = init().expect("the temporary log should be created");
         assert!(created.is_file());
         info("test", "línea de prueba");
+        flush();
         assert!(fs::read_to_string(&created)
             .expect("the log should be readable")
             .contains("línea de prueba"));

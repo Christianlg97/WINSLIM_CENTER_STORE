@@ -6,7 +6,7 @@
     "version": "latest",
     "author": "Darkeiser003",
     "category": "Shells y terminal",
-    "section": "Destacados",
+    "section": "Desarrollo",
     "featured": true,
     "source_type": "wget",
     "download_url": "https://github.com/Darkeiser003/Terminal/releases/download/Latest/WinSlimTerminal-Unpacked-Latest.zip",
@@ -32,7 +32,7 @@
     "source_type": "wget",
     "download_url": "https://cdn.akamai.steamstatic.com/client/installer/SteamSetup.exe",
     "winget_id": "Valve.Steam",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/steam.png",
+    "icon_url": "assets/catalog/steam.png",
     "accent_color": "#1b2838",
     "detect_names": [
       "Steam"
@@ -50,7 +50,7 @@
     "source_type": "wget",
     "download_url": "https://discord.com/api/downloads/distributions/app/installers/latest?channel=stable&platform=win&arch=x64",
     "winget_id": "Discord.Discord",
-    "icon_url": "https://cdn.simpleicons.org/discord/white",
+    "icon_url": "assets/catalog/discord.svg",
     "accent_color": "#5865F2",
     "detect_names": [
       "Discord"
@@ -68,7 +68,7 @@
     "source_type": "winget",
     "winget_id": "SlackTechnologies.Slack",
     "winget_source": "winget",
-    "icon_url": "https://a.slack-edge.com/80588/marketing/img/meta/slack_hash_256.png",
+    "icon_url": "assets/catalog/slack.png",
     "icon_padding": 0,
     "accent_color": "#4a154b",
     "detect_names": [
@@ -86,7 +86,7 @@
     "source_type": "wget",
     "download_url": "https://ubistatic3-a.akamaihd.net/orbit/launcher_installer/UbisoftConnectInstaller.exe",
     "winget_id": "Ubisoft.Connect",
-    "icon_url": "https://cdn.simpleicons.org/ubisoft/white",
+    "icon_url": "assets/catalog/ubisoft_connect.svg",
     "accent_color": "#0059d6",
     "detect_names": [
       "Ubisoft Connect",
@@ -109,7 +109,7 @@
     ],
     "winget_id": "ItchIo.Itch",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/itchio/itch/HEAD/release/images/itch-icons/icon1024.png",
+    "icon_url": "assets/catalog/itch_io.png",
     "featured": false
   },
   {
@@ -124,7 +124,7 @@
     "source_type": "wget",
     "download_url": "https://launcher-public-service-prod06.ol.epicgames.com/launcher/api/installer/download/EpicGamesLauncherInstaller.msi",
     "winget_id": "EpicGames.EpicGamesLauncher",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/epic-games.png",
+    "icon_url": "assets/catalog/epic_games.png",
     "accent_color": "#313131",
     "detect_names": [
       "Epic Games Launcher",
@@ -140,7 +140,7 @@
     "category": "Compresión",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/7zip.png",
+    "icon_url": "assets/catalog/seven_zip.png",
     "accent_color": "#b71c1c",
     "detect_names": [
       "7-Zip"
@@ -158,7 +158,7 @@
     "category": "Compresión",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://www.win-rar.com/favicon.ico",
+    "icon_url": "assets/catalog/winrar.png",
     "accent_color": "#3b67c6",
     "detect_names": [
       "WinRAR"
@@ -180,7 +180,7 @@
     "asset_pattern": "peazip-*.WIN64.exe",
     "winget_id": "Giorgiotani.Peazip",
     "accent_color": "#2f7aa7",
-    "icon_url": "https://raw.githubusercontent.com/peazip/PeaZip/HEAD/peazip-sources/res/share/icons/peazip.ico",
+    "icon_url": "assets/catalog/peazip.png",
     "featured": false
   },
   {
@@ -195,7 +195,7 @@
     "download_url": "https://www.bandisoft.com/bandizip/dl.php?win",
     "winget_id": "Bandisoft.Bandizip",
     "accent_color": "#1976d2",
-    "icon_url": "https://www.bandisoft.com/favicon.ico",
+    "icon_url": "assets/catalog/bandizip.png",
     "featured": false
   },
   {
@@ -248,7 +248,7 @@
     "download_url": "https://c2rsetup.officeapps.live.com/c2r/downloadVS.aspx?sku=community&channel=Release&version=VS2022&source=VSLandingPage&cid=2030:b4e058af4d2b4b69a6c4a6ec38e3d988",
     "winget_id": "Microsoft.VisualStudio.2022.Community",
     "accent_color": "#5c2d91",
-    "icon_url": "https://visualstudio.microsoft.com/wp-content/uploads/2021/10/Product-Icon.svg",
+    "icon_url": "assets/catalog/visual_studio_2022.svg",
     "featured": false
   },
   {
@@ -267,7 +267,7 @@
       "Git"
     ],
     "accent_color": "#f05032",
-    "icon_url": "https://cdn.simpleicons.org/git/white",
+    "icon_url": "assets/catalog/git_for_windows.svg",
     "featured": false
   },
   {
@@ -281,7 +281,7 @@
     "source_type": "wget",
     "download_url": "https://origin-a.akamaihd.net/EA-Desktop-Client-Download/installer-releases/EAappInstaller.exe",
     "winget_id": "ElectronicArts.EADesktop",
-    "icon_url": "https://cdn.simpleicons.org/ea/white",
+    "icon_url": "assets/catalog/ea_app.svg",
     "accent_color": "#cc0000",
     "featured": false
   },
@@ -294,7 +294,7 @@
     "category": "Plataformas de juegos",
     "section": "Juegos",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/battledotnet/white",
+    "icon_url": "assets/catalog/battle_net.svg",
     "accent_color": "#009ae5",
     "winget_id": "Blizzard.BattleNet",
     "winget_source": "winget",
@@ -309,7 +309,7 @@
     "category": "Plataformas de juegos",
     "section": "Juegos",
     "source_type": "winget",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/svg/amazon.svg",
+    "icon_url": "assets/catalog/amazon_games.svg",
     "accent_color": "#ff9900",
     "winget_id": "Amazon.Games",
     "winget_source": "winget",
@@ -332,7 +332,7 @@
       "Brave"
     ],
     "accent_color": "#fb542b",
-    "icon_url": "https://cdn.simpleicons.org/brave/white"
+    "icon_url": "assets/catalog/brave.svg"
   },
   {
     "id": "google_chrome",
@@ -346,7 +346,7 @@
     "download_url": "https://dl.google.com/tag/s/appguid%3D%7B8A69D345-D564-463C-AFF1-A69D9E530F96%7D%26iid%3D%7B00000000-0000-0000-0000-000000000000%7D%26lang%3Des%26browser%3D4%26usagestats%3D0%26appname%3DGoogle%2520Chrome%26needsadmin%3Dprefers%26ap%3Dx64-stable-statsdef_1%26installdataindex%3Dempty/update2/installers/ChromeSetup.exe",
     "winget_id": "Google.Chrome",
     "accent_color": "#4285F4",
-    "icon_url": "https://cdn.simpleicons.org/googlechrome/white",
+    "icon_url": "assets/catalog/google_chrome.svg",
     "featured": false
   },
   {
@@ -361,7 +361,7 @@
     "download_url": "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=es-ES",
     "winget_id": "Mozilla.Firefox",
     "accent_color": "#ff7139",
-    "icon_url": "https://cdn.simpleicons.org/firefox/white",
+    "icon_url": "assets/catalog/mozilla_firefox.svg",
     "featured": false
   },
   {
@@ -374,7 +374,7 @@
     "section": "Navegadores",
     "source_type": "winget",
     "accent_color": "#ef3939",
-    "icon_url": "https://cdn.simpleicons.org/vivaldi/white",
+    "icon_url": "assets/catalog/vivaldi.svg",
     "winget_id": "Vivaldi.Vivaldi",
     "winget_source": "winget",
     "featured": false
@@ -392,7 +392,7 @@
     "asset_pattern": "npp.*.Installer.x64.exe",
     "winget_id": "Notepad++.Notepad++",
     "accent_color": "#008000",
-    "icon_url": "https://cdn.simpleicons.org/notepadplusplus/white",
+    "icon_url": "assets/catalog/notepad_plus_plus.svg",
     "featured": false
   },
   {
@@ -409,7 +409,7 @@
     "asset_pattern": "OBS-Studio-*-Windows-x64-Installer.exe",
     "winget_id": "OBSProject.OBSStudio",
     "accent_color": "#302e31",
-    "icon_url": "https://cdn.simpleicons.org/obsstudio/white"
+    "icon_url": "assets/catalog/obs_studio.svg"
   },
   {
     "id": "streamlabs",
@@ -423,7 +423,7 @@
     "source_type": "winget",
     "winget_id": "Streamlabs.Streamlabs",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=streamlabs.com&sz=128",
+    "icon_url": "assets/catalog/streamlabs.png",
     "icon_padding": 0,
     "accent_color": "#80f5d2",
     "detect_names": [
@@ -446,7 +446,7 @@
     "detect_names": [
       "Spotify"
     ],
-    "icon_url": "https://cdn.simpleicons.org/spotify/white",
+    "icon_url": "assets/catalog/spotify.svg",
     "featured": false
   },
   {
@@ -463,7 +463,7 @@
       "VLC media player",
       "VLC"
     ],
-    "icon_url": "https://cdn.simpleicons.org/vlcmediaplayer/white",
+    "icon_url": "assets/catalog/vlc.svg",
     "winget_id": "VideoLAN.VLC",
     "winget_source": "winget",
     "featured": true
@@ -481,7 +481,7 @@
     "asset_pattern": "MPC-HC.*x64.exe",
     "winget_id": "clsid2.mpc-hc",
     "accent_color": "#ffcc00",
-    "icon_url": "https://raw.githubusercontent.com/clsid2/mpc-hc/develop/src/mpc-hc/res/icon.ico",
+    "icon_url": "assets/catalog/mpc_hc.png",
     "featured": false
   },
   {
@@ -497,7 +497,7 @@
     "asset_pattern": "audacity-win-*-64bit.exe",
     "winget_id": "Audacity.Audacity",
     "accent_color": "#0079c1",
-    "icon_url": "https://cdn.simpleicons.org/audacity/white",
+    "icon_url": "assets/catalog/audacity.svg",
     "featured": false
   },
   {
@@ -513,7 +513,7 @@
     "asset_pattern": "DesktopEditors_x64.exe",
     "winget_id": "ONLYOFFICE.DesktopEditors",
     "accent_color": "#444444",
-    "icon_url": "https://cdn.simpleicons.org/onlyoffice/white",
+    "icon_url": "assets/catalog/onlyoffice.svg",
     "featured": false
   },
   {
@@ -529,7 +529,7 @@
     "asset_pattern": "Obsidian-*.exe",
     "winget_id": "Obsidian.Obsidian",
     "accent_color": "#7c3aed",
-    "icon_url": "https://cdn.simpleicons.org/obsidian/white",
+    "icon_url": "assets/catalog/obsidian.svg",
     "featured": false
   },
   {
@@ -544,7 +544,7 @@
     "accent_color": "#00579e",
     "winget_id": "SumatraPDF.SumatraPDF",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/sumatrapdfreader/sumatrapdf/HEAD/appx/SumatraLogo310x310.png",
+    "icon_url": "assets/catalog/sumatra_pdf.png",
     "featured": false
   },
   {
@@ -567,7 +567,7 @@
       "qbittorrent"
     ],
     "launch_executable": "qbittorrent.exe",
-    "icon_url": "https://cdn.simpleicons.org/qbittorrent/white",
+    "icon_url": "assets/catalog/qbittorrent.svg",
     "featured": false
   },
   {
@@ -582,7 +582,7 @@
     "download_url": "https://download.mozilla.org/?product=thunderbird-latest-ssl&os=win64&lang=es-ES",
     "winget_id": "Mozilla.Thunderbird",
     "accent_color": "#0a84ff",
-    "icon_url": "https://cdn.simpleicons.org/thunderbird/white",
+    "icon_url": "assets/catalog/thunderbird.svg",
     "featured": false
   },
   {
@@ -607,7 +607,7 @@
       "Telegram Desktop",
       "Telegram"
     ],
-    "icon_url": "https://cdn.simpleicons.org/telegram/white",
+    "icon_url": "assets/catalog/telegram.svg",
     "featured": false
   },
   {
@@ -620,7 +620,7 @@
     "section": "Social y Comunicación",
     "source_type": "winget",
     "accent_color": "#25927a",
-    "icon_url": "https://cdn.simpleicons.org/signal/white",
+    "icon_url": "assets/catalog/signal.svg",
     "winget_id": "OpenWhisperSystems.Signal",
     "winget_source": "winget",
     "featured": false
@@ -642,7 +642,7 @@
     "accent_color": "#5d6df5",
     "winget_id": "Tailscale.Tailscale",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/tailscale/white"
+    "icon_url": "assets/catalog/tailscale.svg"
   },
   {
     "id": "windscribe",
@@ -654,7 +654,7 @@
     "section": "Utilidades",
     "source_type": "winget",
     "accent_color": "#00bcd4",
-    "icon_url": "https://raw.githubusercontent.com/Windscribe/Desktop-App/HEAD/src/client/frontend/gui/svg/BADGE_BLACK_ICON.svg",
+    "icon_url": "assets/catalog/windscribe.svg",
     "icon_background": "#ffffff",
     "icon_padding": 8,
     "icon_fit": "contain",
@@ -674,7 +674,7 @@
     "accent_color": "#4a90e2",
     "winget_id": "MullvadVPN.MullvadVPN",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/mullvad/white",
+    "icon_url": "assets/catalog/mullvad.svg",
     "featured": false
   },
   {
@@ -687,7 +687,7 @@
     "section": "Utilidades",
     "source_type": "winget",
     "accent_color": "#6d4aff",
-    "icon_url": "https://cdn.simpleicons.org/protonvpn/white",
+    "icon_url": "assets/catalog/protonvpn.svg",
     "winget_id": "Proton.ProtonVPN",
     "winget_source": "winget",
     "featured": false
@@ -704,7 +704,7 @@
     "accent_color": "#1f7a8c",
     "winget_id": "OpenVPNTechnologies.OpenVPN",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/openvpn/white",
+    "icon_url": "assets/catalog/openvpn_gui.svg",
     "featured": false
   },
   {
@@ -720,7 +720,7 @@
     "github_repo": "rustdesk/rustdesk",
     "asset_pattern": "rustdesk-*-x86_64.msi",
     "accent_color": "#ef4c3b",
-    "icon_url": "https://cdn.simpleicons.org/rustdesk/white"
+    "icon_url": "assets/catalog/rustdesk.svg"
   },
   {
     "id": "anydesk",
@@ -734,7 +734,7 @@
     "download_url": "https://download.anydesk.com/AnyDesk.exe",
     "winget_id": "AnyDesk.AnyDesk",
     "accent_color": "#ef4035",
-    "icon_url": "https://cdn.simpleicons.org/anydesk/white",
+    "icon_url": "assets/catalog/anydesk.svg",
     "featured": false
   },
   {
@@ -754,7 +754,7 @@
       "PowerToys"
     ],
     "accent_color": "#f25022",
-    "icon_url": "https://raw.githubusercontent.com/microsoft/PowerToys/HEAD/doc/images/icons/PowerToys%20icon/PNG/2160x2160.png"
+    "icon_url": "assets/catalog/powertoys.png"
   },
   {
     "id": "cpu_z",
@@ -765,7 +765,7 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://www.cpuid.com/medias/images/softwares/cpu-z.png",
+    "icon_url": "assets/catalog/cpu_z.png",
     "accent_color": "#0b70bd",
     "winget_id": "CPUID.CPU-Z",
     "winget_source": "winget",
@@ -780,7 +780,7 @@
     "category": "Discos y almacenamiento",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://raw.githubusercontent.com/hiyohiyo/CrystalDiskInfo/HEAD/resN/DiskInfo.ico",
+    "icon_url": "assets/catalog/crystaldiskinfo.png",
     "accent_color": "#009688",
     "winget_id": "CrystalDewWorld.CrystalDiskInfo",
     "winget_source": "winget",
@@ -799,7 +799,7 @@
     "asset_pattern": "balenaEtcher-*.Setup.exe",
     "winget_id": "Balena.Etcher",
     "accent_color": "#20beff",
-    "icon_url": "https://raw.githubusercontent.com/balena-io/etcher/HEAD/assets/iconset/512x512.png",
+    "icon_url": "assets/catalog/etcher.png",
     "featured": false
   },
   {
@@ -815,7 +815,7 @@
     "asset_pattern": "rufus-*.exe",
     "winget_id": "Rufus.Rufus",
     "accent_color": "#e52320",
-    "icon_url": "https://rufus.ie/pics/rufus-128.png",
+    "icon_url": "assets/catalog/rufus.png",
     "featured": false
   },
   {
@@ -831,7 +831,7 @@
     "asset_pattern": "HandBrake-*-x86_64-Win_GUI.exe",
     "winget_id": "HandBrake.HandBrake",
     "accent_color": "#333333",
-    "icon_url": "https://raw.githubusercontent.com/HandBrake/HandBrake/master/win/CS/HandBrakeWPF/Views/Images/logo128.png",
+    "icon_url": "assets/catalog/handbrake.png",
     "featured": false
   },
   {
@@ -847,7 +847,7 @@
     "asset_pattern": "ShareX-*-setup-x64.exe",
     "winget_id": "ShareX.ShareX",
     "accent_color": "#d22630",
-    "icon_url": "https://cdn.simpleicons.org/sharex/white",
+    "icon_url": "assets/catalog/sharex.svg",
     "featured": false
   },
   {
@@ -863,7 +863,7 @@
     "asset_pattern": "Greenshot-INSTALLER-*.exe",
     "winget_id": "Greenshot.Greenshot",
     "accent_color": "#80c342",
-    "icon_url": "https://getgreenshot.org/favicon.ico",
+    "icon_url": "assets/catalog/greenshot.png",
     "featured": false
   },
   {
@@ -879,7 +879,7 @@
     "asset_pattern": "Flameshot-*-win64.msi",
     "winget_id": "Flameshot.Flameshot",
     "accent_color": "#ff4444",
-    "icon_url": "https://raw.githubusercontent.com/flameshot-org/flameshot/master/data/img/app/flameshot.svg",
+    "icon_url": "assets/catalog/flameshot.svg",
     "featured": false
   },
   {
@@ -894,7 +894,7 @@
     "download_url": "https://desktop.docker.com/win/main/amd64/Docker%20Desktop%20Installer.exe",
     "winget_id": "Docker.DockerDesktop",
     "accent_color": "#0db7ed",
-    "icon_url": "https://cdn.simpleicons.org/docker/white",
+    "icon_url": "assets/catalog/docker_desktop.svg",
     "featured": false
   },
   {
@@ -909,7 +909,7 @@
     "download_url": "https://dl.pstmn.io/download/latest/win64",
     "winget_id": "Postman.Postman",
     "accent_color": "#ff6c37",
-    "icon_url": "https://cdn.simpleicons.org/postman/white",
+    "icon_url": "assets/catalog/postman.svg",
     "featured": false
   },
   {
@@ -925,7 +925,7 @@
     "asset_pattern": "dbeaver-ce-*-windows-x86_64.exe",
     "winget_id": "DBeaver.DBeaver.Community",
     "accent_color": "#382923",
-    "icon_url": "https://cdn.simpleicons.org/dbeaver/white",
+    "icon_url": "assets/catalog/dbeaver.svg",
     "featured": false
   },
   {
@@ -941,7 +941,7 @@
     "asset_pattern": "Insomnia.Core-nsis-*.exe",
     "winget_id": "Insomnia.Insomnia",
     "accent_color": "#4000bf",
-    "icon_url": "https://cdn.simpleicons.org/insomnia/white",
+    "icon_url": "assets/catalog/insomnia.svg",
     "featured": false
   },
   {
@@ -957,7 +957,7 @@
     "detect_names": [
       "Node.js"
     ],
-    "icon_url": "https://cdn.simpleicons.org/nodedotjs/white",
+    "icon_url": "assets/catalog/nodejs.svg",
     "winget_id": "OpenJS.NodeJS.LTS",
     "winget_source": "winget",
     "featured": false
@@ -972,7 +972,7 @@
     "section": "Desarrollo",
     "source_type": "winget",
     "accent_color": "#3776ab",
-    "icon_url": "https://cdn.simpleicons.org/python/white",
+    "icon_url": "assets/catalog/python3.svg",
     "winget_id": "Python.Python.3.14",
     "winget_source": "winget",
     "detect_names": [
@@ -994,7 +994,7 @@
     "source_type": "winget",
     "winget_id": "Stenzek.DuckStation",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/stenzek/duckstation/HEAD/scripts/appimage/org.duckstation.DuckStation.png",
+    "icon_url": "assets/catalog/duckstation.png",
     "accent_color": "#334155",
     "detect_names": [
       "DuckStation"
@@ -1015,7 +1015,7 @@
     "source_type": "github_release",
     "github_repo": "RPCS3/rpcs3-binaries-win",
     "asset_pattern": "rpcs3-*_win64_msvc.7z",
-    "icon_url": "https://raw.githubusercontent.com/RPCS3/rpcs3/HEAD/rpcs3/rpcs3.ico",
+    "icon_url": "assets/catalog/rpcs3.png",
     "accent_color": "#3b82f6",
     "launch_executable": "rpcs3.exe",
     "detect_names": [
@@ -1037,7 +1037,7 @@
     "source_type": "winget",
     "winget_id": "Xenia.Xenia",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/xenia-project/xenia/HEAD/assets/icon/256.png",
+    "icon_url": "assets/catalog/xenia.png",
     "accent_color": "#65a30d",
     "detect_names": [
       "Xenia"
@@ -1056,7 +1056,7 @@
     "github_repo": "hrydgard/ppsspp",
     "asset_pattern": "PPSSPP-v*-Windows-x64.zip",
     "winget_id": "PPSSPPTeam.PPSSPP",
-    "icon_url": "https://raw.githubusercontent.com/hrydgard/ppsspp/master/icons/hicolor/512x512/apps/ppsspp.png",
+    "icon_url": "assets/catalog/ppsspp.png",
     "accent_color": "#4f46e5",
     "console_tags": [
       "PSP"
@@ -1076,7 +1076,7 @@
     "asset_pattern": "cemu-*-windows-x64.zip",
     "winget_id": "Cemu.Cemu",
     "accent_color": "#0f766e",
-    "icon_url": "https://cemu.info/favicon.ico",
+    "icon_url": "assets/catalog/cemu.ico",
     "console_tags": [
       "Wii U"
     ],
@@ -1092,7 +1092,7 @@
     "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://cdn.plutonium.pw/updater/plutonium.exe",
-    "icon_url": "https://cdn.simpleicons.org/electron/white",
+    "icon_url": "assets/catalog/plutonium.svg",
     "accent_color": "#dc2626",
     "featured": false
   },
@@ -1107,7 +1107,7 @@
     "source_type": "winget",
     "winget_id": "DOSBoxStaging.DOSBoxStaging",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/dosbox-staging/dosbox-staging/HEAD/extras/icons/png/icon_256.png",
+    "icon_url": "assets/catalog/dosbox.png",
     "accent_color": "#7c3aed",
     "console_tags": [
       "DOS"
@@ -1130,7 +1130,7 @@
     "asset_pattern": "mGBA-*-win64-installer.exe",
     "winget_id": "JeffreyPfau.mGBA",
     "accent_color": "#16a34a",
-    "icon_url": "https://raw.githubusercontent.com/mgba-emu/mgba/master/res/mgba-256.png",
+    "icon_url": "assets/catalog/mgba.png",
     "console_tags": [
       "Game Boy",
       "Game Boy Color",
@@ -1154,7 +1154,7 @@
     "asset_pattern": "xemu-*-windows-x86_64.zip",
     "winget_id": "xemu-project.xemu",
     "accent_color": "#ea580c",
-    "icon_url": "https://xemu.app/favicon.ico",
+    "icon_url": "assets/catalog/xemu.png",
     "console_tags": [
       "Xbox"
     ],
@@ -1173,7 +1173,7 @@
     "asset_pattern": "PCSX2-*-windows-x64-installer.exe",
     "winget_id": "PCSX2Team.PCSX2",
     "accent_color": "#f59e0b",
-    "icon_url": "https://raw.githubusercontent.com/PCSX2/pcsx2/master/bin/resources/icons/AppIconLarge.png",
+    "icon_url": "assets/catalog/pcsx2.png",
     "console_tags": [
       "PS2"
     ],
@@ -1189,7 +1189,7 @@
     "section": "Emuladores",
     "source_type": "winget",
     "accent_color": "#3b82f6",
-    "icon_url": "https://cdn.simpleicons.org/retroarch/white",
+    "icon_url": "assets/catalog/retroarch.svg",
     "winget_id": "Libretro.RetroArch",
     "winget_source": "winget",
     "console_tags": [
@@ -1213,11 +1213,11 @@
     "version": "nightly",
     "author": "YimMenu Team",
     "category": "Modding",
-    "section": "Utilidades",
+    "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://github.com/YimMenu/YimMenuV2/releases/download/nightly/YimMenuV2.dll",
     "accent_color": "#0f172a",
-    "icon_url": "https://cdn.simpleicons.org/rockstargames/white",
+    "icon_url": "assets/catalog/yimmenu.svg",
     "featured": false
   },
   {
@@ -1252,7 +1252,7 @@
     "section": "Utilidades",
     "source_type": "github_release",
     "accent_color": "#7f1d1d",
-    "icon_url": "https://cdn.simpleicons.org/cplusplus/white",
+    "icon_url": "assets/catalog/xenos.svg",
     "github_repo": "DarthTon/Xenos",
     "asset_pattern": "*.7z",
     "featured": false
@@ -1266,7 +1266,7 @@
     "category": "Desarrollo con IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/google/white",
+    "icon_url": "assets/catalog/antigravity.svg",
     "accent_color": "#4285f4",
     "winget_id": "Google.Antigravity",
     "winget_source": "winget",
@@ -1281,7 +1281,7 @@
     "category": "Desarrollo con IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://upload.wikimedia.org/wikipedia/commons/4/4d/OpenAI_Logo.svg",
+    "icon_url": "assets/catalog/openai_codex.svg",
     "accent_color": "#10a37f",
     "winget_id": "OpenAI.Codex",
     "winget_source": "winget",
@@ -1299,7 +1299,7 @@
     "category": "Desarrollo con IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/anthropic/white",
+    "icon_url": "assets/catalog/claudecode.svg",
     "accent_color": "#d97706",
     "winget_id": "Anthropic.ClaudeCode",
     "winget_source": "winget",
@@ -1314,7 +1314,7 @@
     "category": "Desarrollo con IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/bytedance/white",
+    "icon_url": "assets/catalog/trae.svg",
     "accent_color": "#3b82f6",
     "winget_id": "ByteDance.Trae",
     "winget_source": "winget",
@@ -1332,7 +1332,7 @@
     "category": "Desarrollo con IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/cursor/white",
+    "icon_url": "assets/catalog/cursor.svg",
     "accent_color": "#0f172a",
     "winget_id": "Anysphere.Cursor",
     "winget_source": "winget",
@@ -1347,7 +1347,7 @@
     "category": "Asistentes de IA",
     "section": "IA",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/kimi/white",
+    "icon_url": "assets/catalog/kimi.svg",
     "icon_background": "#000000",
     "icon_padding": 6,
     "accent_color": "#8b5cf6",
@@ -1370,7 +1370,7 @@
     "source_type": "winget",
     "winget_id": "9PLM9XGG6VKS",
     "winget_source": "msstore",
-    "icon_url": "https://www.google.com/s2/favicons?domain=chatgpt.com&sz=128",
+    "icon_url": "assets/catalog/chatgpt.png",
     "icon_background": "#ffffff",
     "icon_padding": 15,
     "accent_color": "#10a37f",
@@ -1392,7 +1392,7 @@
     "featured": false,
     "source_type": "webapp",
     "web_url": "https://chat.deepseek.com/",
-    "icon_url": "https://icons.duckduckgo.com/ip3/deepseek.com.ico",
+    "icon_url": "assets/catalog/deepseek.png",
     "icon_background": "#ffffff",
     "icon_padding": 14,
     "accent_color": "#4d6bfe"
@@ -1406,7 +1406,7 @@
     "category": "Herramientas de línea de comandos",
     "section": "Desarrollo",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/cplusplus/white",
+    "icon_url": "assets/catalog/resource_hacker.svg",
     "accent_color": "#0284c7",
     "winget_id": "AngusJohnson.ResourceHacker",
     "winget_source": "winget",
@@ -1422,7 +1422,7 @@
     "section": "Navegadores",
     "source_type": "github_release",
     "github_repo": "Alex313031/Thorium-Win",
-    "icon_url": "https://raw.githubusercontent.com/Alex313031/Thorium-Win/main/ThoriumLogo.png",
+    "icon_url": "assets/catalog/thorium.png",
     "accent_color": "#2563eb",
     "launch_executable": "thorium.exe",
     "detect_names": [
@@ -1480,7 +1480,7 @@
     "source_type": "wget",
     "download_url": "https://www.slimjet.com/release/sjtsetup_x64.exe",
     "winget_id": "FlashPeak.Slimjet",
-    "icon_url": "https://www.slimjet.com/favicon.ico",
+    "icon_url": "assets/catalog/slimjet.ico",
     "accent_color": "#059669",
     "featured": false
   },
@@ -1493,7 +1493,7 @@
     "category": "Navegadores",
     "section": "Navegadores",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/operagx/white",
+    "icon_url": "assets/catalog/opera_gx.svg",
     "accent_color": "#ff1b2d",
     "winget_id": "Opera.OperaGX",
     "winget_source": "winget",
@@ -1511,7 +1511,7 @@
     "github_repo": "imputnet/helium-windows",
     "asset_pattern": "Helium_*_x64-installer.exe",
     "winget_id": "ImputNet.Helium",
-    "icon_url": "https://raw.githubusercontent.com/imputnet/helium/main/resources/branding/app_icon/raw.png",
+    "icon_url": "assets/catalog/helium_browser.png",
     "accent_color": "#3854d8",
     "detect_names": [
       "Helium",
@@ -1528,7 +1528,7 @@
     "category": "Navegadores",
     "section": "Navegadores",
     "source_type": "winget",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/microsoft-edge.png",
+    "icon_url": "assets/catalog/microsoft_edge.png",
     "accent_color": "#0078d4",
     "winget_id": "Microsoft.Edge",
     "winget_source": "winget",
@@ -1543,7 +1543,7 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/msi/white",
+    "icon_url": "assets/catalog/msi_afterburner.svg",
     "accent_color": "#e11d48",
     "winget_id": "Guru3D.Afterburner",
     "winget_source": "winget",
@@ -1558,7 +1558,7 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/msi/white",
+    "icon_url": "assets/catalog/rivatuner.svg",
     "accent_color": "#be123c",
     "winget_id": "Guru3D.RTSS",
     "winget_source": "winget",
@@ -1573,7 +1573,7 @@
     "category": "Sistema",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/speedtest/white",
+    "icon_url": "assets/catalog/wintoys.svg",
     "accent_color": "#2563eb",
     "winget_id": "9P8LTPGCBZXD",
     "winget_source": "msstore",
@@ -1588,7 +1588,7 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=hwinfo.com&sz=128",
+    "icon_url": "assets/catalog/hwinfo.png",
     "accent_color": "#1e3a8a",
     "winget_id": "REALiX.HWiNFO",
     "winget_source": "winget",
@@ -1603,7 +1603,8 @@
     "category": "Hardware y monitorización",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=alcpu.com&sz=128",
+    "icon_url": "assets/catalog/coretemp.png",
+    "icon_fit": "contain",
     "accent_color": "#b91c1c",
     "winget_id": "ALCPU.CoreTemp",
     "winget_source": "winget",
@@ -1620,7 +1621,7 @@
     "source_type": "wget",
     "download_url": "https://downloads.ntlite.com/files/NTLite_setup_x64.exe",
     "winget_id": "Nlitesoft.NTLite",
-    "icon_url": "https://www.ntlite.com/favicon.ico",
+    "icon_url": "assets/catalog/ntlite.png",
     "accent_color": "#0369a1",
     "featured": false
   },
@@ -1635,7 +1636,7 @@
     "source_type": "wget",
     "download_url": "https://www.autohotkey.com/download/ahk-v2.exe",
     "winget_id": "AutoHotkey.AutoHotkey",
-    "icon_url": "https://cdn.simpleicons.org/autohotkey/white",
+    "icon_url": "assets/catalog/autohotkey.svg",
     "accent_color": "#334155",
     "featured": false
   },
@@ -1650,7 +1651,7 @@
     "source_type": "wget",
     "download_url": "https://dl.google.com/drive-file-stream/GoogleDriveSetup.exe",
     "winget_id": "Google.GoogleDrive",
-    "icon_url": "https://cdn.simpleicons.org/googledrive/white",
+    "icon_url": "assets/catalog/google_drive.svg",
     "accent_color": "#15803d",
     "featured": false
   },
@@ -1665,7 +1666,7 @@
     "source_type": "wget",
     "download_url": "https://mega.nz/MEGAsyncSetup64.exe",
     "winget_id": "Mega.MEGASync",
-    "icon_url": "https://cdn.simpleicons.org/mega/white",
+    "icon_url": "assets/catalog/megasync.svg",
     "accent_color": "#dc2626",
     "featured": false
   },
@@ -1680,7 +1681,7 @@
     "source_type": "github_release",
     "github_repo": "winsiderss/systeminformer",
     "winget_id": "WinsiderSS.SystemInformer",
-    "icon_url": "https://raw.githubusercontent.com/winsiderss/systeminformer/master/SystemInformer/SystemInformer.ico",
+    "icon_url": "assets/catalog/process_hacker.png",
     "accent_color": "#4338ca",
     "featured": false
   },
@@ -1696,7 +1697,7 @@
     "source_type": "winget",
     "winget_id": "IObit.IObitUnlocker",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=iobit.com&sz=128",
+    "icon_url": "assets/catalog/iobit_unlocker.png",
     "icon_background": "#ffffff",
     "icon_padding": 22,
     "accent_color": "#1e6fd9",
@@ -1713,7 +1714,8 @@
     "category": "Discos y almacenamiento",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "https://www.diskgenius.com/favicon.ico",
+    "icon_url": "assets/catalog/disk_genius.png",
+    "icon_fit": "contain",
     "accent_color": "#0f766e",
     "winget_id": "Eassos.DiskGenius",
     "winget_source": "winget",
@@ -1729,7 +1731,7 @@
     "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://download01.logi.com/web/ftp/pub/techsupport/gaming/lghub_installer.exe",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/logitech.png",
+    "icon_url": "assets/catalog/logitech_ghub.png",
     "accent_color": "#00b4ec",
     "detect_names": [
       "Logitech G HUB",
@@ -1747,7 +1749,7 @@
     "category": "Periféricos",
     "section": "Juegos",
     "source_type": "winget",
-    "icon_url": "https://cdn.simpleicons.org/razer/white",
+    "icon_url": "assets/catalog/razer_synapse.svg",
     "accent_color": "#16a34a",
     "winget_id": "RazerInc.RazerInstaller.Synapse4",
     "winget_source": "winget",
@@ -1765,7 +1767,7 @@
     "source_type": "winget",
     "winget_id": "Anaconda.Anaconda3",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/anaconda/white",
+    "icon_url": "assets/catalog/ipython.svg",
     "detect_names": [
       "Anaconda3",
       "Anaconda"
@@ -1783,7 +1785,7 @@
     "source_type": "winget",
     "winget_id": "DenoLand.Deno",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/deno/white",
+    "icon_url": "assets/catalog/deno.svg",
     "detect_names": [
       "Deno"
     ]
@@ -1800,7 +1802,7 @@
     "source_type": "winget",
     "winget_id": "Oven-sh.Bun",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/bun/white",
+    "icon_url": "assets/catalog/bun.svg",
     "detect_names": [
       "Bun"
     ]
@@ -1817,7 +1819,7 @@
     "source_type": "winget",
     "winget_id": "RubyInstallerTeam.RubyWithDevKit.3.4",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/ruby/white",
+    "icon_url": "assets/catalog/ruby.svg",
     "detect_names": [
       "Ruby",
       "Ruby with MSYS2"
@@ -1835,7 +1837,7 @@
     "source_type": "winget",
     "winget_id": "StrawberryPerl.StrawberryPerl",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/perl/white",
+    "icon_url": "assets/catalog/perl.svg",
     "detect_names": [
       "Strawberry Perl"
     ]
@@ -1852,7 +1854,7 @@
     "source_type": "winget",
     "winget_id": "PHP.PHP.8.4",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/php/white",
+    "icon_url": "assets/catalog/php.svg",
     "detect_names": [
       "PHP 8.4",
       "PHP"
@@ -1870,7 +1872,7 @@
     "source_type": "winget",
     "winget_id": "DEVCOM.Lua",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/lua/white",
+    "icon_url": "assets/catalog/lua.svg",
     "detect_names": [
       "Lua"
     ]
@@ -1904,7 +1906,7 @@
     "source_type": "winget",
     "winget_id": "Rakudo.Rakudo",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/rakudo/rakudo/main/tools/build/binary-release/msi/assets/rakudo_icon.ico",
+    "icon_url": "assets/catalog/raku.png",
     "detect_names": [
       "Rakudo Star",
       "Rakudo"
@@ -1922,7 +1924,7 @@
     "source_type": "winget",
     "winget_id": "RProject.R",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/r/white",
+    "icon_url": "assets/catalog/r_language.svg",
     "detect_names": [
       "R for Windows",
       "R"
@@ -1940,7 +1942,7 @@
     "source_type": "winget",
     "winget_id": "Julialang.Julia",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/julia/white",
+    "icon_url": "assets/catalog/julia.svg",
     "detect_names": [
       "Julia"
     ]
@@ -1957,7 +1959,7 @@
     "source_type": "github_release",
     "github_repo": "elixir-lang/elixir",
     "asset_pattern": "elixir-otp-29.exe",
-    "icon_url": "https://cdn.simpleicons.org/elixir/white",
+    "icon_url": "assets/catalog/elixir.svg",
     "detect_names": [
       "Elixir"
     ]
@@ -1974,7 +1976,7 @@
     "source_type": "winget",
     "winget_id": "Erlang.ErlangOTP",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/erlang/white",
+    "icon_url": "assets/catalog/erlang.svg",
     "detect_names": [
       "Erlang OTP",
       "Erlang"
@@ -1992,7 +1994,7 @@
     "source_type": "winget",
     "winget_id": "Microsoft.DotNet.SDK.10",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/dotnet/white",
+    "icon_url": "assets/catalog/dotnet_sdk.svg",
     "detect_names": [
       "Microsoft .NET SDK",
       ".NET SDK"
@@ -2010,7 +2012,7 @@
     "source_type": "winget",
     "winget_id": "VirtusLab.ScalaCLI",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/scala/white",
+    "icon_url": "assets/catalog/scala_cli.svg",
     "detect_names": [
       "Scala CLI"
     ]
@@ -2027,7 +2029,7 @@
     "source_type": "winget",
     "winget_id": "Apache.Groovy.4",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/apachegroovy/white",
+    "icon_url": "assets/catalog/groovy.svg",
     "detect_names": [
       "Groovy"
     ]
@@ -2044,7 +2046,7 @@
     "source_type": "winget",
     "winget_id": "SBCL.SBCL",
     "winget_source": "winget",
-    "icon_url": "https://www.sbcl.org/sbclbutton.png",
+    "icon_url": "assets/catalog/sbcl.png",
     "detect_names": [
       "Steel Bank Common Lisp",
       "SBCL"
@@ -2065,7 +2067,7 @@
     "source_type": "winget",
     "winget_id": "Racket.Racket",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/racket/white",
+    "icon_url": "assets/catalog/racket.svg",
     "detect_names": [
       "Racket"
     ]
@@ -2082,7 +2084,7 @@
     "source_type": "winget",
     "winget_id": "Swift.Toolchain",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/swift/white",
+    "icon_url": "assets/catalog/swift.svg",
     "detect_names": [
       "Swift",
       "Swift Toolchain"
@@ -2100,7 +2102,7 @@
     "source_type": "winget",
     "winget_id": "Google.DartSDK",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/dart/white",
+    "icon_url": "assets/catalog/dart.svg",
     "detect_names": [
       "Dart SDK"
     ]
@@ -2117,7 +2119,7 @@
     "source_type": "winget",
     "winget_id": "CrystalLang.Crystal",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/crystal/white",
+    "icon_url": "assets/catalog/crystal.svg",
     "detect_names": [
       "Crystal"
     ]
@@ -2135,7 +2137,7 @@
     "github_repo": "nim-lang/nightlies",
     "asset_pattern": "windows_x64.zip",
     "winget_id": "nim.nim",
-    "icon_url": "https://cdn.simpleicons.org/nim/white",
+    "icon_url": "assets/catalog/nim.svg",
     "detect_names": [
       "Nim"
     ],
@@ -2153,7 +2155,7 @@
     "source_type": "github_release",
     "github_repo": "vlang/v",
     "asset_pattern": "v_windows.zip",
-    "icon_url": "https://cdn.simpleicons.org/v/white",
+    "icon_url": "assets/catalog/v_language.svg",
     "detect_names": [
       "V"
     ],
@@ -2171,7 +2173,7 @@
     "source_type": "github_release",
     "github_repo": "x-motemen/gore",
     "asset_pattern": "gore_*_windows_amd64.zip",
-    "icon_url": "https://cdn.simpleicons.org/go/white",
+    "icon_url": "assets/catalog/gore.svg",
     "detect_names": [
       "Gore"
     ],
@@ -2189,7 +2191,7 @@
     "source_type": "winget",
     "winget_id": "GNU.Octave",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/octave/white",
+    "icon_url": "assets/catalog/octave.svg",
     "detect_names": [
       "GNU Octave",
       "Octave"
@@ -2207,7 +2209,7 @@
     "source_type": "winget",
     "winget_id": "MaximaTeam.Maxima",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=maxima.sourceforge.io&sz=128",
+    "icon_url": "assets/catalog/maxima.jpg",
     "detect_names": [
       "Maxima"
     ],
@@ -2225,7 +2227,7 @@
     "source_type": "winget",
     "winget_id": "Coq.CoqPlatform",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/rocq-prover/rocq-prover.org/main/rocq-id/avatar/SVG/avatar-rocq-1.svg",
+    "icon_url": "assets/catalog/coq_platform.svg",
     "detect_names": [
       "Coq Platform",
       "Coq"
@@ -2243,7 +2245,7 @@
     "source_type": "winget",
     "winget_id": "SWI-Prolog.SWI-Prolog",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=swi-prolog.org&sz=128",
+    "icon_url": "assets/catalog/swipl.png",
     "detect_names": [
       "SWI-Prolog"
     ]
@@ -2260,7 +2262,8 @@
     "source_type": "winget",
     "winget_id": "GNU.Gforth",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=gforth.org&sz=128",
+    "icon_url": "assets/catalog/gforth.png",
+    "icon_fit": "contain",
     "detect_names": [
       "Gforth"
     ]
@@ -2277,7 +2280,7 @@
     "source_type": "winget",
     "winget_id": "SQLite.SQLite",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/sqlite/white",
+    "icon_url": "assets/catalog/sqlite.svg",
     "detect_names": [
       "SQLite"
     ]
@@ -2294,7 +2297,7 @@
     "source_type": "winget",
     "winget_id": "PostgreSQL.PostgreSQL.18",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/postgresql/white",
+    "icon_url": "assets/catalog/postgresql.svg",
     "detect_names": [
       "PostgreSQL 18",
       "PostgreSQL"
@@ -2312,7 +2315,7 @@
     "source_type": "winget",
     "winget_id": "Oracle.MySQL",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/mysql/white",
+    "icon_url": "assets/catalog/mysql.svg",
     "detect_names": [
       "MySQL Server",
       "MySQL"
@@ -2331,7 +2334,7 @@
     "download_url": "https://cdn.mysql.com/Downloads/MySQL-Shell/mysql-shell-26.7.0-windows-x86-64bit.msi",
     "download_filename": "mysql-shell-26.7.0-windows-x86-64bit.msi",
     "winget_id": "Oracle.MySQLShell",
-    "icon_url": "https://cdn.simpleicons.org/mysql/white",
+    "icon_url": "assets/catalog/mysql_shell.svg",
     "launch_executable": "mysqlsh.exe",
     "detect_names": [
       "MySQL Shell"
@@ -2349,7 +2352,7 @@
     "source_type": "winget",
     "winget_id": "MariaDB.Server",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/mariadb/white",
+    "icon_url": "assets/catalog/mariadb.svg",
     "detect_names": [
       "MariaDB",
       "MariaDB Server"
@@ -2367,7 +2370,7 @@
     "source_type": "winget",
     "winget_id": "DuckDB.cli",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/duckdb/white",
+    "icon_url": "assets/catalog/duckdb.svg",
     "detect_names": [
       "DuckDB CLI",
       "DuckDB"
@@ -2385,7 +2388,7 @@
     "source_type": "winget",
     "winget_id": "MongoDB.Shell",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/mongodb/white",
+    "icon_url": "assets/catalog/mongosh.svg",
     "detect_names": [
       "MongoDB Shell",
       "mongosh"
@@ -2403,7 +2406,7 @@
     "source_type": "winget",
     "winget_id": "jqlang.jq",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/jqlang/jq/HEAD/docs/public/icon.png",
+    "icon_url": "assets/catalog/jq.png",
     "detect_names": [
       "jq"
     ]
@@ -2420,7 +2423,7 @@
     "source_type": "winget",
     "winget_id": "MikeFarah.yq",
     "winget_source": "winget",
-    "icon_url": "https://mikefarah.gitbook.io/yq/~gitbook/icon?size=medium&theme=dark&border=false",
+    "icon_url": "assets/catalog/yq.png",
     "detect_names": [
       "yq"
     ]
@@ -2437,7 +2440,7 @@
     "source_type": "winget",
     "winget_id": "Microsoft.PowerShell",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/PowerShell/PowerShell/HEAD/assets/Square150x150Logo.png",
+    "icon_url": "assets/catalog/powershell.png",
     "detect_names": [
       "PowerShell 7",
       "PowerShell"
@@ -2455,7 +2458,7 @@
     "source_type": "winget",
     "winget_id": "Nushell.Nushell",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/nushell/white",
+    "icon_url": "assets/catalog/nushell.svg",
     "detect_names": [
       "Nushell"
     ]
@@ -2472,7 +2475,7 @@
     "source_type": "winget",
     "winget_id": "xonsh.xonsh-winget",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/xonsh/xonsh/HEAD/docs/_static/landing2/images/xonsh_term_icon_512x512.png",
+    "icon_url": "assets/catalog/xonsh.png",
     "detect_names": [
       "xonsh-winget",
       "Xonsh"
@@ -2490,7 +2493,7 @@
     "source_type": "winget",
     "winget_id": "elves.elvish",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/elves/elvish/HEAD/website/favicons/android-chrome-512x512.png",
+    "icon_url": "assets/catalog/elvish.png",
     "detect_names": [
       "Elvish"
     ]
@@ -2507,7 +2510,7 @@
     "source_type": "winget",
     "winget_id": "Ventoy.Ventoy",
     "winget_source": "winget",
-    "icon_url": "https://www.ventoy.net/static/img/ventoy.png",
+    "icon_url": "assets/catalog/ventoy.png",
     "detect_names": [
       "Ventoy"
     ]
@@ -2524,7 +2527,7 @@
     "source_type": "winget",
     "winget_id": "GOG.Galaxy",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/gogdotcom/white",
+    "icon_url": "assets/catalog/gog_galaxy.svg",
     "detect_names": [
       "GOG GALAXY",
       "GOG Galaxy"
@@ -2542,7 +2545,7 @@
     "source_type": "winget",
     "winget_id": "HumbleBundle.HumbleApp",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/humblebundle/white",
+    "icon_url": "assets/catalog/humble_app.svg",
     "detect_names": [
       "Humble App"
     ]
@@ -2562,7 +2565,7 @@
     "installer_args": [
       "/S"
     ],
-    "icon_url": "https://cdn.simpleicons.org/rockstargames/FFC600",
+    "icon_url": "assets/catalog/rockstar_games_launcher.svg",
     "icon_background": "#000000",
     "icon_padding": 6,
     "accent_color": "#ffc600",
@@ -2585,7 +2588,7 @@
     "source_type": "winget",
     "winget_id": "86Box.86Box",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/86Box/86Box/HEAD/src/qt/icons/86Box-red.ico",
+    "icon_url": "assets/catalog/emu_86box.ico",
     "detect_names": [
       "86Box"
     ],
@@ -2620,13 +2623,13 @@
     "description": "Motor y entorno para crear y ejecutar aventuras gráficas clásicas.",
     "version": "latest",
     "author": "AGS Project Team",
-    "category": "Emuladores",
-    "section": "Emuladores",
+    "category": "Motores de videojuegos",
+    "section": "Desarrollo",
     "featured": false,
     "source_type": "winget",
     "winget_id": "AGSProjectTeam.AdventureGameStudio",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/adventuregamestudio/ags/HEAD/OSX/ags.iconset/icon_256x256.png",
+    "icon_url": "assets/catalog/adventure_game_studio.png",
     "detect_names": [
       "Adventure Game Studio"
     ],
@@ -2646,7 +2649,7 @@
     "source_type": "winget",
     "winget_id": "AzaharEmu.Azahar",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/azahar-emu/azahar/HEAD/dist/qt_themes/default/icons/256x256/azahar.png",
+    "icon_url": "assets/catalog/azahar.png",
     "detect_names": [
       "Azahar"
     ],
@@ -2666,7 +2669,7 @@
     "source_type": "winget",
     "winget_id": "DeSmuMETeam.DeSmuME",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/TASEmulators/desmume/HEAD/desmume/src/frontend/cocoa/images/Icon_DeSmuME_32x32@2x.png",
+    "icon_url": "assets/catalog/desmume.png",
     "detect_names": [
       "DeSmuME"
     ],
@@ -2686,7 +2689,7 @@
     "source_type": "winget",
     "winget_id": "MAMEdev.MAME",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/mamedev/mame/HEAD/scripts/resources/windows/mame/mame.ico",
+    "icon_url": "assets/catalog/mame.png",
     "detect_names": [
       "MAME"
     ],
@@ -2707,7 +2710,7 @@
     "source_type": "winget",
     "winget_id": "MednafenTeam.Mednafen",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/libretro-mirrors/mednafen-git/HEAD/src/drivers/win-icon.ico",
+    "icon_url": "assets/catalog/mednafen.ico",
     "detect_names": [
       "Mednafen"
     ],
@@ -2731,7 +2734,7 @@
     "source_type": "winget",
     "winget_id": "melonDS.melonDS",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/melonDS-emu/melonDS/HEAD/res/icon/melon_256x256.png",
+    "icon_url": "assets/catalog/melonds.png",
     "detect_names": [
       "melonDS"
     ],
@@ -2752,7 +2755,7 @@
     "source_type": "winget",
     "winget_id": "redream.redream",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=redream.io&sz=128",
+    "icon_url": "assets/catalog/redream.png",
     "detect_names": [
       "redream"
     ],
@@ -2772,7 +2775,7 @@
     "source_type": "winget",
     "winget_id": "Ruffle.Ruffle",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/ruffle-rs/ruffle/HEAD/desktop/assets/Assets.xcassets/RuffleMacIcon.iconset/icon_256x256.png",
+    "icon_url": "assets/catalog/ruffle.png",
     "detect_names": [
       "Ruffle"
     ],
@@ -2792,7 +2795,7 @@
     "source_type": "github_release",
     "github_repo": "Rosalie241/RMG",
     "asset_pattern": "RMG-Portable-Windows64-*.zip",
-    "icon_url": "https://raw.githubusercontent.com/Rosalie241/RMG/HEAD/Source/RMG/UserInterface/Resource/RMG.png",
+    "icon_url": "assets/catalog/rmg.png",
     "detect_names": [
       "RMG",
       "Rosalie's Mupen GUI"
@@ -2814,7 +2817,7 @@
     "source_type": "winget",
     "winget_id": "ScummVM.ScummVM",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/scummvm/scummvm/HEAD/dists/ios7/Images.xcassets/AppIcon.appiconset/icon4-1024.png",
+    "icon_url": "assets/catalog/scummvm.png",
     "detect_names": [
       "ScummVM"
     ],
@@ -2835,7 +2838,7 @@
     "source_type": "github_release",
     "github_repo": "snes9xgit/snes9x",
     "asset_pattern": "snes9x-*-win32-x64.zip",
-    "icon_url": "https://raw.githubusercontent.com/snes9xgit/snes9x/master/gtk/data/snes9x_256x256.png",
+    "icon_url": "assets/catalog/snes9x.png",
     "detect_names": [
       "Snes9x"
     ],
@@ -2856,7 +2859,7 @@
     "source_type": "github_release",
     "github_repo": "nesbox/TIC-80",
     "asset_pattern": "tic80-*-win.zip",
-    "icon_url": "https://raw.githubusercontent.com/nesbox/TIC-80/HEAD/build/windows/icon.ico",
+    "icon_url": "assets/catalog/tic80.ico",
     "detect_names": [
       "TIC-80"
     ],
@@ -2877,7 +2880,7 @@
     "source_type": "winget",
     "winget_id": "Vita3K.Vita3K",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/Vita3K/Vita3K/HEAD/vita3k/Vita3K.png",
+    "icon_url": "assets/catalog/vita3k.png",
     "detect_names": [
       "Vita3K"
     ],
@@ -2897,7 +2900,7 @@
     "source_type": "winget",
     "winget_id": "sharpemu.SharpEmu",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/sharpemu/sharpemu/main/assets/images/logo_transparent.png",
+    "icon_url": "assets/catalog/sharpemu.png",
     "detect_names": [
       "SharpEmu"
     ],
@@ -2921,7 +2924,7 @@
     "source_type": "github_release",
     "github_repo": "ZDoom/gzdoom",
     "asset_pattern": "gzdoom-*-windows.zip",
-    "icon_url": "https://raw.githubusercontent.com/ZDoom/gzdoom/master/src/win32/icon1.ico",
+    "icon_url": "assets/catalog/gzdoom.ico",
     "detect_names": [
       "GZDoom"
     ],
@@ -2943,7 +2946,7 @@
     "source_type": "wget",
     "download_url": "https://easyrpg.org/downloads/player/latest/easyrpg-player-latest-windows-x64.zip",
     "download_filename": "easyrpg-player-latest-windows-x64.zip",
-    "icon_url": "https://cdn.simpleicons.org/easyrpg/41B883",
+    "icon_url": "assets/catalog/easyrpg_player.png",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "accent_color": "#41b883",
@@ -2969,7 +2972,7 @@
     "github_repo": "stella-emu/stella",
     "asset_pattern": "Stella-*-windows.zip",
     "winget_id": "TheStellaTeam.Stella",
-    "icon_url": "https://raw.githubusercontent.com/stella-emu/stella/HEAD/src/common/stella-128x128.png",
+    "icon_url": "assets/catalog/stella.png",
     "detect_names": [
       "Stella"
     ],
@@ -2990,7 +2993,7 @@
     "source_type": "github_release",
     "github_repo": "root-project/root",
     "asset_pattern": "root_*win64.python311.vc17.exe",
-    "icon_url": "https://raw.githubusercontent.com/root-project/root/HEAD/icons/Root6Icon.png",
+    "icon_url": "assets/catalog/root_cling.png",
     "detect_names": [
       "ROOT"
     ]
@@ -3007,7 +3010,7 @@
     "source_type": "github_release",
     "github_repo": "gap-system/gap",
     "asset_pattern": "gap-*-x86_64.exe",
-    "icon_url": "https://www.gap-system.org/assets/logo/light/gaplogo-notext512.png?v=2",
+    "icon_url": "assets/catalog/gap.png",
     "detect_names": [
       "GAP"
     ],
@@ -3028,7 +3031,7 @@
     "github_repo": "elm/compiler",
     "asset_pattern": "installer-for-windows.exe",
     "winget_id": "EvanCzaplicki.Elm",
-    "icon_url": "https://raw.githubusercontent.com/elm/compiler/HEAD/installers/win/logo.ico",
+    "icon_url": "assets/catalog/elm.png",
     "detect_names": [
       "Elm"
     ]
@@ -3045,7 +3048,7 @@
     "source_type": "winget",
     "winget_id": "Memurai.MemuraiDeveloper",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=memurai.com&sz=128",
+    "icon_url": "assets/catalog/redis_cli.svg",
     "detect_names": [
       "Memurai Developer",
       "Memurai"
@@ -3063,7 +3066,7 @@
     "source_type": "github_release",
     "github_repo": "FrodeSolheim/fs-uae",
     "asset_pattern": "FS-UAE_*_Windows_x86-64.exe",
-    "icon_url": "https://raw.githubusercontent.com/FrodeSolheim/fs-uae/main/.attic/share/icons/hicolor/256x256/apps/net.fs_uae.FS-UAE.png",
+    "icon_url": "assets/catalog/fs_uae.png",
     "detect_names": [
       "FS-UAE"
     ],
@@ -3083,7 +3086,7 @@
     "source_type": "github_release",
     "github_repo": "trzy/Supermodel",
     "asset_pattern": "supermodel-*-windows.zip",
-    "icon_url": "https://raw.githubusercontent.com/trzy/Supermodel/master/Docs/Images/Real3D_Logo.png",
+    "icon_url": "assets/catalog/supermodel.png",
     "detect_names": [
       "Supermodel"
     ],
@@ -3107,7 +3110,7 @@
     "source_type": "winget",
     "winget_id": "Rem0o.FanControl",
     "winget_source": "winget",
-    "icon_url": "https://getfancontrol.com/favicon.svg",
+    "icon_url": "assets/catalog/fan_control.svg",
     "accent_color": "#1785d1",
     "detect_names": [
       "Fan Control"
@@ -3125,7 +3128,7 @@
     "source_type": "winget",
     "winget_id": "XP9B0BH6T8Z7KZ",
     "winget_source": "msstore",
-    "icon_url": "https://www.google.com/s2/favicons?domain=voicemod.net&sz=128",
+    "icon_url": "assets/catalog/voicemod.png",
     "accent_color": "#7c3aed",
     "start_app_names": [
       "Voicemod",
@@ -3144,7 +3147,7 @@
     "source_type": "winget",
     "winget_id": "amir1376.ABDownloadManager",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/amir1376/ab-download-manager/master/desktop/app/icons/icon.png",
+    "icon_url": "assets/catalog/ab_download_manager.png",
     "accent_color": "#2563eb",
     "detect_names": [
       "AB Download Manager"
@@ -3163,7 +3166,7 @@
     "source_type": "winget",
     "winget_id": "AppWork.JDownloader",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=jdownloader.org&sz=128",
+    "icon_url": "assets/catalog/jdownloader.png",
     "icon_padding": 6,
     "accent_color": "#0ea5e9",
     "detect_names": [
@@ -3182,7 +3185,7 @@
     "source_type": "winget",
     "winget_id": "UderzoSoftware.SpaceSniffer",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/bdukes/Chocolatey-Packages/d7c02ae406446bca50b98b872da481852fc65682/spacesniffer/icon.png",
+    "icon_url": "assets/catalog/space_sniffer.png",
     "accent_color": "#d97706",
     "detect_names": [
       "SpaceSniffer"
@@ -3200,7 +3203,7 @@
     "source_type": "winget",
     "winget_id": "BleachBit.BleachBit",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=bleachbit.org&sz=128",
+    "icon_url": "assets/catalog/bleachbit.jpg",
     "accent_color": "#16a34a",
     "launch_executable": "bleachbit.exe",
     "detect_names": [
@@ -3219,7 +3222,7 @@
     "source_type": "winget",
     "winget_id": "CoderBag.QuickCPUx64",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=coderbag.com&sz=128",
+    "icon_url": "assets/catalog/quick_cpu.png",
     "accent_color": "#0284c7",
     "detect_names": [
       "Quick CPU"
@@ -3237,7 +3240,7 @@
     "source_type": "winget",
     "winget_id": "OCBase.OCCT.Personal",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=ocbase.com&sz=128",
+    "icon_url": "assets/catalog/occt.png",
     "accent_color": "#ef4444",
     "detect_names": [
       "OCCT"
@@ -3255,7 +3258,7 @@
     "source_type": "winget",
     "winget_id": "Unigine.HeavenBenchmark",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=benchmark.unigine.com&sz=128",
+    "icon_url": "assets/catalog/heaven_benchmark.png",
     "accent_color": "#38bdf8",
     "detect_names": [
       "Heaven Benchmark",
@@ -3274,7 +3277,7 @@
     "source_type": "winget",
     "winget_id": "Geeks3D.FurMark.2",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=geeks3d.com&sz=128",
+    "icon_url": "assets/catalog/furmark_2.jpg",
     "accent_color": "#f97316",
     "detect_names": [
       "FurMark 2"
@@ -3292,7 +3295,7 @@
     "source_type": "winget",
     "winget_id": "Ookla.Speedtest.Desktop",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/ookla-speedtest.png",
+    "icon_url": "assets/catalog/speedtest_ookla.png",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "accent_color": "#0b0a1a",
@@ -3314,7 +3317,7 @@
     "source_type": "winget",
     "winget_id": "9NF8H0H7WMLT",
     "winget_source": "msstore",
-    "icon_url": "https://cdn.simpleicons.org/nvidia/76b900",
+    "icon_url": "assets/catalog/nvidia_control_panel.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#76b900",
@@ -3334,7 +3337,7 @@
     "source_type": "winget",
     "winget_id": "XP8CLZL93F5Z4P",
     "winget_source": "msstore",
-    "icon_url": "https://cdn.simpleicons.org/nvidia/76b900",
+    "icon_url": "assets/catalog/nvidia_app.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#76b900",
@@ -3354,7 +3357,7 @@
     "source_type": "winget",
     "winget_id": "Malwarebytes.Malwarebytes",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/malwarebytes/0d3ecc",
+    "icon_url": "assets/catalog/malwarebytes.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#0d3ecc",
@@ -3374,7 +3377,7 @@
     "source_type": "winget",
     "winget_id": "XPFD23M0L795KD",
     "winget_source": "msstore",
-    "icon_url": "https://cdn.simpleicons.org/avira/e02027",
+    "icon_url": "assets/catalog/avira_security.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#e02027",
@@ -3394,7 +3397,7 @@
     "source_type": "winget",
     "winget_id": "GlennDelahoy.SnappyDriverInstallerOrigin",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=glenn.delahoy.com&sz=128",
+    "icon_url": "assets/catalog/snappy_driver_installer_origin.png",
     "accent_color": "#2563eb",
     "detect_names": [
       "Snappy Driver Installer Origin"
@@ -3412,7 +3415,7 @@
     "source_type": "winget",
     "winget_id": "Winamp.Winamp",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=winamp.com&sz=128",
+    "icon_url": "assets/catalog/winamp.png",
     "accent_color": "#f59e0b",
     "detect_names": [
       "Winamp"
@@ -3430,7 +3433,7 @@
     "source_type": "winget",
     "winget_id": "dotPDN.PaintDotNet",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=getpaint.net&sz=128",
+    "icon_url": "assets/catalog/paint_net.png",
     "accent_color": "#3b82f6",
     "detect_names": [
       "paint.net"
@@ -3448,7 +3451,7 @@
     "source_type": "winget",
     "winget_id": "GIMP.GIMP",
     "winget_source": "winget",
-    "icon_url": "https://www.gimp.org/images/frontpage/wilber-big.png",
+    "icon_url": "assets/catalog/gimp.png",
     "accent_color": "#5c554c",
     "detect_names": [
       "GIMP"
@@ -3465,7 +3468,7 @@
     "section": "Multimedia",
     "source_type": "wget",
     "download_url": "https://download.softorbits.com/files/IconMaker-Setup.exe",
-    "icon_url": "https://www.google.com/s2/favicons?domain=softorbits.es&sz=128",
+    "icon_url": "assets/catalog/softorbits_icon_maker.png",
     "accent_color": "#0ea5e9",
     "detect_names": [
       "SoftOrbits Icon Maker",
@@ -3484,7 +3487,7 @@
     "source_type": "winget",
     "winget_id": "sylikc.JPEGView",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/sylikc/jpegview/master/src/JPEGView/res/JPEGView.ico",
+    "icon_url": "assets/catalog/jpegview.ico",
     "accent_color": "#84cc16",
     "detect_names": [
       "JPEGView"
@@ -3502,7 +3505,7 @@
     "source_type": "winget",
     "winget_id": "DuongDieuPhap.ImageGlass",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/d2phap/ImageGlass/develop/source/ImageGlass.Win32/icon256.ico",
+    "icon_url": "assets/catalog/imageglass.png",
     "accent_color": "#06b6d4",
     "detect_names": [
       "ImageGlass"
@@ -3520,7 +3523,7 @@
     "source_type": "winget",
     "winget_id": "GodotEngine.GodotEngine",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/godotengine/godot/master/misc/logo/icon.svg",
+    "icon_url": "assets/catalog/godot_engine.svg",
     "icon_background": "#ffffff",
     "icon_padding": 4,
     "accent_color": "#478cbf",
@@ -3540,7 +3543,7 @@
     "source_type": "winget",
     "winget_id": "Unity.UnityHub",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/unity/ffffff",
+    "icon_url": "assets/catalog/unity_hub.svg",
     "icon_background": "#111827",
     "icon_padding": 5,
     "accent_color": "#64748b",
@@ -3561,7 +3564,7 @@
     "download_url": "https://mx-app-blob-prod.maxon.net/mx-package-production/website/windows/maxon/cinebench/Cinebench2026_win_x86_64.zip",
     "download_filename": "Cinebench2026_win_x86_64.zip",
     "launch_executable": "Cinebench.exe",
-    "icon_url": "https://maxonassets.imgix.net/images/Products/Cinebench/Cinebench-Horizontal.svg",
+    "icon_url": "assets/catalog/cinebench_2026.svg",
     "icon_background": "#111111",
     "icon_padding": 0,
     "icon_position": "left",
@@ -3579,7 +3582,7 @@
     "source_type": "winget",
     "winget_id": "Google.PlatformTools",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/android/3ddc84",
+    "icon_url": "assets/catalog/android_platform_tools.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#3ddc84",
@@ -3599,7 +3602,7 @@
     "source_type": "winget",
     "winget_id": "9NKSQGP7F2NH",
     "winget_source": "msstore",
-    "icon_url": "https://cdn.simpleicons.org/whatsapp/25d366",
+    "icon_url": "assets/catalog/whatsapp.svg",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#25d366",
@@ -3619,7 +3622,7 @@
     "source_type": "winget",
     "winget_id": "TeamSpeakSystems.TeamSpeakClient",
     "winget_source": "winget",
-    "icon_url": "https://teamspeak.com/user/themes/teamspeak/assets/images/mediakit/TS_Stacked_BlueDark.png",
+    "icon_url": "assets/catalog/teamspeak.png",
     "icon_background": "#ffffff",
     "icon_padding": 8,
     "icon_fit": "contain",
@@ -3658,7 +3661,7 @@
         "winget_source": "msstore"
       }
     ],
-    "icon_url": "https://store-images.s-microsoft.com/image/apps.60199.13798539581762600.abe1643f-1704-4a4d-a61b-47ccc25da012.2d0f53d6-e474-4958-bb99-2b237faa877d",
+    "icon_url": "assets/catalog/xbox_app.png",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#107c10",
@@ -3685,7 +3688,7 @@
         "winget_source": "msstore"
       }
     ],
-    "icon_url": "https://store-images.s-microsoft.com/image/apps.46958.14474323638833886.4a2816b2-d8f2-49ae-80e4-32141d1d2722.6aca5fc7-3847-465f-a3ce-d218f8848b52",
+    "icon_url": "assets/catalog/xbox_game_bar.png",
     "icon_background": "#ffffff",
     "icon_padding": 5,
     "accent_color": "#107c10",
@@ -3707,7 +3710,7 @@
     "source_type": "winget",
     "winget_id": "9NBLGGH30XJ3",
     "winget_source": "msstore",
-    "icon_url": "https://store-images.s-microsoft.com/image/apps.4944.13510798885083716.d34c3a4d-54ed-4b75-8bbc-dd8eb8ce00b0.b3086950-efa2-4003-8320-58a191de35ec",
+    "icon_url": "assets/catalog/xbox_accessories.png",
     "icon_background": "#107c10",
     "icon_padding": 18,
     "accent_color": "#107c10",
@@ -3731,7 +3734,7 @@
     "source_type": "web",
     "web_url": "https://www.intel.com/content/www/us/en/download/17881/intel-extreme-tuning-utility-intel-xtu.html",
     "winget_id": "Intel.IntelExtremeTuningUtility",
-    "icon_url": "https://cdn.simpleicons.org/intel/0071C5",
+    "icon_url": "assets/catalog/intel_xtu.svg",
     "icon_background": "#ffffff",
     "icon_padding": 7,
     "icon_fit": "contain",
@@ -3755,7 +3758,7 @@
     "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/VMware-Workstation-Full-26H1.zip",
     "download_filename": "VMware-Workstation-Full-26H1.zip",
     "installer_in_archive": true,
-    "icon_url": "https://cdn.simpleicons.org/vmware/607078",
+    "icon_url": "assets/catalog/vmware_workstation.svg",
     "icon_background": "#ffffff",
     "icon_padding": 7,
     "accent_color": "#607078",
@@ -3777,7 +3780,7 @@
     "source_type": "wget",
     "download_url": "https://github.com/Christianlg97/BSGLauncher_WinSlimCenter/releases/download/latest/BsgLauncher.15.0.0.4574.exe",
     "download_filename": "BsgLauncher.15.0.0.4574.exe",
-    "icon_url": "https://www.google.com/s2/favicons?domain=escapefromtarkov.com&sz=128",
+    "icon_url": "assets/catalog/battlestate_games_launcher.png",
     "accent_color": "#8b7d62",
     "detect_names": [
       "Battlestate Games Launcher",
@@ -3797,7 +3800,7 @@
     "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/Aseprite-1.3.18.2-Setup.zip",
     "download_filename": "Aseprite-1.3.18.2-Setup.zip",
     "installer_in_archive": true,
-    "icon_url": "https://cdn.simpleicons.org/aseprite/7D929E",
+    "icon_url": "assets/catalog/aseprite.svg",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "accent_color": "#7d929e",
@@ -3819,7 +3822,7 @@
     "source_type": "winget",
     "winget_id": "Canva.Canva",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=canva.com&sz=128",
+    "icon_url": "assets/catalog/canva.jpg",
     "icon_padding": 0,
     "accent_color": "#00c4cc",
     "detect_names": [
@@ -3836,7 +3839,7 @@
     "section": "Utilidades",
     "source_type": "web",
     "web_url": "https://www.amd.com/en/products/software/ryzen-master.html#download",
-    "icon_url": "https://cdn.simpleicons.org/amd/ED1C24",
+    "icon_url": "assets/catalog/amd_ryzen_master.svg",
     "icon_background": "#ffffff",
     "icon_padding": 7,
     "accent_color": "#ed1c24",
@@ -3856,7 +3859,7 @@
     "section": "Desarrollo",
     "source_type": "web",
     "web_url": "https://store.rpgmakerofficial.com/products/rpg-maker-mz",
-    "icon_url": "https://www.google.com/s2/favicons?domain=rpgmakerofficial.com&sz=128",
+    "icon_url": "assets/catalog/rpg_maker_mz.png",
     "accent_color": "#2563eb",
     "detect_names": [
       "RPG Maker MZ",
@@ -3876,7 +3879,7 @@
     "source_type": "winget",
     "winget_id": "Playnite.Playnite",
     "winget_source": "winget",
-    "icon_url": "https://playnite.link/favicon.ico",
+    "icon_url": "assets/catalog/playnite.png",
     "detect_names": [
       "Playnite"
     ],
@@ -3896,7 +3899,7 @@
     "source_type": "winget",
     "winget_id": "Parsec.Parsec",
     "winget_source": "winget",
-    "icon_url": "https://parsec.app/favicon.ico",
+    "icon_url": "assets/catalog/parsec.png",
     "detect_names": [
       "Parsec"
     ],
@@ -3916,7 +3919,7 @@
     "source_type": "winget",
     "winget_id": "MoonlightGameStreamingProject.Moonlight",
     "winget_source": "winget",
-    "icon_url": "https://moonlight-stream.org/favicon.ico",
+    "icon_url": "assets/catalog/moonlight.png",
     "detect_names": [
       "Moonlight"
     ],
@@ -3935,7 +3938,7 @@
     "featured": false,
     "source_type": "web",
     "web_url": "https://store.steampowered.com/app/2580190/PlayStationVR2_App/",
-    "icon_url": "https://www.google.com/s2/favicons?domain=playstation.com&sz=128",
+    "icon_url": "assets/catalog/playstation_vr2.png",
     "icon_background": "#ffffff",
     "icon_padding": 12,
     "accent_color": "#0070d1",
@@ -3955,7 +3958,7 @@
     "source_type": "winget",
     "winget_id": "ModOrganizer2.modorganizer",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/ModOrganizer2/modorganizer/master/src/resources/mo_icon.png",
+    "icon_url": "assets/catalog/mod_organizer_2.png",
     "detect_names": [
       "Mod Organizer 2",
       "ModOrganizer"
@@ -3974,7 +3977,7 @@
     "featured": false,
     "source_type": "wget",
     "download_url": "https://github.com/w1nSl1mc3nt3r/URL/releases/download/URL/LosslessScaling_3.2.2_Setup.zip",
-    "icon_url": "https://cdn.cloudflare.steamstatic.com/steam/apps/993090/logo.png",
+    "icon_url": "assets/catalog/lossless_scaling.png",
     "detect_names": [
       "Lossless Scaling",
       "LosslessScaling"
@@ -4003,7 +4006,7 @@
     "source_type": "winget",
     "winget_id": "DolphinEmulator.Dolphin",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/dolphin-emu/dolphin/master/Data/Sys/Resources/dolphin_logo@2x.png",
+    "icon_url": "assets/catalog/dolphin_emulator.png",
     "detect_names": [
       "Dolphin"
     ],
@@ -4027,7 +4030,7 @@
     "github_repo": "flyinghead/flycast",
     "asset_pattern": "flycast-win64-*.zip",
     "launch_executable": "flycast.exe",
-    "icon_url": "https://raw.githubusercontent.com/flyinghead/flycast/master/shell/windows/flycast.ico",
+    "icon_url": "assets/catalog/flycast.png",
     "detect_names": [
       "Flycast"
     ],
@@ -4052,7 +4055,7 @@
     "github_repo": "LIARMP/SameBoy",
     "asset_pattern": "sameboy_win_*.zip",
     "winget_id": "LIJI32.SameBoy",
-    "icon_url": "https://cdn.simpleicons.org/retroarch/3399FF",
+    "icon_url": "assets/catalog/sameboy.svg",
     "detect_names": [
       "SameBoy"
     ],
@@ -4076,7 +4079,7 @@
     "source_type": "wget",
     "download_url": "https://bgb.bircd.org/bgb64.zip",
     "download_filename": "bgb64.zip",
-    "icon_url": "https://cdn.simpleicons.org/retroarch/41B883",
+    "icon_url": "assets/catalog/bgb.svg",
     "detect_names": [
       "BGB"
     ],
@@ -4100,7 +4103,7 @@
     "source_type": "wget",
     "download_url": "https://res.ldrescdn.com/download/package/LDPlayer9.exe",
     "download_filename": "LDPlayer9.exe",
-    "icon_url": "https://www.google.com/s2/favicons?domain=ldplayer.net&sz=128",
+    "icon_url": "assets/catalog/ldplayer.png",
     "icon_background": "#ffc619",
     "icon_padding": 0,
     "accent_color": "#f59e0b",
@@ -4123,7 +4126,7 @@
     "source_type": "winget",
     "winget_id": "BlueStack.BlueStacks",
     "winget_source": "winget",
-    "icon_url": "https://icons.duckduckgo.com/ip3/bluestacks.com.ico",
+    "icon_url": "assets/catalog/bluestacks.png",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "accent_color": "#1eb7f5",
@@ -4153,7 +4156,7 @@
     "source_type": "wget",
     "download_url": "https://down.gameloop.com/gameloop/channel/18504/3700300006/d3d5726d0bb594f231d32be4dd169c978cc2d873.exe",
     "download_filename": "GameLoopInstaller.exe",
-    "icon_url": "https://icons.duckduckgo.com/ip3/gameloop.com.ico",
+    "icon_url": "assets/catalog/gameloop.ico",
     "icon_background": "#ffffff",
     "icon_padding": 4,
     "accent_color": "#00b3e3",
@@ -4179,7 +4182,7 @@
     "source_type": "winget",
     "winget_id": "AntibodySoftware.WizTree",
     "winget_source": "winget",
-    "icon_url": "https://diskanalyzer.com/favicon.ico",
+    "icon_url": "assets/catalog/wiztree.ico",
     "detect_names": [
       "WizTree"
     ],
@@ -4198,7 +4201,7 @@
     "source_type": "winget",
     "winget_id": "M2Team.NanaZip",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/7zip/1070B0",
+    "icon_url": "assets/catalog/nanazip.svg",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "detect_names": [
@@ -4218,7 +4221,7 @@
     "source_type": "winget",
     "winget_id": "RevoUninstaller.RevoUninstaller",
     "winget_source": "winget",
-    "icon_url": "https://www.revouninstaller.com/favicon.ico",
+    "icon_url": "assets/catalog/revo_uninstaller.png",
     "detect_names": [
       "Revo Uninstaller"
     ],
@@ -4242,7 +4245,7 @@
     "source_type": "winget",
     "winget_id": "Microsoft.Sysinternals.Autoruns",
     "winget_source": "winget",
-    "icon_url": "https://upload.wikimedia.org/wikipedia/commons/5/5f/Windows_logo_-_2012.svg",
+    "icon_url": "assets/catalog/autoruns.svg",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "detect_names": [
@@ -4262,7 +4265,7 @@
     "source_type": "winget",
     "winget_id": "GeekUninstaller.GeekUninstaller",
     "winget_source": "winget",
-    "icon_url": "https://geekuninstaller.com/favicon.ico",
+    "icon_url": "assets/catalog/geek_uninstaller.ico",
     "detect_names": [
       "Geek Uninstaller"
     ],
@@ -4283,7 +4286,7 @@
     "source_type": "winget",
     "winget_id": "BlenderFoundation.Blender",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/blender/E87D0D",
+    "icon_url": "assets/catalog/blender.svg",
     "detect_names": [
       "Blender"
     ],
@@ -4302,7 +4305,7 @@
     "source_type": "winget",
     "winget_id": "KDE.Krita",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/krita/3399FF",
+    "icon_url": "assets/catalog/krita.svg",
     "detect_names": [
       "Krita"
     ],
@@ -4320,7 +4323,7 @@
     "featured": false,
     "source_type": "web",
     "web_url": "https://www.blackmagicdesign.com/support/family/davinci-resolve-and-fusion",
-    "icon_url": "https://cdn.simpleicons.org/davinciresolve/000000",
+    "icon_url": "assets/catalog/davinci_resolve.svg",
     "icon_background": "#ffffff",
     "icon_padding": 4,
     "detect_names": [
@@ -4338,7 +4341,7 @@
     "featured": false,
     "source_type": "webapp",
     "web_url": "https://www.netflix.com/login",
-    "icon_url": "https://www.google.com/s2/favicons?domain=netflix.com&sz=128",
+    "icon_url": "assets/catalog/netflix.png",
     "icon_background": "#000000",
     "icon_padding": 12,
     "accent_color": "#e50914"
@@ -4354,7 +4357,7 @@
     "featured": false,
     "source_type": "webapp",
     "web_url": "https://www.disneyplus.com/login",
-    "icon_url": "https://www.google.com/s2/favicons?domain=disneyplus.com&sz=128",
+    "icon_url": "assets/catalog/disney_plus.png",
     "icon_padding": 0,
     "accent_color": "#113ccf"
   },
@@ -4370,7 +4373,7 @@
     "source_type": "winget",
     "winget_id": "PeterPawlowski.foobar2000",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/foobar2000/white",
+    "icon_url": "assets/catalog/foobar2000.svg",
     "detect_names": [
       "foobar2000"
     ],
@@ -4390,7 +4393,7 @@
     "source_type": "winget",
     "winget_id": "TheDocumentFoundation.LibreOffice",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/libreoffice/18A303",
+    "icon_url": "assets/catalog/libreoffice.svg",
     "detect_names": [
       "LibreOffice"
     ],
@@ -4410,7 +4413,7 @@
     "source_type": "winget",
     "winget_id": "Microsoft.Office",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=microsoft365.com&sz=128",
+    "icon_url": "assets/catalog/microsoft_365.png",
     "accent_color": "#d83b01",
     "detect_names": [
       "Aplicaciones de Microsoft 365 para empresas",
@@ -4437,7 +4440,7 @@
       "C:\\Program Files\\Microsoft Office\\root\\Office16\\WINWORD.EXE",
       "C:\\Program Files (x86)\\Microsoft Office\\root\\Office16\\WINWORD.EXE"
     ],
-    "icon_url": "https://www.google.com/s2/favicons?domain=word.cloud.microsoft&sz=128",
+    "icon_url": "assets/catalog/word.png",
     "icon_padding": 12,
     "accent_color": "#2b579a"
   },
@@ -4456,7 +4459,7 @@
       "C:\\Program Files\\Microsoft Office\\root\\Office16\\EXCEL.EXE",
       "C:\\Program Files (x86)\\Microsoft Office\\root\\Office16\\EXCEL.EXE"
     ],
-    "icon_url": "https://www.google.com/s2/favicons?domain=excel.cloud.microsoft&sz=128",
+    "icon_url": "assets/catalog/excel.png",
     "icon_padding": 12,
     "accent_color": "#217346"
   },
@@ -4475,7 +4478,7 @@
       "C:\\Program Files\\Microsoft Office\\root\\Office16\\POWERPNT.EXE",
       "C:\\Program Files (x86)\\Microsoft Office\\root\\Office16\\POWERPNT.EXE"
     ],
-    "icon_url": "https://www.google.com/s2/favicons?domain=powerpoint.cloud.microsoft&sz=128",
+    "icon_url": "assets/catalog/powerpoint.png",
     "icon_padding": 12,
     "accent_color": "#d24726"
   },
@@ -4494,7 +4497,7 @@
       "C:\\Program Files\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE",
       "C:\\Program Files (x86)\\Microsoft Office\\root\\Office16\\OUTLOOK.EXE"
     ],
-    "icon_url": "https://www.google.com/s2/favicons?domain=outlook.com&sz=128",
+    "icon_url": "assets/catalog/outlook_classic.jpg",
     "icon_padding": 12,
     "accent_color": "#0078d4"
   },
@@ -4510,7 +4513,7 @@
     "source_type": "winget",
     "winget_id": "Articulate.Articulate360",
     "winget_source": "winget",
-    "icon_url": "https://www.google.com/s2/favicons?domain=360.articulate.com&sz=128",
+    "icon_url": "assets/catalog/articulate_360.png",
     "icon_background": "#ffffff",
     "icon_padding": 14,
     "accent_color": "#4bb4ea",
@@ -4531,7 +4534,7 @@
     "source_type": "winget",
     "winget_id": "9NK865K2L4G9",
     "winget_source": "msstore",
-    "icon_url": "https://www.google.com/s2/favicons?domain=genially.com&sz=128",
+    "icon_url": "assets/catalog/genially_viewer.jpg",
     "icon_padding": 4,
     "accent_color": "#8b5cf6",
     "detect_names": [
@@ -4553,7 +4556,7 @@
     "source_type": "winget",
     "winget_id": "geeksoftwareGmbH.PDF24Creator",
     "winget_source": "winget",
-    "icon_url": "https://raw.githubusercontent.com/walkxcode/dashboard-icons/main/png/pdf24.png",
+    "icon_url": "assets/catalog/pdf24_creator.png",
     "icon_background": "#ffffff",
     "icon_padding": 4,
     "detect_names": [
@@ -4573,7 +4576,7 @@
     "source_type": "winget",
     "winget_id": "Notion.Notion",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/notion/000000",
+    "icon_url": "assets/catalog/notion.svg",
     "icon_background": "#ffffff",
     "icon_padding": 6,
     "detect_names": [
@@ -4592,7 +4595,7 @@
     "source_type": "winget",
     "winget_id": "WiresharkFoundation.Wireshark",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/wireshark/167FE5",
+    "icon_url": "assets/catalog/wireshark.svg",
     "detect_names": [
       "Wireshark"
     ],
@@ -4610,7 +4613,7 @@
     "featured": false,
     "source_type": "web",
     "web_url": "https://filezilla-project.org/download.php?type=client",
-    "icon_url": "https://cdn.simpleicons.org/filezilla/BF0000",
+    "icon_url": "assets/catalog/filezilla.svg",
     "detect_names": [
       "FileZilla"
     ],
@@ -4629,7 +4632,7 @@
     "source_type": "winget",
     "winget_id": "SublimeHQ.SublimeText.4",
     "winget_source": "winget",
-    "icon_url": "https://cdn.simpleicons.org/sublimetext/FF9800",
+    "icon_url": "assets/catalog/sublime_text.svg",
     "detect_names": [
       "Sublime Text"
     ],

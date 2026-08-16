@@ -1,15 +1,28 @@
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+static APP_DIR: OnceLock<PathBuf> = OnceLock::new();
+static DOWNLOADS_DIR: OnceLock<PathBuf> = OnceLock::new();
+static EXE_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 pub fn app_dir() -> PathBuf {
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("CenterApps")
+    APP_DIR
+        .get_or_init(|| {
+            dirs::data_local_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("CenterApps")
+        })
+        .clone()
 }
 
 pub fn downloads_dir() -> PathBuf {
-    dirs::download_dir()
-        .unwrap_or_else(|| app_dir().join("downloads"))
-        .join("WinSlimCenter")
+    DOWNLOADS_DIR
+        .get_or_init(|| {
+            dirs::download_dir()
+                .unwrap_or_else(|| app_dir().join("downloads"))
+                .join("WinSlimCenter")
+        })
+        .clone()
 }
 
 pub fn package_download_dir(app_id: &str) -> PathBuf {
@@ -58,14 +71,8 @@ fn purge_directory_contents(root: &Path) -> (usize, u64) {
     let mut freed = 0;
     for entry in entries.flatten() {
         let path = entry.path();
-        let size = tree_size(&path);
-        let outcome = if path.is_dir() {
-            std::fs::remove_dir_all(&path)
-        } else {
-            std::fs::remove_file(&path)
-        };
-        match outcome {
-            Ok(()) => {
+        match remove_path_measured(&path) {
+            Ok(size) => {
                 removed += 1;
                 freed += size;
             }
@@ -80,22 +87,35 @@ fn purge_directory_contents(root: &Path) -> (usize, u64) {
     (removed, freed)
 }
 
-fn tree_size(path: &Path) -> u64 {
-    let Ok(metadata) = std::fs::symlink_metadata(path) else {
-        return 0;
-    };
+/// Removes a tree bottom-up while adding the sizes already obtained for the
+/// deletion. The old cleanup first walked the complete tree to measure it and
+/// then made `remove_dir_all` walk the same tree again.
+fn remove_path_measured(path: &Path) -> std::io::Result<u64> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        // Never traverse a junction/symlink found under Downloads.
+        if path.is_dir() {
+            std::fs::remove_dir(path)?;
+        } else {
+            std::fs::remove_file(path)?;
+        }
+        return Ok(0);
+    }
     if metadata.is_file() {
-        return metadata.len();
+        let size = metadata.len();
+        std::fs::remove_file(path)?;
+        return Ok(size);
     }
     if !metadata.is_dir() {
-        return 0;
+        std::fs::remove_file(path)?;
+        return Ok(0);
     }
-    std::fs::read_dir(path)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .map(|entry| tree_size(&entry.path()))
-        .sum()
+    let mut size = 0_u64;
+    for entry in std::fs::read_dir(path)? {
+        size = size.saturating_add(remove_path_measured(&entry?.path())?);
+    }
+    std::fs::remove_dir(path)?;
+    Ok(size)
 }
 
 pub fn ensure_dirs() -> Result<(), String> {
@@ -105,10 +125,14 @@ pub fn ensure_dirs() -> Result<(), String> {
 }
 
 pub fn exe_dir() -> PathBuf {
-    std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.to_path_buf()))
-        .unwrap_or_else(|| PathBuf::from("."))
+    EXE_DIR
+        .get_or_init(|| {
+            std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.to_path_buf()))
+                .unwrap_or_else(|| PathBuf::from("."))
+        })
+        .clone()
 }
 
 fn candidate_apps_json_paths(exe_dir: &Path, resource_dir: Option<&Path>) -> Vec<PathBuf> {

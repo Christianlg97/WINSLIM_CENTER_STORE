@@ -5,11 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "npx tauri dev",
-    "build": "npx tauri build",
+    "build": "npm run frontend:build && npx tauri build --config src-tauri/tauri.prod.conf.json",
+    "frontend:build": "node scratch/build_frontend.mjs",
+    "frontend:check": "node scratch/build_frontend.mjs --check",
     "audit:catalog": "node scratch/audit_catalog_links.cjs",
-    "tauri": "npx tauri"
+    "audit:categories": "node scratch/audit_catalog_categories.cjs",
+    "tauri": "npx tauri",
+    "icons:fetch": "node scratch/fetch_catalog_icons.mjs",
+    "icons:optimize": "node scratch/optimize_catalog_icons.mjs"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2"
+    "@tauri-apps/cli": "^2",
+    "esbuild": "^0.28.2"
   }
 }

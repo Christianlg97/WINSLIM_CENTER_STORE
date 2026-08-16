@@ -22,6 +22,44 @@ const FEATURED_ORDER = [
   "vlc", "obs_studio", "rustdesk", "steam", "discord",
 ];
 
+const FEATURED_RANK = new Map(FEATURED_ORDER.map((id, index) => [id, index]));
+
+// Keep hostname normalisation outside the hot icon path. The catalog contains
+// hundreds of applications and rebuilding this object for every card costs
+// more than the lookup itself.
+const ICON_DOMAIN_MAP = Object.freeze({
+  "cdn.akamai.steamstatic.com": "steampowered.com",
+  "ubistatic3-a.akamaihd.net": "ubisoft.com",
+  "origin-a.akamaihd.net": "ea.com",
+  "dl.google.com": "chrome.com",
+  "c2rsetup.officeapps.live.com": "visualstudio.microsoft.com",
+  "dl.pstmn.io": "postman.com",
+  "desktop.docker.com": "docker.com",
+  "updates.signal.org": "signal.org",
+  "download.cpuid.com": "cpuid.com",
+  "www.techpowerup.com": "techpowerup.com",
+  "osdn.net": "crystalmark.info",
+  "buildbot.libretro.com": "libretro.com",
+  "cdn.plutonium.pw": "plutonium.pw",
+  "download.scdn.co": "spotify.com",
+  "get.videolan.org": "videolan.org",
+  "download.windscribe.com": "windscribe.com",
+  "download.anydesk.com": "anydesk.com",
+  "dl.dolphin-emu.org": "dolphin-emu.org",
+  "downloads.vivaldi.com": "vivaldi.com",
+  "www.bandisoft.com": "bandisoft.com",
+  "sourceforge.net": "dosbox.com",
+  "www.python.org": "python.org",
+});
+
+const REAL_SECTION_NAV = NAV.filter((item) =>
+  item.filter && !item.filter.startsWith("__") && item.filter !== "featured"
+);
+const KNOWN_CATALOG_SECTIONS = new Set(REAL_SECTION_NAV.map((item) => item.filter));
+const ACTIVE_TASK_STATES = new Set([
+  "queued", "downloading", "paused", "installing", "cancelling",
+]);
+
 const PROJECT_SLOGANS = [
   "Tu software esencial, reunido en un solo lugar.",
   "Instala, actualiza y organiza tu equipo con menos esfuerzo.",
@@ -123,12 +161,122 @@ const state = {
   consoleFilter: "all",
   busy: {},
   resolvedIcons: {},
+  resolvedIconSignatures: {},
   projectSlogan: chooseProjectSlogan(),
   scanningUpdates: false,
   lastUpdateScan: null,
 };
 
+const derived = {
+  catalogGeneration: 0,
+  catalogById: new Map(),
+  searchBlobs: new Map(),
+  taskByAppId: new Map(),
+  iconCandidatesById: new Map(),
+  iconSignaturesById: new Map(),
+  consoleNames: [],
+  installedCount: 0,
+  updatesCount: 0,
+};
+
+function replaceCatalog(catalog) {
+  derived.catalogGeneration += 1;
+  state.catalog = Array.isArray(catalog) ? catalog : [];
+  derived.catalogById = new Map(state.catalog.map((app) => [app.id, app]));
+  derived.iconCandidatesById = new Map(
+    state.catalog.map((app) => [app.id, buildBaseIconCandidates(app)]),
+  );
+  derived.iconSignaturesById = new Map(
+    [...derived.iconCandidatesById].map(([appId, candidates]) => [appId, JSON.stringify(candidates)]),
+  );
+  for (const appId of Object.keys(state.resolvedIcons)) {
+    const signature = derived.iconSignaturesById.get(appId);
+    if (!signature || state.resolvedIconSignatures[appId] !== signature) {
+      delete state.resolvedIcons[appId];
+      delete state.resolvedIconSignatures[appId];
+    }
+  }
+  derived.searchBlobs = new Map(
+    state.catalog.map((app) => [
+      app.id,
+      [app.name, app.description, app.author, app.category, app.section, app.id, ...(app.console_tags || [])]
+        .map((part) => String(part || ""))
+        .join(" ")
+        .toLocaleLowerCase("es-ES"),
+    ]),
+  );
+  const consoles = new Set(
+    state.catalog
+      .filter((app) => app.section === "Emuladores")
+      .flatMap((app) => Array.isArray(app.console_tags) ? app.console_tags : []),
+  );
+  const preferredOrder = [
+    "PS1", "PS2", "PS3", "PSP", "Xbox", "Xbox 360", "GameCube", "Wii", "Wii U",
+    "Game Boy", "Game Boy Color", "Game Boy Advance", "NES", "SNES", "Nintendo 64", "Sega", "DOS", "Multiplata",
+  ];
+  derived.consoleNames = [
+    ...preferredOrder.filter((name) => consoles.has(name)),
+    ...[...consoles].filter((name) => !preferredOrder.includes(name)).sort(),
+  ];
+}
+
+function replaceStatuses(statuses) {
+  const previous = state.statuses;
+  const next = statuses && typeof statuses === "object" ? statuses : {};
+  const ids = new Set([...Object.keys(previous), ...Object.keys(next)]);
+  const changedIds = new Set();
+  let installedChanged = false;
+  let updatesChanged = false;
+  const signature = (status) => [
+    status?.installed, status?.version, status?.origin, status?.update_available,
+    status?.latest_version, status?.can_uninstall, status?.can_launch,
+  ].join("|");
+  for (const id of ids) {
+    if (signature(previous[id]) === signature(next[id])) continue;
+    changedIds.add(id);
+    if (!!previous[id]?.installed !== !!next[id]?.installed) installedChanged = true;
+    if (!!previous[id]?.update_available !== !!next[id]?.update_available) updatesChanged = true;
+  }
+  state.statuses = next;
+  let installed = 0;
+  let updates = 0;
+  for (const status of Object.values(state.statuses)) {
+    if (status?.installed) installed += 1;
+    if (status?.update_available) updates += 1;
+  }
+  derived.installedCount = installed;
+  derived.updatesCount = updates;
+  return { ids: changedIds, installedChanged, updatesChanged };
+}
+
+function reconcileStatusChanges(changes) {
+  if (!changes?.ids?.size) return;
+  if (changes.installedChanged || changes.updatesChanged) renderSidebar();
+  const componentVisibilityChanged = changes.installedChanged &&
+    [...changes.ids].some((id) => findApp(id)?.source_type === "component");
+  if (
+    componentVisibilityChanged ||
+    (state.section === "installed" && changes.installedChanged) ||
+    (state.section === "updates" && changes.updatesChanged)
+  ) {
+    renderContent();
+    return;
+  }
+  updateVisibleAppStatuses(changes.ids);
+}
+
+function replaceTasks(tasks) {
+  state.tasks = Array.isArray(tasks) ? tasks : [];
+  derived.taskByAppId = new Map();
+  for (const task of state.tasks) {
+    if (ACTIVE_TASK_STATES.has(task.state)) derived.taskByAppId.set(task.app_id, task);
+  }
+}
+
 let statusResetTimer = null;
+let pendingStatusLog = "";
+let lastLoggedStatus = "";
+let statusLogTimer = null;
 
 function clientLog(level, event, details = "") {
   const text = typeof details === "string" ? details : JSON.stringify(details);
@@ -171,7 +319,10 @@ function applyTheme(themeId, accent) {
   root.style.setProperty("--accent-hover", acc);
   root.style.setProperty("--sb-text-active", acc);
   root.style.colorScheme = preset.mode;
-  state.settings = { theme: themeId, accent: acc };
+  // Appearance changes must not discard the build variant remembered for
+  // applications such as Thorium; updates reuse that choice later in the same
+  // session.
+  state.settings = { ...state.settings, theme: themeId, accent: acc };
 }
 
 function escapeHtml(s) {
@@ -194,34 +345,11 @@ function resolveIconUrl(app) {
         return null;
       }
 
-      // Map CDN or installer hostnames to official brand domains for Clearbit logo lookup
-      const domainMap = {
-        "cdn.akamai.steamstatic.com": "steampowered.com",
-        "ubistatic3-a.akamaihd.net": "ubisoft.com",
-        "origin-a.akamaihd.net": "ea.com",
-        "dl.google.com": "chrome.com",
-        "download.mozilla.org": app.id?.includes("thunderbird") ? "thunderbird.net" : "firefox.com",
-        "c2rsetup.officeapps.live.com": "visualstudio.microsoft.com",
-        "dl.pstmn.io": "postman.com",
-        "desktop.docker.com": "docker.com",
-        "updates.signal.org": "signal.org",
-        "download.cpuid.com": "cpuid.com",
-        "www.techpowerup.com": "techpowerup.com",
-        "osdn.net": "crystalmark.info",
-        "buildbot.libretro.com": "libretro.com",
-        "cdn.plutonium.pw": "plutonium.pw",
-        "download.scdn.co": "spotify.com",
-        "get.videolan.org": "videolan.org",
-        "download.windscribe.com": "windscribe.com",
-        "download.anydesk.com": "anydesk.com",
-        "dl.dolphin-emu.org": "dolphin-emu.org",
-        "downloads.vivaldi.com": "vivaldi.com",
-        "www.bandisoft.com": "bandisoft.com",
-        "sourceforge.net": "dosbox.com",
-        "www.python.org": "python.org"
-      };
-
-      let targetDomain = domainMap[url.hostname] || url.hostname;
+      // Map CDN or installer hostnames to official brand domains for Clearbit logo lookup.
+      const mappedMozillaDomain = url.hostname === "download.mozilla.org"
+        ? (app.id?.includes("thunderbird") ? "thunderbird.net" : "firefox.com")
+        : null;
+      let targetDomain = mappedMozillaDomain || ICON_DOMAIN_MAP[url.hostname] || url.hostname;
       if (targetDomain.includes("epicgames.com")) targetDomain = "epicgames.com";
       return `https://logo.clearbit.com/${encodeURIComponent(targetDomain)}?size=180`;
     } catch (e) {
@@ -231,9 +359,15 @@ function resolveIconUrl(app) {
   return null;
 }
 
-function iconCandidates(app) {
-  const urls = [state.resolvedIcons[app?.id], resolveIconUrl(app)];
+function buildBaseIconCandidates(app) {
+  const icon = resolveIconUrl(app);
+  // Los iconos del catálogo de serie viajan dentro del ejecutable. Cuando la
+  // entrada señala uno de ellos no hay nada que preguntarle a internet: el
+  // archivo está ahí y los sustitutos remotos solo servirían para tapar un
+  // error de empaquetado que conviene ver.
+  if (icon && !/^([a-z][a-z0-9+.-]*:)?\/\//i.test(icon)) return [icon];
 
+  const urls = [icon];
   const source = app?.download_url || (app?.github_repo ? `https://github.com/${app.github_repo}` : "");
   try {
     const domain = new URL(source).hostname;
@@ -247,84 +381,82 @@ function iconCandidates(app) {
   return [...new Set(urls.filter(Boolean))];
 }
 
-const loadedIconUrls = new Set();
-
-function preloadIconUrl(url, timeoutMs = 6000) {
-  if (loadedIconUrls.has(url)) return Promise.resolve(true);
-  return new Promise((resolve) => {
-    const img = new Image();
-    let settled = false;
-    const finish = (loaded) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      img.onload = null;
-      img.onerror = null;
-      if (loaded) loadedIconUrls.add(url);
-      resolve(loaded);
-    };
-    const timer = setTimeout(() => finish(false), timeoutMs);
-    img.onload = () => finish(true);
-    img.onerror = () => finish(false);
-    img.decoding = "async";
-    img.src = url;
+function iconCandidates(app) {
+  const base = derived.iconCandidatesById.get(app?.id) || buildBaseIconCandidates(app);
+  const now = Date.now();
+  return [...new Set([state.resolvedIcons[app?.id], ...base].filter(Boolean))].filter((url) => {
+    const failedAt = failedIconUrls.get(url);
+    if (!failedAt) return true;
+    if (now - failedAt < ICON_FAILURE_TTL_MS) return false;
+    failedIconUrls.delete(url);
+    return true;
   });
 }
 
-async function preloadCatalogIcons({ progressStart = 88, progressEnd = 99 } = {}) {
-  const apps = state.catalog.filter((app) => iconCandidates(app).length > 0);
-  if (!apps.length) return { loaded: 0, failed: [] };
+const failedIconUrls = new Map();
+const ICON_FAILURE_TTL_MS = 5 * 60 * 1000;
+let persistIconCacheTimer = null;
 
-  setStatus(`Cargando iconos del catálogo · 0/${apps.length}`, "var(--accent)");
-  await clientLog("info", "icon-preload-start", { total: apps.length });
-  let cursor = 0;
-  let completed = 0;
-  let loaded = 0;
-  let lastShown = -1;
-  const failed = [];
-
-  const worker = async () => {
-    while (cursor < apps.length) {
-      const app = apps[cursor++];
-      let resolved = null;
-      for (const url of iconCandidates(app)) {
-        if (await preloadIconUrl(url)) {
-          resolved = url;
-          break;
-        }
+function rememberResolvedIcon(appId, url, expectedSignature, expectedGeneration) {
+  if (!appId || !url) return false;
+  const currentSignature = derived.iconSignaturesById.get(appId);
+  const currentCandidates = derived.iconCandidatesById.get(appId) || [];
+  if (
+    Number(expectedGeneration) !== derived.catalogGeneration ||
+    expectedSignature !== currentSignature ||
+    !currentCandidates.includes(url)
+  ) {
+    return false;
+  }
+  failedIconUrls.delete(url);
+  state.resolvedIcons[appId] = url;
+  state.resolvedIconSignatures[appId] = currentSignature;
+  // One timer writes the whole cache: the icons that arrive while it waits are
+  // already in `state` and travel with it. Their answer is still yes — the icon
+  // was accepted — and the caller shows the image based on that answer.
+  if (persistIconCacheTimer === null) {
+    persistIconCacheTimer = setTimeout(() => {
+      persistIconCacheTimer = null;
+      try {
+        const entries = Object.fromEntries(
+          Object.entries(state.resolvedIcons).map(([appId, resolvedUrl]) => [appId, {
+            url: resolvedUrl,
+            signature: state.resolvedIconSignatures[appId],
+          }]),
+        );
+        localStorage.setItem("winslimcenter-resolved-icons-v2", JSON.stringify(entries));
+      } catch {
+        // The browser cache still provides the same optimisation for this run.
       }
-      if (resolved) {
-        state.resolvedIcons[app.id] = resolved;
-        loaded += 1;
-      } else {
-        delete state.resolvedIcons[app.id];
-        failed.push({ id: app.id, name: app.name, candidates: iconCandidates(app) });
-      }
+    }, 500);
+  }
+  return true;
+}
 
-      completed += 1;
-      const pct = Math.round((completed / apps.length) * 100);
-      if (pct !== lastShown) {
-        lastShown = pct;
-        document.getElementById("status-text").textContent =
-          `Cargando iconos del catálogo · ${completed}/${apps.length}`;
-        setProgress(progressStart + ((progressEnd - progressStart) * completed) / apps.length);
+function hydrateResolvedIcons() {
+  try {
+    const cached = JSON.parse(localStorage.getItem("winslimcenter-resolved-icons-v2") || "{}");
+    for (const [appId, entry] of Object.entries(cached)) {
+      const signature = derived.iconSignaturesById.get(appId);
+      if (
+        signature && entry?.signature === signature && typeof entry.url === "string" && entry.url &&
+        (derived.iconCandidatesById.get(appId) || []).includes(entry.url)
+      ) {
+        state.resolvedIcons[appId] = entry.url;
+        state.resolvedIconSignatures[appId] = signature;
       }
     }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(24, apps.length) }, () => worker()));
-  await clientLog(failed.length ? "warn" : "info", "icon-preload-complete", {
-    total: apps.length,
-    loaded,
-    failed,
-  });
-  return { loaded, failed };
+  } catch {
+    // A corrupt/private localStorage is just a cache miss.
+  }
 }
 
 window.__nextAppIcon = (img) => {
   img.classList.remove("is-loaded");
   img.parentElement?.classList.remove("has-loaded-icon");
   const candidates = String(img.dataset.iconCandidates || "").split("|").filter(Boolean);
+  const current = candidates[Number(img.dataset.iconIndex || 0)];
+  if (current) failedIconUrls.set(current, Date.now());
   const nextIndex = Number(img.dataset.iconIndex || 0) + 1;
   if (nextIndex < candidates.length) {
     img.dataset.iconIndex = String(nextIndex);
@@ -335,20 +467,37 @@ window.__nextAppIcon = (img) => {
 };
 
 window.__appIconLoaded = (img) => {
+  const appId = img.dataset.appId;
+  const candidates = String(img.dataset.iconCandidates || "").split("|").filter(Boolean);
+  const url = candidates[Number(img.dataset.iconIndex || 0)] || img.currentSrc || img.src;
+  // Remembering it is a matter of the cache, and the cache may well refuse an
+  // icon that belongs to a catalog already replaced. What is on screen does not
+  // depend on that: this image painted the icon its own card asked for, so it
+  // is shown. Hiding it would leave the letter of an application that does have
+  // an icon.
+  rememberResolvedIcon(
+    appId,
+    url,
+    img.dataset.iconSignature || "",
+    Number(img.dataset.catalogGeneration),
+  );
   img.classList.add("is-loaded");
   img.parentElement?.classList.add("has-loaded-icon");
 };
 
-function renderAvatar(app, fallback) {
+function renderAvatar(app, fallback, eager = false) {
   const candidates = iconCandidates(app);
+  const iconSignature = derived.iconSignaturesById.get(app?.id) || "";
+  const catalogGeneration = derived.catalogGeneration;
   const safeFallback = escapeHtml(fallback || "?");
   const padding = Math.max(0, Math.min(35, Number(app?.icon_padding ?? 9) || 0));
   const fit = app?.icon_fit === "contain" ? "contain" : "cover";
   const position = app?.icon_position === "left" ? "left center" : "center";
   if (candidates.length) {
-    const loading = state.resolvedIcons[app?.id] ? "eager" : "lazy";
     return `
-      <img src="${escapeHtml(candidates[0])}" alt="${escapeHtml(app.name)} logo" loading="${loading}" decoding="async" style="padding:${padding}%;object-fit:${fit};object-position:${position}"
+      <img src="${escapeHtml(candidates[0])}" alt="${escapeHtml(app.name)} logo" width="180" height="180" loading="${eager ? "eager" : "lazy"}" ${eager ? 'fetchpriority="high"' : ""} decoding="async" style="padding:${padding}%;object-fit:${fit};object-position:${position}"
+        data-app-id="${escapeHtml(app?.id || "")}"
+        data-icon-signature="${escapeHtml(iconSignature)}" data-catalog-generation="${catalogGeneration}"
         data-icon-index="0" data-icon-candidates="${escapeHtml(candidates.join("|"))}"
         onload="window.__appIconLoaded(this)" onerror="window.__nextAppIcon(this)" />
       <span class="avatar-fallback" aria-hidden="true">${safeFallback}</span>
@@ -366,13 +515,25 @@ function setStatus(text, color) {
     clearTimeout(statusResetTimer);
     statusResetTimer = null;
   }
-  document.getElementById("status-text").textContent = text;
-  if (color) document.getElementById("status-dot").style.color = color;
-  clientLog("debug", "status", String(text));
+  const statusText = document.getElementById("status-text");
+  const statusDot = document.getElementById("status-dot");
+  const nextText = String(text);
+  if (statusText.textContent !== nextText) statusText.textContent = nextText;
+  if (color && statusDot.style.color !== color) statusDot.style.color = color;
+
+  pendingStatusLog = nextText;
+  if (statusLogTimer === null) {
+    statusLogTimer = setTimeout(() => {
+      statusLogTimer = null;
+      if (pendingStatusLog === lastLoggedStatus) return;
+      lastLoggedStatus = pendingStatusLog;
+      void clientLog("debug", "status", pendingStatusLog);
+    }, 250);
+  }
 }
 
 function idleStatusSummary() {
-  const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
+  const updates = updatesCount();
   return updates
     ? `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`
     : `Todo al día · ${state.catalog.length} aplicaciones`;
@@ -391,6 +552,8 @@ function setProgress(pct) {
   const track = document.getElementById("status-progress-track");
   const fill = document.getElementById("status-progress-fill");
   const value = Math.max(0, Math.min(100, Math.round(Number(pct) || 0)));
+  if (progress.dataset.value === String(value)) return;
+  progress.dataset.value = String(value);
   progress.textContent = `${value}%`;
   const hidden = value <= 0 || value >= 100;
   progress.classList.toggle("hidden", hidden);
@@ -475,9 +638,9 @@ async function scanForUpdates() {
   setStatus("Consultando WinGet en busca de actualizaciones...", "var(--accent)");
   setProgress(30);
   try {
-    state.statuses = (await invoke("refresh_statuses")) || state.statuses;
+    replaceStatuses((await invoke("refresh_statuses")) || state.statuses);
     setProgress(65);
-    state.statuses = (await invoke("check_updates")) || state.statuses;
+    replaceStatuses((await invoke("check_updates")) || state.statuses);
     state.lastUpdateScan = new Date();
     const updates = updatesCount();
     clientLog("info", "updates-scan", { updates });
@@ -503,11 +666,11 @@ async function scanForUpdates() {
 }
 
 function installedCount() {
-  return Object.values(state.statuses).filter((s) => s.installed).length;
+  return derived.installedCount;
 }
 
 function updatesCount() {
-  return Object.values(state.statuses).filter((s) => s.update_available).length;
+  return derived.updatesCount;
 }
 
 function sectionFilter(app) {
@@ -523,14 +686,8 @@ function sectionFilter(app) {
   return true;
 }
 
-function searchFilter(app) {
-  const q = state.search.trim().toLowerCase();
-  if (!q) return true;
-  const blob = [app.name, app.description, app.author, app.category, app.section, app.id, ...(app.console_tags || [])]
-    .map((x) => String(x || ""))
-    .join(" ")
-    .toLowerCase();
-  return blob.includes(q);
+function searchFilter(app, query) {
+  return !query || (derived.searchBlobs.get(app.id) || "").includes(query);
 }
 
 // Los programas que vienen dentro de otra aplicación solo tienen sentido cuando
@@ -541,10 +698,12 @@ function componentVisible(app) {
 }
 
 function filteredApps() {
-  const apps = state.catalog.filter((a) => componentVisible(a) && sectionFilter(a) && searchFilter(a));
+  const query = state.search.trim().toLocaleLowerCase("es-ES");
+  const apps = state.catalog.filter((app) =>
+    componentVisible(app) && sectionFilter(app) && searchFilter(app, query)
+  );
   if (state.section !== "featured") return apps;
-  const rank = new Map(FEATURED_ORDER.map((id, index) => [id, index]));
-  return apps.sort((a, b) => (rank.get(a.id) ?? 999) - (rank.get(b.id) ?? 999));
+  return apps.sort((a, b) => (FEATURED_RANK.get(a.id) ?? 999) - (FEATURED_RANK.get(b.id) ?? 999));
 }
 
 function validateCatalog(data) {
@@ -554,10 +713,16 @@ function validateCatalog(data) {
     if (!app || typeof app !== "object" || Array.isArray(app)) {
       throw new Error(`La entrada ${index + 1} debe ser un objeto.`);
     }
-    for (const field of ["id", "name", "source_type"]) {
+    for (const field of ["id", "name", "source_type", "section"]) {
       if (typeof app[field] !== "string" || !app[field].trim()) {
         throw new Error(`La entrada ${index + 1} no tiene un campo ${field} válido.`);
       }
+    }
+    if (!KNOWN_CATALOG_SECTIONS.has(app.section)) {
+      throw new Error(
+        `La entrada ${index + 1} ("${app.name}") usa la sección desconocida "${app.section}". ` +
+        `Secciones admitidas: ${[...KNOWN_CATALOG_SECTIONS].join(", ")}.`,
+      );
     }
     if (ids.has(app.id)) throw new Error(`El identificador "${app.id}" está duplicado.`);
     ids.add(app.id);
@@ -565,11 +730,22 @@ function validateCatalog(data) {
   return data;
 }
 
+let sidebarRenderFrame = null;
+let contentRenderFrame = null;
+
 function renderSidebar() {
+  if (sidebarRenderFrame !== null) return;
+  sidebarRenderFrame = requestAnimationFrame(() => {
+    sidebarRenderFrame = null;
+    renderSidebarNow();
+  });
+}
+
+function renderSidebarNow() {
   const el = document.getElementById("sidebar");
   el.innerHTML = `
     <div class="sb-head">
-      <span class="brand-mark"><img src="assets/winslim-center-logo.png" alt="" /></span>
+      <span class="brand-mark"><img src="assets/winslim-center-logo.png" width="904" height="904" alt="" /></span>
       <div>
         <strong>Biblioteca</strong>
         <span>${installedCount()} instaladas</span>
@@ -587,35 +763,12 @@ function renderSidebar() {
     <button type="button" class="action-btn" data-action="theme">🎨  Apariencia</button>
     <button type="button" class="action-btn" data-action="folder">📁  Directorio local</button>
   `;
-
-  el.querySelectorAll("[data-nav]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      state.section = btn.dataset.nav;
-      clientLog("info", "navigation", `Sección seleccionada: ${state.section}`);
-      state.consoleFilter = "all";
-      renderSidebar();
-      renderContent();
-    });
-  });
-  el.querySelector('[data-action="theme"]').addEventListener("click", () => {
-    clientLog("info", "action", "Abriendo selector de apariencia.");
-    openThemePicker();
-  });
-  el.querySelector('[data-action="folder"]').addEventListener("click", () => {
-    clientLog("info", "action", "Abriendo carpeta de aplicaciones.");
-    invoke("open_apps_dir").catch((error) => {
-      setStatus(`No se pudo abrir la carpeta: ${error}`, "var(--red)");
-      showAlertModal("Error al abrir la carpeta", String(error));
-    });
-  });
 }
 
 function actionButtons(app, variant = "card") {
   const st = appStatus(app.id);
   const id = escapeHtml(app.id);
-  const task = state.tasks.find((item) =>
-    item.app_id === app.id && ["queued", "downloading", "paused", "installing", "cancelling"].includes(item.state)
-  );
+  const task = derived.taskByAppId.get(app.id);
   const busy = state.busy[app.id];
   if (task || busy) {
     const operation = task?.state || busy;
@@ -670,12 +823,9 @@ function updateVersionBadge(st, modal = false) {
   return `<span class="${cls}" title="Versión instalada y versión disponible">Actualización · v${escapeHtml(current)} → v${escapeHtml(latest)}</span>`;
 }
 
-function cardHtml(app, index) {
-  const accent = pickAccent(app, index);
-  const avatarBg = avatarBackground(app, accent);
+function cardMetaHtml(app) {
   const st = appStatus(app.id);
   const version = st.installed ? st.version : app.version || "1.0";
-  const letter = (app.name || app.id || "A")[0].toUpperCase();
   // Shown for anything installed, whoever installed it: the plain "en el
   // sistema" text only appeared for programs Windows had registered, so the
   // ones the store put there itself showed nothing at all.
@@ -686,14 +836,22 @@ function cardHtml(app, index) {
         ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
         : "";
   return `
+    <strong>${escapeHtml(app.name)}${origin}</strong>
+    <small>${escapeHtml(app.author || "—")}  ·  v${escapeHtml(version)}</small>
+    ${updateVersionBadge(st)}`;
+}
+
+function cardHtml(app, index, prioritizeIcon = false) {
+  const accent = pickAccent(app, index);
+  const avatarBg = avatarBackground(app, accent);
+  const letter = (app.name || app.id || "A")[0].toUpperCase();
+  return `
     <article class="app-card" data-app-id="${escapeHtml(app.id)}" tabindex="0"
       aria-label="Ver detalles de ${escapeHtml(app.name)}" style="--card-accent:${accent}">
       <div class="card-top">
-        <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(app, letter)}</div>
+        <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(app, letter, prioritizeIcon && index < 8)}</div>
         <div>
-          <strong>${escapeHtml(app.name)}${origin}</strong>
-          <small>${escapeHtml(app.author || "—")}  ·  v${escapeHtml(version)}</small>
-          ${updateVersionBadge(st)}
+          ${cardMetaHtml(app)}
         </div>
       </div>
       <p class="card-desc">${escapeHtml(app.description || "")}</p>
@@ -701,7 +859,7 @@ function cardHtml(app, index) {
     </article>`;
 }
 
-function sectionHtml(title, apps) {
+function sectionHtml(title, apps, { prioritizeIcons = false } = {}) {
   if (!apps.length) return "";
   return `
     <section class="section">
@@ -709,7 +867,7 @@ function sectionHtml(title, apps) {
         <h3>${escapeHtml(title)}</h3>
         <span>${apps.length} apps</span>
       </div>
-      <div class="grid">${apps.map((a, i) => cardHtml(a, i)).join("")}</div>
+      <div class="grid">${apps.map((a, i) => cardHtml(a, i, prioritizeIcons)).join("")}</div>
     </section>`;
 }
 
@@ -717,7 +875,7 @@ function projectHeroHtml() {
   return `
     <section class="hero project-hero" aria-label="Presentación de WinSlimCenter">
       <div class="hero-left">
-        <div class="project-hero-logo"><img src="assets/winslim-center-logo.png" alt="Logotipo de WinSlimCenter" /></div>
+        <div class="project-hero-logo"><img src="assets/winslim-center-logo.png" width="904" height="904" alt="Logotipo de WinSlimCenter" /></div>
         <div class="project-hero-copy">
           <div class="project-kicker">TU CENTRO DE APLICACIONES Y HERRAMIENTAS</div>
           <h2>WinSlimCenter</h2>
@@ -735,6 +893,14 @@ function projectHeroHtml() {
 let lastRenderedView = null;
 
 function renderContent() {
+  if (contentRenderFrame !== null) return;
+  contentRenderFrame = requestAnimationFrame(() => {
+    contentRenderFrame = null;
+    renderContentNow();
+  });
+}
+
+function renderContentNow() {
   const apps = filteredApps();
   const searching = !!state.search.trim();
   const label = NAV.find((n) => n.id === state.section)?.label || "Inicio";
@@ -755,23 +921,10 @@ function renderContent() {
   }
 
   if (state.section === "emulators") {
-    const preferredOrder = [
-      "PS1", "PS2", "PS3", "PSP", "Xbox", "Xbox 360", "GameCube", "Wii", "Wii U",
-      "Game Boy", "Game Boy Color", "Game Boy Advance", "NES", "SNES", "Nintendo 64", "Sega", "DOS", "Multiplata",
-    ];
-    const available = new Set(
-      state.catalog
-        .filter((app) => app.section === "Emuladores")
-        .flatMap((app) => Array.isArray(app.console_tags) ? app.console_tags : []),
-    );
-    const consoles = [
-      ...preferredOrder.filter((consoleName) => available.has(consoleName)),
-      ...[...available].filter((consoleName) => !preferredOrder.includes(consoleName)).sort(),
-    ];
     html += `
       <div class="console-filters" aria-label="Filtrar emuladores por consola">
         <button type="button" class="console-filter ${state.consoleFilter === "all" ? "active" : ""}" data-console-filter="all">Todas</button>
-        ${consoles.map((consoleName) => `
+        ${derived.consoleNames.map((consoleName) => `
           <button type="button" class="console-filter ${state.consoleFilter === consoleName ? "active" : ""}"
             data-console-filter="${escapeHtml(consoleName)}">${escapeHtml(consoleName)}</button>
         `).join("")}
@@ -780,28 +933,29 @@ function renderContent() {
 
   if (state.section === "home" && !searching) {
     html += projectHeroHtml();
-    const featuredRank = new Map(FEATURED_ORDER.map((id, index) => [id, index]));
     const blocks = [
       ["Destacados", (a) => a.featured],
-      ["Juegos", (a) => a.section === "Juegos"],
-      ["Emuladores", (a) => a.section === "Emuladores"],
-      ["Navegadores", (a) => a.section === "Navegadores"],
-      ["Desarrollo", (a) => a.section === "Desarrollo"],
-      ["IA", (a) => a.section === "IA"],
-      ["Utilidades", (a) => a.section === "Utilidades"],
-      ["Multimedia", (a) => a.section === "Multimedia"],
-      ["Productividad", (a) => a.section === "Productividad"],
-      ["Social y Comunicación", (a) => a.section === "Social y Comunicación"],
+      ...REAL_SECTION_NAV.map((nav) => [nav.label, (app) => app.section === nav.filter]),
     ];
     for (const [title, pred] of blocks) {
       const blockApps = apps.filter(pred);
       if (title === "Destacados") {
-        blockApps.sort((a, b) => (featuredRank.get(a.id) ?? 999) - (featuredRank.get(b.id) ?? 999));
+        blockApps.sort((a, b) => (FEATURED_RANK.get(a.id) ?? 999) - (FEATURED_RANK.get(b.id) ?? 999));
       }
-      html += sectionHtml(title, blockApps);
+      html += sectionHtml(title, blockApps, { prioritizeIcons: title === "Destacados" });
     }
+    // A catalog coming from an older/custom file must never silently lose an
+    // application just because its section is not yet represented in NAV.
+    const unknownSections = new Map();
+    for (const app of apps) {
+      if (KNOWN_CATALOG_SECTIONS.has(app.section)) continue;
+      const title = String(app.section || "Sin categoría").trim() || "Sin categoría";
+      if (!unknownSections.has(title)) unknownSections.set(title, []);
+      unknownSections.get(title).push(app);
+    }
+    for (const [title, blockApps] of unknownSections) html += sectionHtml(title, blockApps);
   } else {
-    html += sectionHtml(label, apps);
+    html += sectionHtml(label, apps, { prioritizeIcons: true });
   }
 
   if (!apps.length) {
@@ -813,7 +967,7 @@ function renderContent() {
             <div class="empty-updates-hero">
               <div class="empty-updates-badge-container">
                 <div class="empty-updates-logo-wrapper">
-                  <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+                  <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
                 </div>
                 <div class="empty-updates-check-badge">✓</div>
               </div>
@@ -848,60 +1002,108 @@ function renderContent() {
   lastRenderedView = view;
 
   content.innerHTML = html;
-  // The list can have grown shorter — an application leaving the Updates
-  // section, say — so the old offset is capped at what there is to scroll.
-  content.scrollTop = Math.min(
-    restoreTo,
-    Math.max(0, content.scrollHeight - content.clientHeight),
-  );
-  content.querySelectorAll("[data-console-filter]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.consoleFilter = button.dataset.consoleFilter || "all";
-      renderContent();
-    });
-  });
-  const scanButton = content.querySelector("#btn-scan-updates");
-  if (scanButton) scanButton.addEventListener("click", () => void scanForUpdates());
-  bindAppActions(content);
+  // `scrollTop` is clamped by the browser. Avoid reading scrollHeight and
+  // clientHeight immediately after replacing the DOM, which forced a complete
+  // synchronous layout of every card.
+  content.scrollTop = restoreTo;
 }
 
-function bindAppActions(root) {
-  root.querySelectorAll(".app-card").forEach((card) => {
-    card.addEventListener("click", (e) => {
-      if (e.target.closest("button")) return;
-      const appId = card.dataset.appId;
-      if (appId) openAppModal(appId);
-    });
-    card.addEventListener("keydown", (event) => {
-      if (event.target.closest("button") || !["Enter", " "].includes(event.key)) return;
-      event.preventDefault();
-      const appId = card.dataset.appId;
-      if (appId) openAppModal(appId);
-    });
+function updateVisibleAppActions(appIds) {
+  const wanted = appIds instanceof Set ? appIds : new Set(appIds || []);
+  if (!wanted.size) return;
+  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
+    const id = card.dataset.appId;
+    if (!wanted.has(id)) return;
+    const app = findApp(id);
+    const actions = card.querySelector(".card-actions");
+    if (app && actions) actions.innerHTML = actionButtons(app, "card");
   });
-  root.querySelectorAll("[data-install]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      installApp(btn.dataset.install, false);
-    });
+}
+
+function updateVisibleAppStatuses(appIds) {
+  const wanted = appIds instanceof Set ? appIds : new Set(appIds || []);
+  if (!wanted.size) return;
+  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
+    const id = card.dataset.appId;
+    if (!wanted.has(id)) return;
+    const app = findApp(id);
+    if (!app) return;
+    const meta = card.querySelector(".card-top > div:last-child");
+    const actions = card.querySelector(".card-actions");
+    if (meta) meta.innerHTML = cardMetaHtml(app);
+    if (actions) actions.innerHTML = actionButtons(app, "card");
   });
-  root.querySelectorAll("[data-update]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      installApp(btn.dataset.update, true);
-    });
+}
+
+let shellDelegationBound = false;
+
+function bindShellDelegation() {
+  if (shellDelegationBound) return;
+  shellDelegationBound = true;
+  const sidebar = document.getElementById("sidebar");
+  const content = document.getElementById("content");
+
+  sidebar.addEventListener("click", (event) => {
+    const navButton = event.target.closest("[data-nav]");
+    if (navButton) {
+      const nextSection = navButton.dataset.nav;
+      if (nextSection && (state.section !== nextSection || state.consoleFilter !== "all")) {
+        state.section = nextSection;
+        state.consoleFilter = "all";
+        void clientLog("info", "navigation", `Sección seleccionada: ${state.section}`);
+        renderSidebar();
+        renderContent();
+      }
+      return;
+    }
+
+    const actionButton = event.target.closest("[data-action]");
+    if (actionButton?.dataset.action === "theme") {
+      void clientLog("info", "action", "Abriendo selector de apariencia.");
+      openThemePicker();
+    } else if (actionButton?.dataset.action === "folder") {
+      void clientLog("info", "action", "Abriendo carpeta de aplicaciones.");
+      invoke("open_apps_dir").catch((error) => {
+        setStatus(`No se pudo abrir la carpeta: ${error}`, "var(--red)");
+        showAlertModal("Error al abrir la carpeta", String(error));
+      });
+    }
   });
-  root.querySelectorAll("[data-uninstall]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      uninstallApp(btn.dataset.uninstall);
-    });
+
+  content.addEventListener("click", (event) => {
+    const consoleButton = event.target.closest("[data-console-filter]");
+    if (consoleButton) {
+      const nextFilter = consoleButton.dataset.consoleFilter || "all";
+      if (state.consoleFilter !== nextFilter) {
+        state.consoleFilter = nextFilter;
+        renderContent();
+      }
+      return;
+    }
+    if (event.target.closest("#btn-scan-updates")) {
+      void scanForUpdates();
+      return;
+    }
+
+    const action = event.target.closest("[data-install], [data-update], [data-uninstall], [data-launch]");
+    if (action) {
+      if (action.dataset.install) void installApp(action.dataset.install, false);
+      else if (action.dataset.update) void installApp(action.dataset.update, true);
+      else if (action.dataset.uninstall) void uninstallApp(action.dataset.uninstall);
+      else if (action.dataset.launch) void launchApp(action.dataset.launch);
+      return;
+    }
+
+    const card = event.target.closest(".app-card[data-app-id]");
+    if (card && !event.target.closest("button")) openAppModal(card.dataset.appId);
   });
-  root.querySelectorAll("[data-launch]").forEach((btn) => {
-    btn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      launchApp(btn.dataset.launch);
-    });
+
+  content.addEventListener("keydown", (event) => {
+    if (!["Enter", " "].includes(event.key) || event.target.closest("button")) return;
+    const card = event.target.closest(".app-card[data-app-id]");
+    if (!card) return;
+    event.preventDefault();
+    openAppModal(card.dataset.appId);
   });
 }
 
@@ -912,7 +1114,7 @@ function openAppModal(id) {
   const accent = pickAccent(app, 0);
   const avatarBg = avatarBackground(app, accent);
   const letter = (app.name || app.id || "A")[0].toUpperCase();
-  const avatar = renderAvatar(app, letter);
+  const avatar = renderAvatar(app, letter, true);
   const version = st.installed ? st.version : app.version || "1.0";
 
   // Installed is installed, with or without an update waiting: the update badge
@@ -976,7 +1178,7 @@ function openAppModal(id) {
 }
 
 function findApp(id) {
-  return state.catalog.find((a) => a.id === id);
+  return derived.catalogById.get(id);
 }
 
 async function installApp(id, isUpdate = false) {
@@ -1036,7 +1238,7 @@ async function installApp(id, isUpdate = false) {
     onConfirm: async (picked) => {
       const variant = picked || remembered || app.variants?.default || null;
       state.busy[id] = isUpdate ? "updating" : "installing";
-      renderContent();
+      updateVisibleAppActions(new Set([id]));
       state.finished.delete(id);
       renderDlPanel();
       showPackageOperationModal(app, isUpdate);
@@ -1051,7 +1253,15 @@ async function installApp(id, isUpdate = false) {
         state.operationAppId = null;
         closeModal();
         const text = String(e);
-        await refreshStore({ reportErrors: false, silent: true });
+        // A rejection can mean the backend already knows this app is installed
+        // or already has a task queued. Pull its cheap committed snapshot so
+        // status and task controls agree without a global Windows/WinGet scan.
+        try {
+          await reconcileRuntimeFromBootstrap();
+        } catch (snapshotError) {
+          void clientLog("warn", "install-rejected-state", String(snapshotError?.stack || snapshotError));
+        }
+        updateVisibleAppStatuses(new Set([id]));
         setStatus(`Error: ${text}`, "var(--red)");
 
         showAlertModal("Error de instalación", text);
@@ -1084,7 +1294,7 @@ async function uninstallApp(id) {
     onConfirm: async () => {
       state.operationAppId = null;
       state.busy[id] = "uninstalling";
-      renderContent();
+      updateVisibleAppActions(new Set([id]));
       showBackgroundOperationModal(
         app,
         `Desinstalación de ${app.name}`,
@@ -1114,10 +1324,9 @@ async function uninstallApp(id) {
         // instalado.
         const outcome = await invoke("uninstall_app", { appId: id });
         closeModal();
-        await refreshStatuses();
+        const changes = await refreshInstalledFromBootstrap();
+        reconcileStatusChanges(changes);
         setTransientStatus(`${app.name} se desinstaló correctamente`, "var(--green)", 5000);
-        renderSidebar();
-        renderContent();
         showAlertModal(
           "Desinstalación completada",
           outcome || `${app.name} se desinstaló correctamente del equipo.`,
@@ -1126,9 +1335,8 @@ async function uninstallApp(id) {
         closeModal();
         const message = String(e);
         try {
-          await refreshStatuses();
-          renderSidebar();
-          renderContent();
+          const changes = await refreshInstalledFromBootstrap();
+          reconcileStatusChanges(changes);
         } catch {
           // Conservamos el error original de desinstalación o limpieza.
         }
@@ -1149,8 +1357,7 @@ async function uninstallApp(id) {
       } finally {
         clearTimeout(escapeHatch);
         delete state.busy[id];
-        renderSidebar();
-        renderContent();
+        updateVisibleAppStatuses(new Set([id]));
       }
     },
   });
@@ -1159,7 +1366,7 @@ async function uninstallApp(id) {
 async function launchApp(id) {
   const app = findApp(id);
   state.busy[id] = "launching";
-  renderContent();
+  updateVisibleAppActions(new Set([id]));
   try {
     const msg = await invoke("launch_app", { appId: id });
     setTransientStatus(msg || `Lanzando: ${app?.name || id}`, "var(--accent)", 5000);
@@ -1175,7 +1382,7 @@ async function launchApp(id) {
     }
   } finally {
     delete state.busy[id];
-    renderContent();
+    updateVisibleAppActions(new Set([id]));
   }
 }
 
@@ -1234,8 +1441,10 @@ function stateColor(s) {
 
 async function syncDownloadTasks() {
   try {
+    const previousIds = new Set(derived.taskByAppId.keys());
     const tasks = await invoke("get_tasks");
-    state.tasks = tasks || [];
+    replaceTasks(tasks || []);
+    updateVisibleAppActions(new Set([...previousIds, ...derived.taskByAppId.keys()]));
     renderDlPanel();
   } catch (e) {
     console.error("No se pudieron actualizar las descargas", e);
@@ -1244,8 +1453,10 @@ async function syncDownloadTasks() {
 
 async function invokeDownloadAction(cmd, args = {}) {
   try {
+    const previousIds = new Set(derived.taskByAppId.keys());
     await invoke(cmd, args);
-    state.tasks = (await invoke("get_tasks")) || [];
+    replaceTasks((await invoke("get_tasks")) || []);
+    updateVisibleAppActions(new Set([...previousIds, ...derived.taskByAppId.keys()]));
     renderDlPanel();
     updatePackageOperation(state.tasks);
   } catch (e) {
@@ -1357,7 +1568,7 @@ function bindOperationCancel(appId, message) {
  * bar sitting at zero throughout would say something untrue about it.
  */
 function showBackgroundOperationModal(app, title, initialStatus, withProgress = false) {
-  const avatar = renderAvatar(app, app.name?.[0] || "?");
+  const avatar = renderAvatar(app, app.name?.[0] || "?", true);
   const accent = pickAccent(app, 0);
   const avatarBg = avatarBackground(app, accent);
   openModal(`
@@ -1449,19 +1660,30 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed }) {
 
 function updatePackageOperation(tasks) {
   if (!state.operationAppId) return;
-  const task = [...tasks].reverse().find((item) => item.app_id === state.operationAppId);
+  let task = null;
+  for (let index = tasks.length - 1; index >= 0; index -= 1) {
+    if (tasks[index].app_id === state.operationAppId) {
+      task = tasks[index];
+      break;
+    }
+  }
   if (!task) return;
   const status = document.getElementById("package-operation-status");
   if (status) status.textContent = task.status || "Procesando paquete...";
   const progress = document.getElementById("package-operation-progress");
   if (progress) {
     const value = Math.max(0, Math.min(100, Number(task.progress) || 0));
-    progress.setAttribute("aria-valuenow", String(value));
-    const fill = document.getElementById("package-operation-progress-fill");
-    if (fill) fill.style.width = `${value}%`;
+    if (progress.getAttribute("aria-valuenow") !== String(value)) {
+      progress.setAttribute("aria-valuenow", String(value));
+      const fill = document.getElementById("package-operation-progress-fill");
+      if (fill) fill.style.width = `${value}%`;
+    }
   }
   const actions = document.getElementById("package-operation-actions");
   if (!actions) return;
+  const actionsSignature = [task.app_id, task.can_pause, task.can_resume, task.can_cancel, task.state].join("|");
+  if (actions.dataset.signature === actionsSignature) return;
+  actions.dataset.signature = actionsSignature;
   actions.innerHTML = `
     ${task.can_pause ? '<button type="button" class="btn ghost" id="operation-pause">Pausar</button>' : ""}
     ${task.can_resume ? '<button type="button" class="btn ghost" id="operation-resume">Reanudar</button>' : ""}
@@ -1509,7 +1731,7 @@ function renderChoices(choices) {
 }
 
 function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, onConfirm }) {
-  const avatar = app ? renderAvatar(app, app.name?.[0] || "?") : "";
+  const avatar = app ? renderAvatar(app, app.name?.[0] || "?", true) : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
 
@@ -1570,88 +1792,96 @@ function openThemePicker() {
     accent: state.settings.accent,
     accent_locked: false,
   };
+  const preset = THEME_PRESETS[draft.theme] || THEME_PRESETS.plata;
+  openModal(`
+    <h2>Personalizar apariencia</h2>
+    <p class="sub">Tema neutro · blanco, negro, gris y plata</p>
+    <div class="modal-section">
+      <label>Tema base</label>
+      <div class="preset-grid">
+        <button type="button" class="preset-card active" data-theme="plata">
+          <div class="swatch">${preset.swatch.map((c) => `<i style="background:${c}"></i>`).join("")}</div>
+          <strong>${preset.label}</strong>
+          <span>blanco / negro / gris / plata</span>
+        </button>
+      </div>
+    </div>
+    <div class="modal-section">
+      <label>Color de acento</label>
+      <div class="accent-grid">
+        ${ACCENT_CHOICES.map(
+          (c) =>
+            `<button type="button" class="accent-dot ${normalizeHex(c) === normalizeHex(draft.accent) ? "active" : ""}"
+              data-accent="${c}" style="background:${c}" aria-label="Usar color de acento ${c}" title="${c}"></button>`
+        ).join("")}
+      </div>
+    </div>
+    <div class="modal-section">
+      <label>Color personalizado</label>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+        <input type="color" id="custom-accent-picker" value="${draft.accent}" aria-label="Color de acento personalizado"
+          style="width:52px; height:38px; border:none; background:transparent; border-radius:10px; cursor:pointer;" />
+        <button type="button" class="btn ghost" id="theme-reset-neutral">Restaurar plata</button>
+      </div>
+    </div>
+    <div class="modal-section preview">
+      <div id="theme-preview-label">${preset.label}  ·  acento ${draft.accent}</div>
+      <div class="preview-bar" style="background:${preset.vars["--bg-app"]}">
+        <div class="side" style="background:${preset.vars["--bg-sidebar"]}"></div>
+        <div class="card" style="background:${preset.vars["--bg-card"]}"></div>
+        <div class="dot" id="theme-preview-dot" style="background:${draft.accent}"></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button type="button" class="btn ghost" id="theme-cancel">Cancelar</button>
+      <button type="button" class="btn" id="theme-apply">Aplicar</button>
+    </div>
+  `);
 
-  const paint = () => {
-    const preset = THEME_PRESETS[draft.theme] || THEME_PRESETS.plata;
-    openModal(`
-      <h2>Personalizar apariencia</h2>
-      <p class="sub">Tema neutro · blanco, negro, gris y plata</p>
-      <div class="modal-section">
-        <label>Tema base</label>
-        <div class="preset-grid">
-          <button type="button" class="preset-card active" data-theme="plata">
-            <div class="swatch">${preset.swatch.map((c) => `<i style="background:${c}"></i>`).join("")}</div>
-            <strong>${preset.label}</strong>
-            <span>blanco / negro / gris / plata</span>
-          </button>
-        </div>
-      </div>
-      <div class="modal-section">
-        <label>Color de acento</label>
-        <div class="accent-grid">
-          ${ACCENT_CHOICES.map(
-            (c) =>
-              `<button type="button" class="accent-dot ${normalizeHex(c) === normalizeHex(draft.accent) ? "active" : ""}"
-                data-accent="${c}" style="background:${c}" aria-label="Usar color de acento ${c}" title="${c}"></button>`
-          ).join("")}
-        </div>
-      </div>
-      <div class="modal-section">
-        <label>Color personalizado</label>
-        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-          <input type="color" id="custom-accent-picker" value="${draft.accent}" aria-label="Color de acento personalizado"
-            style="width:52px; height:38px; border:none; background:transparent; border-radius:10px; cursor:pointer;" />
-          <button type="button" class="btn ghost" id="theme-reset-neutral">Restaurar plata</button>
-        </div>
-      </div>
-      <div class="modal-section preview">
-        <div>${preset.label}  ·  acento ${draft.accent}</div>
-        <div class="preview-bar" style="background:${preset.vars["--bg-app"]}">
-          <div class="side" style="background:${preset.vars["--bg-sidebar"]}"></div>
-          <div class="card" style="background:${preset.vars["--bg-card"]}"></div>
-          <div class="dot" style="background:${draft.accent}"></div>
-        </div>
-      </div>
-      <div class="modal-foot">
-        <button type="button" class="btn ghost" id="theme-cancel">Cancelar</button>
-        <button type="button" class="btn" id="theme-apply">Aplicar</button>
-      </div>
-    `);
-
-    document.querySelectorAll("[data-accent]").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        draft.accent = btn.dataset.accent;
-        draft.accent_locked = true;
-        paint();
-      });
+  const modal = document.getElementById("modal");
+  const picker = document.getElementById("custom-accent-picker");
+  const previewLabel = document.getElementById("theme-preview-label");
+  const previewDot = document.getElementById("theme-preview-dot");
+  const updatePreview = () => {
+    const normalized = normalizeHex(draft.accent);
+    modal.querySelectorAll("[data-accent]").forEach((button) => {
+      button.classList.toggle("active", normalizeHex(button.dataset.accent) === normalized);
     });
-    document.getElementById("custom-accent-picker").addEventListener("input", (event) => {
-      draft.accent = event.target.value;
-      draft.accent_locked = true;
-      paint();
-    });
-    document.getElementById("theme-reset-neutral").onclick = () => {
-      draft.accent = THEME_PRESETS.plata.default_accent;
-      draft.accent_locked = false;
-      paint();
-    };
-    document.getElementById("theme-cancel").onclick = closeModal;
-    document.getElementById("theme-apply").onclick = async () => {
-      const settings = { theme: draft.theme, accent: `#${normalizeHex(draft.accent)}` };
-      try {
-        await invoke("save_settings", { settings });
-        applyTheme(settings.theme, settings.accent);
-        closeModal();
-        renderSidebar();
-        renderContent();
-        renderDlPanel();
-      } catch (error) {
-        setStatus(`No se pudo guardar la apariencia: ${error}`, "var(--red)");
-        showAlertModal("Error al guardar la apariencia", String(error));
-      }
-    };
+    const accent = `#${normalized}`;
+    if (picker.value !== accent) picker.value = accent;
+    previewLabel.textContent = `${preset.label}  ·  acento ${accent}`;
+    previewDot.style.background = accent;
   };
-  paint();
+
+  modal.querySelector(".accent-grid").addEventListener("click", (event) => {
+    const button = event.target.closest("[data-accent]");
+    if (!button) return;
+    draft.accent = button.dataset.accent;
+    draft.accent_locked = true;
+    updatePreview();
+  });
+  picker.addEventListener("input", (event) => {
+    draft.accent = event.target.value;
+    draft.accent_locked = true;
+    updatePreview();
+  });
+  document.getElementById("theme-reset-neutral").onclick = () => {
+    draft.accent = THEME_PRESETS.plata.default_accent;
+    draft.accent_locked = false;
+    updatePreview();
+  };
+  document.getElementById("theme-cancel").onclick = closeModal;
+  document.getElementById("theme-apply").onclick = async () => {
+    const settings = { theme: draft.theme, accent: `#${normalizeHex(draft.accent)}` };
+    try {
+      await invoke("save_settings", { settings });
+      applyTheme(settings.theme, settings.accent);
+      closeModal();
+    } catch (error) {
+      setStatus(`No se pudo guardar la apariencia: ${error}`, "var(--red)");
+      showAlertModal("Error al guardar la apariencia", String(error));
+    }
+  };
 }
 
 async function openCatalogEditor() {
@@ -1713,9 +1943,11 @@ async function openCatalogEditor() {
   document.getElementById("cat-cancel").onclick = closeModal;
   document.getElementById("cat-save").onclick = async () => {
     try {
-      const data = validateCatalog(JSON.parse(ta.value));
-      const path = await invoke("save_catalog", { apps: data });
-      state.catalog = data;
+      const catalogData = validateCatalog(JSON.parse(ta.value));
+      const path = await invoke("save_catalog", { apps: catalogData });
+      // save_catalog has already rebuilt statuses for the new catalog. Read
+      // that coherent snapshot instead of keeping statuses from the old list.
+      await reconcileRuntimeFromBootstrap({ includeCatalog: true, includeSettings: true });
       closeModal();
       renderSidebar();
       renderContent();
@@ -1728,7 +1960,8 @@ async function openCatalogEditor() {
 
 async function reloadCatalog() {
   try {
-    state.catalog = (await invoke("reload_catalog")) || [];
+    replaceCatalog((await invoke("reload_catalog")) || []);
+    hydrateResolvedIcons();
     setStatus(`Catálogo recargado: ${state.catalog.length} apps`, "var(--green)");
     renderSidebar();
     renderContent();
@@ -1770,7 +2003,7 @@ function showShellBusy() {
     <div class="sync-logo-box">
       <div class="sync-logo-ring"></div>
       <div class="sync-logo-wrapper">
-        <img src="assets/winslim-center-logo.png" alt="" />
+        <img src="assets/winslim-center-logo.png" width="904" height="904" alt="" />
       </div>
     </div>`;
   shell.appendChild(shellBusyOverlay);
@@ -1795,7 +2028,7 @@ function showSyncModal(title = "WinSlimCenter", subtitle = "Sincronizando tienda
       <div class="sync-logo-box">
         <div class="sync-logo-ring"></div>
         <div class="sync-logo-wrapper">
-          <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+          <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
         </div>
       </div>
       <div class="sync-title-group">
@@ -1821,7 +2054,10 @@ function updateSyncModal(percent, text) {
   const bar = document.getElementById("sync-modal-bar");
   const status = document.getElementById("sync-modal-status");
   const percentEl = document.getElementById("sync-modal-percent");
-  if (bar && percent != null) bar.style.width = `${Math.min(100, Math.max(0, percent))}%`;
+  if (bar && percent != null) {
+    const value = Math.min(100, Math.max(0, Number(percent) || 0));
+    bar.style.width = `${value}%`;
+  }
   if (status && text) status.textContent = text;
   if (percentEl && percent != null) percentEl.textContent = `${Math.min(100, Math.max(0, percent))}%`;
 }
@@ -1859,25 +2095,21 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   setProgress(silent ? 15 : 0);
 
   try {
-    state.catalog = (await invoke("reload_catalog")) || [];
+    replaceCatalog((await invoke("reload_catalog")) || []);
+    hydrateResolvedIcons();
     if (!silent) {
-      // Icon resolution is only redone for an explicit refresh: it is the slow
-      // part and a post-install refresh has no reason to repeat it.
-      state.resolvedIcons = {};
       updateSyncModal(40, "Analizando registro y programas instalados...");
     }
     setProgress(40);
-    state.statuses = (await invoke("refresh_statuses")) || {};
+    replaceStatuses((await invoke("refresh_statuses")) || {});
     if (!silent) {
-      updateSyncModal(65, "Precargando recursos gráficos e iconos...");
-      await preloadCatalogIcons({ progressStart: 65, progressEnd: 82 });
       updateSyncModal(85, "Comprobando versiones y actualizaciones...");
     }
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
     setProgress(86);
-    state.statuses = (await invoke("check_updates")) || state.statuses;
+    replaceStatuses((await invoke("check_updates")) || state.statuses);
     state.lastUpdateScan = new Date();
-    const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
+    const updates = updatesCount();
     renderSidebar();
     renderContent();
     if (!silent) {
@@ -1906,35 +2138,22 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   }
 }
 
-async function refreshStatuses() {
-  try {
-    state.statuses = (await invoke("refresh_statuses")) || {};
-  } finally {
-    setProgress(100);
-  }
-}
-
 async function finishStartupInBackground() {
   showSyncModal("Iniciando WinSlimCenter", "Analizando el equipo y preparando la tienda...");
   updateSyncModal(20, "Escaneando aplicaciones instaladas y registro...");
   try {
-    state.statuses = (await invoke("refresh_statuses")) || state.statuses;
-    renderSidebar();
-    renderContent();
+    const detectedChanges = replaceStatuses((await invoke("refresh_statuses")) || state.statuses);
+    reconcileStatusChanges(detectedChanges);
 
-    updateSyncModal(55, "Precargando recursos e iconos de interfaz...");
-    await preloadCatalogIcons({ progressStart: 55, progressEnd: 78 });
-    
     updateSyncModal(80, "Comprobando actualizaciones disponibles...");
     setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
     setProgress(80);
     
     try {
-      state.statuses = (await invoke("check_updates")) || state.statuses;
+      const updateChanges = replaceStatuses((await invoke("check_updates")) || state.statuses);
       state.lastUpdateScan = new Date();
-      renderSidebar();
-      renderContent();
-      const updates = Object.values(state.statuses).filter((status) => status.update_available).length;
+      reconcileStatusChanges(updateChanges);
+      const updates = updatesCount();
       updateSyncModal(100, "¡Tienda lista y optimizada!");
       await new Promise(r => setTimeout(r, 350));
       
@@ -1966,8 +2185,32 @@ async function refreshInstalledFromBootstrap() {
   const data = await invoke("get_bootstrap");
   state.appVersion = data.app_version || state.appVersion;
   state.installed = data.installed || {};
-  state.statuses = data.statuses || {};
+  const changes = replaceStatuses(data.statuses || {});
   renderAppVersion();
+  return changes;
+}
+
+async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSettings = false } = {}) {
+  const previousTaskIds = new Set(state.tasks.map((task) => task.app_id));
+  const data = await invoke("get_bootstrap");
+  if (includeCatalog) {
+    replaceCatalog(data.catalog || []);
+    hydrateResolvedIcons();
+  }
+  state.appVersion = data.app_version || state.appVersion;
+  state.installed = data.installed || {};
+  const changes = replaceStatuses(data.statuses || {});
+  replaceTasks(data.tasks || []);
+  if (includeSettings) {
+    state.settings = data.settings || state.settings;
+    applyTheme(state.settings.theme, state.settings.accent);
+  }
+  renderAppVersion();
+  reconcileStatusChanges(changes);
+  updateVisibleAppActions(new Set([...previousTaskIds, ...state.tasks.map((task) => task.app_id)]));
+  renderDlPanel();
+  updatePackageOperation(state.tasks);
+  return { data, changes };
 }
 
 async function startStoreUpdate() {
@@ -2006,7 +2249,7 @@ function showAboutModal() {
   openModal(`
     <div class="about-dialog">
       <div class="about-logo">
-        <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+        <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
       </div>
       <h2 class="about-name">WinSlimCenter</h2>
       <p class="about-version">${state.appVersion ? `Versión ${escapeHtml(state.appVersion)}` : "Tienda de aplicaciones"}</p>
@@ -2124,7 +2367,7 @@ function showStoreUpdateModal(update) {
   openModal(`
     <div class="store-update">
       <div class="store-update-logo">
-        <img src="assets/winslim-center-logo.png" alt="WinSlimCenter" />
+        <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
         <span class="store-update-badge" aria-hidden="true">
           <svg class="store-update-badge-icon" width="17" height="17" viewBox="0 0 24 24" fill="none"
                stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
@@ -2174,7 +2417,43 @@ async function checkStoreUpdate() {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  await clientLog("info", "startup", "DOMContentLoaded: iniciando interfaz.");
+  void clientLog("info", "startup", "DOMContentLoaded: iniciando interfaz.");
+
+  // Register every state-bearing event before asking for the snapshot. Events
+  // emitted while get_bootstrap is in flight are queued and replayed in order
+  // after the snapshot is applied, so neither side can overwrite the other.
+  const backendEventHandlers = new Map();
+  const queuedBackendEvents = [];
+  let bootstrapApplied = false;
+  let backendEventChain = Promise.resolve();
+  const dispatchBackendEvent = (name, event) => {
+    if (!bootstrapApplied) {
+      queuedBackendEvents.push([name, event]);
+      return;
+    }
+    backendEventChain = backendEventChain
+      .then(() => backendEventHandlers.get(name)?.(event))
+      .catch((error) => {
+        void clientLog("error", "backend-event", `${name}: ${error?.stack || error}`);
+      });
+  };
+  const listenerRegistrations = [
+    listen("downloads-changed", (event) => dispatchBackendEvent("downloads-changed", event)),
+    listen("background-progress", (event) => dispatchBackendEvent("background-progress", event)),
+    listen("install-finished", (event) => dispatchBackendEvent("install-finished", event)),
+  ];
+  let bootstrapPromise;
+  try {
+    await Promise.all(listenerRegistrations);
+    // The snapshot begins only after all listeners are confirmed active.
+    bootstrapPromise = invoke("get_bootstrap");
+  } catch (error) {
+    setStatus(`Error al registrar eventos: ${error}`, "var(--red)");
+    void clientLog("error", "startup-listeners", String(error?.stack || error));
+    return;
+  }
+
+  bindShellDelegation();
   let searchTimer = null;
   const searchInput = document.getElementById("search");
   searchInput.addEventListener("keydown", async (event) => {
@@ -2204,19 +2483,19 @@ window.addEventListener("DOMContentLoaded", async () => {
   // options object, and this is one of the two places allowed to show the modal.
   document.getElementById("btn-refresh").addEventListener("click", () => refreshStore());
 
-  await listen("downloads-changed", (ev) => {
+  backendEventHandlers.set("downloads-changed", (ev) => {
     const previousStates = new Map(state.tasks.map((task) => [task.app_id, task.state]));
-    state.tasks = ev.payload.tasks || [];
+    replaceTasks(ev.payload.tasks || []);
     const currentStates = new Map(state.tasks.map((task) => [task.app_id, task.state]));
     const affected = new Set([...previousStates.keys(), ...currentStates.keys()]);
     if ([...affected].some((id) => previousStates.get(id) !== currentStates.get(id))) {
-      renderContent();
+      updateVisibleAppActions(affected);
     }
     renderDlPanel();
     updatePackageOperation(state.tasks);
   });
 
-  await listen("background-progress", (ev) => {
+  backendEventHandlers.set("background-progress", (ev) => {
     const { stage, message, progress } = ev.payload || {};
     if (message) {
       if (stage === "complete") setTransientStatus(message, "var(--green)", 4000);
@@ -2230,7 +2509,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     else showShellBusy();
   });
 
-  await listen("install-finished", async (ev) => {
+  backendEventHandlers.set("install-finished", async (ev) => {
     const {
       ok,
       app_id,
@@ -2242,6 +2521,9 @@ window.addEventListener("DOMContentLoaded", async () => {
       interrupted = false,
     } = ev.payload;
     delete state.busy[app_id];
+    // Clearing the optimistic busy flag is itself a visible state change even
+    // when installation changed no version and the later WinGet check fails.
+    updateVisibleAppActions(new Set([app_id]));
     // A finished installation keeps its dialog, which turns into the completion
     // state below; everything else is replaced by the message that explains it.
     const ownsModal = state.operationAppId === app_id;
@@ -2250,20 +2532,8 @@ window.addEventListener("DOMContentLoaded", async () => {
       if (!ok) closeModal();
     }
     if (ok) {
-      await refreshInstalledFromBootstrap();
+      await reconcileRuntimeFromBootstrap();
       const app = findApp(app_id);
-      // Both a fresh install and an update leave the backend with statuses
-      // rebuilt from the registry alone. Re-verifying is what keeps the Updates
-      // badge honest: skipping it after a plain install left the catalog's own
-      // guess on screen and announced updates that did not exist.
-      try {
-        state.statuses = (await invoke("check_updates")) || state.statuses;
-        state.lastUpdateScan = new Date();
-      } catch (error) {
-        clientLog("warn", "post-install-updates", String(error?.stack || error));
-      }
-      renderSidebar();
-      renderContent();
       if (app) {
         const message = is_update
           ? (changed ? `Actualizado: ${app.name}` : `${app.name} ya estaba actualizado`)
@@ -2277,10 +2547,29 @@ window.addEventListener("DOMContentLoaded", async () => {
           changed,
         });
       }
+      // Installation is already confirmed by the backend, so let the user see
+      // that result immediately. WinGet version verification is independent
+      // and reconciles only the cards it changes when it returns.
+      void (async () => {
+        try {
+          const updateChanges = replaceStatuses((await invoke("check_updates")) || state.statuses);
+          state.lastUpdateScan = new Date();
+          reconcileStatusChanges(updateChanges);
+        } catch (updateError) {
+          void clientLog("warn", "post-install-updates", String(updateError?.stack || updateError));
+        }
+      })();
     } else {
       const app = findApp(app_id);
       const appName = app?.name || app_id;
-      await refreshStore({ reportErrors: false, silent: true });
+      // The backend already cleaned the failed operation and probed this exact
+      // application. Pull that committed snapshot without repeating the global
+      // registry/Start Apps/WinGet scan on an error path.
+      try {
+        await reconcileRuntimeFromBootstrap();
+      } catch (refreshError) {
+        void clientLog("warn", "post-install-state", String(refreshError?.stack || refreshError));
+      }
       if (cancelled && cancellation_kind === "installation") {
         setTransientStatus(`Instalación cancelada: ${appName}`, "var(--text-light)", 5000);
         showAlertModal(
@@ -2303,13 +2592,14 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
-    const data = await invoke("get_bootstrap");
-    state.catalog = data.catalog || [];
+    const data = await bootstrapPromise;
+    replaceCatalog(data.catalog || []);
+    hydrateResolvedIcons();
     state.appVersion = data.app_version || state.appVersion;
     state.installed = data.installed || {};
-    state.statuses = data.statuses || {};
+    replaceStatuses(data.statuses || {});
     state.settings = data.settings || state.settings;
-    state.tasks = data.tasks || [];
+    replaceTasks(data.tasks || []);
     applyTheme(state.settings.theme, state.settings.accent);
     renderAppVersion();
     renderSidebar();
@@ -2318,10 +2608,17 @@ window.addEventListener("DOMContentLoaded", async () => {
     setStatus(idleStatusSummary(), "var(--green)");
     clientLog("info", "startup", {
       catalog: state.catalog.length,
-      installed: Object.values(state.statuses).filter((status) => status.installed).length,
+      installed: installedCount(),
       tasks: state.tasks.length,
       version: state.appVersion,
     });
+    bootstrapApplied = true;
+    for (const [name, event] of queuedBackendEvents.splice(0)) {
+      dispatchBackendEvent(name, event);
+    }
+    // In particular, a queued install-finished must reconcile its committed
+    // backend state before the slower global start-up scan is launched.
+    await backendEventChain;
     // Give WebView two frames to display the complete store before starting
     // the slower Windows/Start Apps/Winget and update scans.
     requestAnimationFrame(() => {
