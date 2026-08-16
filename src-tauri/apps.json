@@ -140,7 +140,10 @@
     "category": "Compresión",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "assets/catalog/seven_zip.png",
+    "icon_url": "assets/catalog/seven_zip.svg",
+    "icon_background": "#ffffff",
+    "icon_fit": "contain",
+    "icon_padding": 16,
     "accent_color": "#b71c1c",
     "detect_names": [
       "7-Zip"
@@ -159,6 +162,7 @@
     "section": "Utilidades",
     "source_type": "winget",
     "icon_url": "assets/catalog/winrar.png",
+    "icon_padding": 4,
     "accent_color": "#3b67c6",
     "detect_names": [
       "WinRAR"
@@ -223,8 +227,8 @@
     "description": "Agente de programación con IA, disponible como aplicación nativa de escritorio.",
     "version": "latest",
     "author": "OpenCode",
-    "category": "Editores e IDE",
-    "section": "Desarrollo",
+    "category": "Desarrollo con IA",
+    "section": "IA",
     "featured": false,
     "source_type": "winget",
     "winget_id": "SST.OpenCodeDesktop",
@@ -4343,7 +4347,8 @@
     "web_url": "https://www.netflix.com/login",
     "icon_url": "assets/catalog/netflix.png",
     "icon_background": "#000000",
-    "icon_padding": 12,
+    "icon_fit": "contain",
+    "icon_padding": 16,
     "accent_color": "#e50914"
   },
   {
@@ -4360,6 +4365,54 @@
     "icon_url": "assets/catalog/disney_plus.png",
     "icon_padding": 0,
     "accent_color": "#113ccf"
+  },
+  {
+    "id": "hbo_max",
+    "name": "HBO Max",
+    "description": "Series, películas y documentales de HBO Max en su propia ventana, con el navegador predeterminado. Necesita suscripción.",
+    "version": "latest",
+    "author": "Warner Bros. Discovery",
+    "category": "Streaming",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "webapp",
+    "web_url": "https://www.hbomax.com/",
+    "icon_url": "assets/catalog/hbo_max.png",
+    "icon_background": "#000000",
+    "icon_padding": 0,
+    "accent_color": "#7b2ff7"
+  },
+  {
+    "id": "dazn",
+    "name": "DAZN",
+    "description": "Deporte en directo y bajo demanda de DAZN en su propia ventana, con el navegador predeterminado. Necesita suscripción.",
+    "version": "latest",
+    "author": "DAZN Group",
+    "category": "Streaming",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "webapp",
+    "web_url": "https://www.dazn.com/es-ES/home",
+    "icon_url": "assets/catalog/dazn.png",
+    "icon_background": "#0d1721",
+    "icon_padding": 0,
+    "accent_color": "#0d1721"
+  },
+  {
+    "id": "mitele",
+    "name": "Mitele",
+    "description": "Directos y series de Mediaset España a la carta en su propia ventana, con el navegador predeterminado. Gratuito con registro.",
+    "version": "latest",
+    "author": "Mediaset España",
+    "category": "Streaming",
+    "section": "Multimedia",
+    "featured": false,
+    "source_type": "webapp",
+    "web_url": "https://www.mitele.es/",
+    "icon_url": "assets/catalog/mitele.png",
+    "icon_background": "#000000",
+    "icon_padding": 0,
+    "accent_color": "#8b2fd6"
   },
   {
     "id": "foobar2000",
