@@ -1899,23 +1899,6 @@
     ]
   },
   {
-    "id": "luajit",
-    "name": "LuaJIT",
-    "description": "Implementación JIT de alto rendimiento de Lua.",
-    "version": "latest",
-    "author": "LuaJIT Project",
-    "category": "Lenguajes y runtimes",
-    "section": "Desarrollo",
-    "featured": false,
-    "source_type": "winget",
-    "winget_id": "DEVCOM.LuaJIT",
-    "winget_source": "winget",
-    "icon_url": "assets/luajit.png",
-    "detect_names": [
-      "LuaJIT"
-    ]
-  },
-  {
     "id": "raku",
     "name": "Rakudo (Raku)",
     "description": "Compilador Rakudo y REPL del lenguaje Raku.",
