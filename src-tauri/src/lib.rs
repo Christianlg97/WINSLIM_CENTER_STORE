@@ -764,6 +764,41 @@ fn write_log(level: String, event: String, details: String) {
     logger::log(&level, &format!("frontend:{event}"), details);
 }
 
+/// The script `/woa` runs, published as a release asset of its own repository.
+///
+/// The address is fixed here on purpose: the command takes no arguments, so
+/// nothing typed in the search box can send it somewhere else.
+const WOA_SCRIPT_URL: &str =
+    "https://github.com/Christianlg97/W-OA.vbs/releases/download/latest/WOA.vbs";
+
+/// Downloads WOA.vbs and hands it to the Windows Script Host.
+///
+/// The copy lands in the download folder the store empties on every start, so
+/// the script is always the one published now and never a leftover. It is run
+/// through `wscript.exe` by name rather than opened: a `.vbs` may be associated
+/// with an editor, and the point of the command is to run it.
+#[tauri::command]
+async fn run_woa() -> Result<String, String> {
+    logger::info("woa", "Comando /woa solicitado.");
+    paths::ensure_dirs()?;
+    let script = paths::package_download_dir("woa").join("WOA.vbs");
+    let flags = download::DownloadFlags::new();
+    download::download_url(WOA_SCRIPT_URL, &script, &flags, |_, _, _| {}).await?;
+
+    #[cfg(windows)]
+    {
+        std::process::Command::new("wscript.exe")
+            .arg(&script)
+            .spawn()
+            .map_err(|error| format!("Windows no pudo ejecutar {}: {error}", script.display()))?;
+        logger::info("woa", format!("WOA en marcha desde {}", script.display()));
+        Ok(script.to_string_lossy().to_string())
+    }
+
+    #[cfg(not(windows))]
+    Err("WOA solo se puede ejecutar en Windows.".into())
+}
+
 #[tauri::command]
 fn open_url(app: AppHandle, url: String) -> Result<(), String> {
     let cleaned = url.trim();
@@ -2768,6 +2803,7 @@ pub fn run() {
             open_apps_dir,
             open_logs,
             write_log,
+            run_woa,
             open_url,
             uninstall_app,
             launch_app,

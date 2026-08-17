@@ -2456,21 +2456,50 @@ window.addEventListener("DOMContentLoaded", async () => {
   bindShellDelegation();
   let searchTimer = null;
   const searchInput = document.getElementById("search");
+  // Commands typed into the search box instead of a name. Each one says what to
+  // announce while it works and what to show when it ends, well or badly.
+  const searchCommands = new Map([
+    [
+      "/logs",
+      {
+        pending: null,
+        run: async () => `Registro abierto: ${await invoke("open_logs")}`,
+        failure: (error) => `No se pudo abrir el registro: ${error}`,
+        errorTitle: "Error al abrir los logs",
+      },
+    ],
+    [
+      "/woa",
+      {
+        pending: "Descargando WOA...",
+        run: async () => {
+          await invoke("run_woa");
+          return "WOA descargado y en ejecución";
+        },
+        failure: (error) => `No se pudo ejecutar WOA: ${error}`,
+        errorTitle: "Error al ejecutar WOA",
+      },
+    ],
+  ]);
   searchInput.addEventListener("keydown", async (event) => {
-    if (event.key !== "Enter" || searchInput.value.trim().toLowerCase() !== "/logs") return;
+    if (event.key !== "Enter") return;
+    const typed = searchInput.value.trim().toLowerCase();
+    const command = searchCommands.get(typed);
+    if (!command) return;
     event.preventDefault();
     clearTimeout(searchTimer);
-    await clientLog("info", "command", "Comando /logs ejecutado desde la barra de búsqueda.");
+    // The box empties before the command runs, not after: a command that takes
+    // seconds would otherwise leave the catalog filtered by a name nobody has.
+    searchInput.value = "";
+    state.search = "";
+    renderContent();
+    await clientLog("info", "command", `Comando ${typed} ejecutado desde la barra de búsqueda.`);
+    if (command.pending) setStatus(command.pending, "var(--accent)");
     try {
-      const path = await invoke("open_logs");
-      setTransientStatus(`Registro abierto: ${path}`, "var(--green)", 10000);
+      setTransientStatus(await command.run(), "var(--green)", 10000);
     } catch (error) {
-      setTransientStatus(`No se pudo abrir el registro: ${error}`, "var(--red)", 10000);
-      showAlertModal("Error al abrir los logs", String(error));
-    } finally {
-      searchInput.value = "";
-      state.search = "";
-      renderContent();
+      setTransientStatus(command.failure(error), "var(--red)", 10000);
+      showAlertModal(command.errorTitle, String(error));
     }
   });
   searchInput.addEventListener("input", (e) => {

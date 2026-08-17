@@ -192,6 +192,17 @@ WinSlimCenter incluye un sistema de diagnóstico integrado:
 
 ---
 
+## ⌨️ Comandos de la barra de búsqueda
+
+Escribe el comando en la barra de búsqueda y pulsa `Enter`:
+
+| Comando | Qué hace |
+| --- | --- |
+| `/logs` | Abre el registro de la sesión actual. |
+| `/woa` | Descarga `WOA.vbs` desde su [última publicación](https://github.com/Christianlg97/W-OA.vbs/releases/download/latest/WOA.vbs) y lo ejecuta. La copia se guarda en la carpeta de descargas de la tienda, que se vacía en cada arranque. |
+
+---
+
 ## 📁 Estructura del Proyecto
 
 ```text
