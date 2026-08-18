@@ -32,6 +32,44 @@ if errorlevel 1 goto :install_vctools
 
 :do_build
 rem ---------------------------------------------------------------------------
+rem Resolve the toolchains the build needs.
+rem
+rem winget publishes a new PATH to the processes started after it, never to the
+rem one that called it, so a toolchain installed by the fallbacks below would
+rem still look missing until the script was run a second time. Their default
+rem locations go on the PATH by hand, which also picks up an installation that
+rem was already on disk but never reached the environment.
+rem ---------------------------------------------------------------------------
+if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
+if exist "%USERPROFILE%\.cargo\bin\cargo.exe" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+
+rem Tauri compiles the application itself with Cargo, so a missing Rust is
+rem fatal. Node only minifies the frontend and runs the npm CLI: without it the
+rem build still finishes through cargo-tauri, so it is repaired but not required.
+where cargo >nul 2>&1
+if errorlevel 1 goto :install_rust
+
+:rust_ready
+where node.exe >nul 2>&1
+if not errorlevel 1 goto :node_ready
+
+echo.
+echo [ADVERTENCIA] No se detecto Node.js.
+echo [INFO] Intentando instalar Node.js LTS con winget...
+echo.
+winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
+where node.exe >nul 2>&1
+if errorlevel 1 goto :node_missing
+echo [INFO] Node.js disponible.
+goto :node_ready
+
+:node_missing
+echo [ADVERTENCIA] Node.js sigue sin estar disponible; se compilara con cargo-tauri
+echo               y el frontend ira sin minificar.
+
+:node_ready
+rem ---------------------------------------------------------------------------
 rem Resolve a working Tauri CLI.
 rem
 rem `npx tauri` alone is not enough: an interrupted or partially extracted
@@ -45,6 +83,12 @@ rem ---------------------------------------------------------------------------
 set "TAURI_JS=%~dp0node_modules\@tauri-apps\cli\tauri.js"
 set "TAURI_MODE="
 
+rem That entry point is JavaScript, so a complete folder proves nothing on a
+rem machine without Node: this mode used to be chosen on the strength of the
+rem file alone and the build then died with "node no se reconoce".
+where node.exe >nul 2>&1
+if errorlevel 1 goto :cli_from_cargo
+
 if exist "%TAURI_JS%" goto :cli_node
 
 echo [INFO] Instalando dependencias del proyecto...
@@ -56,6 +100,8 @@ call npm install --no-save "@tauri-apps/cli@^2"
 if exist "%TAURI_JS%" goto :cli_node
 
 echo [ADVERTENCIA] npm no pudo proporcionar la CLI. Probando con Cargo...
+
+:cli_from_cargo
 where cargo-tauri >nul 2>&1
 if not errorlevel 1 goto :cli_cargo
 
@@ -82,6 +128,14 @@ goto :cli_ready
 set "TAURI_PROD_CONFIG="
 where node.exe >nul 2>&1
 if errorlevel 1 goto :frontend_ready
+
+rem El minificador es una dependencia de desarrollo aparte de la CLI: sin ella
+rem build_frontend.mjs avisa y copia el JS y el CSS sin minificar, que compila
+rem igual pero pesa mas de lo necesario.
+if not exist "%~dp0node_modules\esbuild\package.json" (
+  echo [INFO] Falta esbuild; instalando dependencias de desarrollo...
+  call npm install
+)
 
 echo [INFO] Preparando frontend optimizado...
 call node "%~dp0scratch\build_frontend.mjs"
@@ -141,6 +195,39 @@ echo [EXITO] C++ Build Tools instalado. Vuelve a ejecutar este script para compi
 echo.
 pause
 exit /b 0
+
+:install_rust
+echo.
+echo [ADVERTENCIA] No se detecto Cargo (la cadena de herramientas de Rust).
+echo [INFO] Intentando instalar Rust con winget...
+echo.
+winget install --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
+if exist "%USERPROFILE%\.cargo\bin" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
+where rustup >nul 2>&1
+if errorlevel 1 goto :err_rust
+
+rem winget deja rustup instalado, no necesariamente una cadena activa, y la que
+rem sirve aqui es la MSVC: es la que usa el enlazador de Visual Studio que este
+rem script acaba de preparar.
+echo [INFO] Preparando la cadena estable MSVC...
+call rustup default stable-x86_64-pc-windows-msvc
+
+where cargo >nul 2>&1
+if errorlevel 1 goto :err_rust
+echo [INFO] Rust disponible.
+goto :rust_ready
+
+:err_rust
+echo.
+echo [ERROR] No se pudo obtener Cargo, y Tauri no puede compilar sin Rust.
+echo Instalalo a mano y vuelve a ejecutar este script:
+echo   winget install --id Rustlang.Rustup
+echo.
+echo Abriendo la pagina oficial en tu navegador...
+start https://rustup.rs/
+echo.
+pause
+exit /b 1
 
 :err_cli
 echo.

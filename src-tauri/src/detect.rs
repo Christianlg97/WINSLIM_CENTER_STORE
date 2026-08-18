@@ -631,6 +631,27 @@ fn match_quality(candidate: &str, display_name: &str) -> Option<i32> {
     })
 }
 
+/// `true` when a name the entry declares is *not* its own explains this record
+/// at least as well as the entry's own names do.
+///
+/// Two products of the same vendor installed side by side can name themselves so
+/// that the shorter name is a prefix of the longer one: "Antigravity" and
+/// "Antigravity IDE" are both Google's, and the IDE's record matched the plain
+/// entry just as well as its own — better, in fact, because it is the one that
+/// records an install location. The entry that lists its sibling then steps
+/// aside from every record the sibling describes at least as well, and keeps
+/// only the ones that are unmistakably its own.
+fn an_excluded_sibling_explains(
+    display_name: &str,
+    quality: i32,
+    exclude_names: &[String],
+) -> bool {
+    exclude_names
+        .iter()
+        .filter_map(|name| match_quality(name, display_name))
+        .any(|excluded| excluded >= quality)
+}
+
 /// Picks the registry entry that best matches the catalog names.
 ///
 /// Windows routinely registers the same product several times (per-user and
@@ -641,6 +662,7 @@ fn match_quality(candidate: &str, display_name: &str) -> Option<i32> {
 pub fn match_system_app(
     catalog_name: &str,
     detect_names: &[String],
+    exclude_names: &[String],
     system: &[SystemApp],
 ) -> Option<SystemApp> {
     let mut candidates: Vec<&str> = vec![catalog_name];
@@ -654,6 +676,9 @@ pub fn match_system_app(
                 .iter()
                 .filter_map(|candidate| match_quality(candidate, &app.display_name))
                 .max()
+                .filter(|quality| {
+                    !an_excluded_sibling_explains(&app.display_name, *quality, exclude_names)
+                })
                 .map(|quality| (app, quality))
         })
         .max_by_key(|(app, quality)| {
@@ -719,6 +744,19 @@ pub fn detect_names_from_entry(entry: &serde_json::Value) -> Vec<String> {
     names
 }
 
+/// The names the entry says belong to a different program, however much they
+/// read like its own. See `an_excluded_sibling_explains`.
+pub fn detect_exclude_names_from_entry(entry: &serde_json::Value) -> Vec<String> {
+    entry
+        .get("detect_exclude_names")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn build_statuses(
     catalog: &[serde_json::Value],
     center_installed: &HashMap<String, crate::store::InstalledInfo>,
@@ -743,6 +781,7 @@ pub fn build_statuses(
             .and_then(|v| v.as_str())
             .unwrap_or("latest");
         let detect_names = detect_names_from_entry(entry);
+        let exclude_names = detect_exclude_names_from_entry(entry);
         // Un componente no se instala ni se desinstala por su cuenta: llega con
         // otra aplicación — Word con Microsoft 365 — y lo único que se puede
         // hacer con él es abrirlo, cuando su ejecutable está donde debe.
@@ -830,7 +869,7 @@ pub fn build_statuses(
             }
         }
 
-        if let Some(sys) = match_system_app(name, &detect_names, system) {
+        if let Some(sys) = match_system_app(name, &detect_names, &exclude_names, system) {
             let ver = if sys.version.is_empty() {
                 catalog_version.to_string()
             } else {
@@ -1238,13 +1277,22 @@ impl<'a> StartAppIndex<'a> {
 
         let mut candidates = vec![catalog_name.to_string()];
         candidates.extend(detect_names_from_entry(entry));
-        (0..self.apps.len()).find(|&index| {
+        let exclude_names = detect_exclude_names_from_entry(entry);
+        // Read out of the shared slice so that naming a candidate holds no
+        // borrow of the index itself, which `is_real` needs mutably.
+        let apps = self.apps;
+        (0..apps.len()).find(|&index| {
             // The ordering here is intentional: a path can be slow or can wake
             // a disconnected drive. It is inspected only after the in-memory
             // name comparison says this entry is a real candidate.
+            let listed = apps[index].name.as_str();
             candidates
                 .iter()
-                .any(|candidate| names_match(candidate, &self.apps[index].name))
+                .filter_map(|candidate| match_quality(candidate, listed))
+                .max()
+                .is_some_and(|quality| {
+                    !an_excluded_sibling_explains(listed, quality, &exclude_names)
+                })
                 && self.is_real(index)
         })
     }
@@ -1399,7 +1447,7 @@ mod tests {
             app_id: r"{6D809377-6AF0-444B-8957-A3773F02200E}\CrystalDiskInfo\DiskInfo64.exe".into(),
         }];
 
-        assert!(match_system_app("Crystal", &["Crystal".to_string()], &system).is_none());
+        assert!(match_system_app("Crystal", &["Crystal".to_string()], &[], &system).is_none());
         assert!(match_start_app(&entry, "Crystal", &start_apps).is_none());
 
         let statuses = build_statuses(
@@ -1744,6 +1792,67 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_start_menu_entry_of_a_named_sibling_is_not_proof_of_this_one() {
+        // Only the Claude desktop application is installed. Its shortcut reads
+        // like the terminal tool's name, so the catalog entry for the CLI used
+        // to report itself installed on the strength of somebody else's icon.
+        let apps = vec![StartApp {
+            name: "Claude".into(),
+            app_id: "Claude_pzs8sxrjxfjjc!Claude".into(),
+        }];
+        let cli = serde_json::json!({
+            "detect_names": ["Claude Code"],
+            "detect_exclude_names": ["Claude"],
+        });
+        assert!(match_start_app(&cli, "Claude Code (CLI)", &apps).is_none());
+
+        // The desktop application still recognises the shortcut as its own.
+        let desktop = serde_json::json!({ "detect_exclude_names": ["Claude Code"] });
+        assert_eq!(
+            match_start_app(&desktop, "Claude", &apps).unwrap().app_id,
+            "Claude_pzs8sxrjxfjjc!Claude"
+        );
+    }
+
+    #[test]
+    fn a_named_sibling_does_not_answer_for_the_shorter_entry() {
+        // Antigravity and Antigravity IDE are both Google's and install side by
+        // side. The IDE's record matched the plain entry just as well as its
+        // own, and won it, because it is the one that records a location.
+        let mut ide = system_app("Antigravity IDE (User)", Some("unins000.exe"));
+        ide.install_location = r"C:\Programs\Antigravity IDE".into();
+        let system = vec![system_app("Antigravity 2.8.1", Some("uninstall.exe")), ide];
+
+        assert_eq!(
+            match_system_app("Antigravity", &[], &["Antigravity IDE".into()], &system)
+                .unwrap()
+                .display_name,
+            "Antigravity 2.8.1"
+        );
+        assert_eq!(
+            match_system_app("Antigravity IDE", &[], &[], &system)
+                .unwrap()
+                .display_name,
+            "Antigravity IDE (User)"
+        );
+    }
+
+    #[test]
+    fn an_exclusion_never_hides_the_entrys_own_record() {
+        let system = vec![system_app("Claude Code", Some("unins000.exe"))];
+        // "Claude" describes this record too, but "Claude Code" names it whole.
+        assert!(match_system_app(
+            "Claude Code (CLI)",
+            &["Claude Code".into()],
+            &["Claude".into()],
+            &system
+        )
+        .is_some());
+        // The desktop application, whose own name is the shorter one, steps aside.
+        assert!(match_system_app("Claude", &[], &["Claude Code".into()], &system).is_none());
+    }
+
     fn system_app(display_name: &str, uninstall_string: Option<&str>) -> SystemApp {
         SystemApp {
             display_name: display_name.into(),
@@ -1762,7 +1871,7 @@ mod tests {
             system_app("7-Zip 24.08 (x64) Extra Tools", Some("a.exe")),
             system_app("7-Zip", Some("b.exe")),
         ];
-        let chosen = match_system_app("7-Zip", &[], &system).unwrap();
+        let chosen = match_system_app("7-Zip", &[], &[], &system).unwrap();
         assert_eq!(chosen.display_name, "7-Zip");
     }
 
@@ -1773,10 +1882,10 @@ mod tests {
         // installed for ever and keep the uninstall chain running against
         // nothing.
         let system = vec![system_app("Rockstar Games SDK", Some("a.exe"))];
-        assert!(match_system_app("Rockstar Games Launcher", &[], &system).is_none());
+        assert!(match_system_app("Rockstar Games Launcher", &[], &[], &system).is_none());
 
         let system = vec![system_app("Rockstar Games Launcher", Some("b.exe"))];
-        assert!(match_system_app("Rockstar Games Launcher", &[], &system).is_some());
+        assert!(match_system_app("Rockstar Games Launcher", &[], &[], &system).is_some());
     }
 
     #[test]
@@ -1785,7 +1894,7 @@ mod tests {
             system_app("Example App", None),
             system_app("Example App", Some("unins000.exe")),
         ];
-        let chosen = match_system_app("Example App", &[], &system).unwrap();
+        let chosen = match_system_app("Example App", &[], &[], &system).unwrap();
         assert_eq!(chosen.uninstall_string.as_deref(), Some("unins000.exe"));
     }
 

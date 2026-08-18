@@ -24,6 +24,10 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Default, Clone)]
 pub struct AppIdentity {
     pub names: Vec<String>,
+    /// The names the catalog says belong to a sibling product rather than to
+    /// this one, so that waiting for Windows to forget the application does not
+    /// end up watching the program installed beside it.
+    pub excluded_names: Vec<String>,
     pub executables: Vec<String>,
     pub uninstall_command: Option<String>,
     /// The folder Windows recorded for the application, when it recorded one.
@@ -66,6 +70,7 @@ impl AppIdentity {
 
         Self {
             names,
+            excluded_names: crate::detect::detect_exclude_names_from_entry(entry),
             executables,
             uninstall_command: uninstall_command
                 .map(str::trim)

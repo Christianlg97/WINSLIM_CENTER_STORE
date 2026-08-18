@@ -1281,7 +1281,7 @@
   {
     "id": "antigravity",
     "name": "Antigravity",
-    "description": "Entorno de desarrollo avanzado e IA agentica de Google DeepMind para asistencia y creación de software.",
+    "description": "Plataforma agéntica de Google DeepMind: dirige agentes que trabajan por su cuenta sobre el editor, la terminal y el navegador.",
     "version": "latest",
     "author": "Google DeepMind",
     "category": "Desarrollo con IA",
@@ -1291,30 +1291,31 @@
     "accent_color": "#4285f4",
     "winget_id": "Google.Antigravity",
     "winget_source": "winget",
-    "featured": false
-  },
-  {
-    "id": "openai_codex",
-    "name": "OpenAI Codex",
-    "description": "Sistema y modelos de inteligencia artificial de OpenAI especializados en generación y comprensión de código.",
-    "version": "latest",
-    "author": "OpenAI",
-    "category": "Desarrollo con IA",
-    "section": "IA",
-    "source_type": "winget",
-    "icon_url": "assets/catalog/openai_codex.svg",
-    "accent_color": "#10a37f",
-    "winget_id": "OpenAI.Codex",
-    "winget_source": "winget",
-    "detect_names": [
-      "Codex"
+    "detect_exclude_names": [
+      "Antigravity IDE"
     ],
     "featured": false
   },
   {
+    "id": "antigravity_ide",
+    "name": "Antigravity IDE",
+    "description": "El editor de código de Google DeepMind: la experiencia clásica de IDE, con la IA de Antigravity integrada dentro.",
+    "version": "latest",
+    "author": "Google DeepMind",
+    "category": "Desarrollo con IA",
+    "section": "IA",
+    "source_type": "winget",
+    "icon_url": "assets/catalog/antigravity_ide.png",
+    "accent_color": "#4285f4",
+    "winget_id": "Google.AntigravityIDE",
+    "winget_source": "winget",
+    "launch_executable": "Antigravity IDE.exe",
+    "featured": false
+  },
+  {
     "id": "claudecode",
-    "name": "Claude Code",
-    "description": "Herramienta oficial de Anthropic para programar, revisar código y automatizar tareas desde terminal o escritorio.",
+    "name": "Claude Code (CLI)",
+    "description": "La herramienta de Anthropic para programar y automatizar tareas desde la terminal: se abre como consola, no como ventana de escritorio.",
     "version": "latest",
     "author": "Anthropic",
     "category": "Desarrollo con IA",
@@ -1324,6 +1325,30 @@
     "accent_color": "#d97706",
     "winget_id": "Anthropic.ClaudeCode",
     "winget_source": "winget",
+    "detect_names": [
+      "Claude Code"
+    ],
+    "detect_exclude_names": [
+      "Claude"
+    ],
+    "featured": false
+  },
+  {
+    "id": "claude_desktop",
+    "name": "Claude",
+    "description": "La aplicación de escritorio de Anthropic: chat, proyectos y Claude Code con interfaz gráfica en lugar de terminal.",
+    "version": "latest",
+    "author": "Anthropic",
+    "category": "Desarrollo con IA",
+    "section": "IA",
+    "source_type": "winget",
+    "icon_url": "assets/catalog/claude.svg",
+    "accent_color": "#d97706",
+    "winget_id": "Anthropic.Claude",
+    "winget_source": "winget",
+    "detect_exclude_names": [
+      "Claude Code"
+    ],
     "featured": false
   },
   {
@@ -1568,6 +1593,7 @@
     "accent_color": "#e11d48",
     "winget_id": "Guru3D.Afterburner",
     "winget_source": "winget",
+    "launch_executable": "MSIAfterburner.exe",
     "featured": false
   },
   {
@@ -1583,6 +1609,7 @@
     "accent_color": "#be123c",
     "winget_id": "Guru3D.RTSS",
     "winget_source": "winget",
+    "launch_executable": "RTSS.exe",
     "featured": false
   },
   {

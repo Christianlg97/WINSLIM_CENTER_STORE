@@ -1051,7 +1051,13 @@ fn still_listed_by_windows(identity: &residue::AppIdentity) -> bool {
     let Some((name, alternatives)) = identity.names.split_first() else {
         return false;
     };
-    detect::match_system_app(name, alternatives, &detect::scan_installed_programs()).is_some()
+    detect::match_system_app(
+        name,
+        alternatives,
+        &identity.excluded_names,
+        &detect::scan_installed_programs(),
+    )
+    .is_some()
 }
 
 /// Removes what the application leaves behind and reports what could not be
