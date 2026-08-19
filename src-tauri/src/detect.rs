@@ -337,6 +337,12 @@ pub struct AppStatus {
     pub install_path: String,
     pub update_available: bool,
     pub latest_version: Option<String>,
+    /// The new version is installed but Windows has not applied it, and will not
+    /// until the application is closed. A packaged application updated while it
+    /// was running sits here: reporting that as "update available" sent the user
+    /// to download a package that was already on the disk.
+    #[serde(default)]
+    pub pending_restart: bool,
     pub can_uninstall: bool,
     pub can_launch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -376,6 +382,22 @@ fn is_generic_word(s: &str) -> bool {
             | "application"
             | "desinstalador"
             | "desinstalar"
+            // What a program is, never which one it is. Windows lists its own
+            // Terminal under exactly this name, and the store read that as
+            // WinSlimTerminal being installed: the card offered to open it and
+            // opened Microsoft's, and offered no uninstall because a packaged
+            // application it had never installed had nothing to remove.
+            | "terminal"
+            | "console"
+            | "consola"
+            | "shell"
+            | "editor"
+            | "browser"
+            | "navegador"
+            | "player"
+            | "reproductor"
+            | "client"
+            | "cliente"
     )
 }
 
@@ -614,6 +636,27 @@ pub fn scan_installed_programs() -> Vec<SystemApp> {
     Vec::new()
 }
 
+/// `true` when the entry describes a payload the store unpacks into a folder of
+/// its own.
+///
+/// Such a program cannot be a packaged application: it arrives as an archive
+/// with an executable in it, and nothing ever registers it with Windows as a
+/// package. So a packaged Start Menu entry is never it, whatever the two are
+/// called — which is the guard that would have kept `WinSlimTerminal` away from
+/// `Microsoft.WindowsTerminal_8wekyb3d8bbwe!App` without anyone having to
+/// anticipate that "Terminal" names a product of Microsoft's too.
+fn is_unpackaged_payload(entry: &Value) -> bool {
+    let unpacks_its_own = entry
+        .get("launch_executable")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let managed_by_winget = entry
+        .get("winget_id")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    unpacks_its_own && !managed_by_winget
+}
+
 /// How well a registry entry matches one of the catalog names. Higher is better;
 /// `None` means the names are unrelated.
 fn match_quality(candidate: &str, display_name: &str) -> Option<i32> {
@@ -798,6 +841,7 @@ pub fn build_statuses(
                         .map(|path| path.to_string_lossy().to_string())
                         .unwrap_or_default(),
                     update_available: false,
+                    pending_restart: false,
                     latest_version: None,
                     can_uninstall: false,
                     can_launch: installed,
@@ -824,6 +868,7 @@ pub fn build_statuses(
                         .map(|path| path.to_string_lossy().to_string())
                         .unwrap_or_default(),
                     update_available: false,
+                    pending_restart: false,
                     latest_version: None,
                     can_uninstall: installed,
                     can_launch: installed,
@@ -853,6 +898,7 @@ pub fn build_statuses(
                         origin: "center".into(),
                         install_path: info.install_path.clone(),
                         update_available: update,
+                        pending_restart: false,
                         latest_version: if update {
                             Some(catalog_version.to_string())
                         } else {
@@ -936,6 +982,7 @@ pub fn build_statuses(
                     origin: "system".into(),
                     install_path: launch_path.clone(),
                     update_available: update,
+                    pending_restart: false,
                     latest_version: if update {
                         Some(catalog_version.to_string())
                     } else {
@@ -974,6 +1021,7 @@ pub fn build_statuses(
                     origin: "system".into(),
                     install_path: launch_target,
                     update_available: false,
+                    pending_restart: false,
                     latest_version: None,
                     // A desktop program listed in the Start Menu is held there by
                     // a shortcut and its own folder, both of which the store can
@@ -1004,6 +1052,7 @@ pub fn build_statuses(
                     origin: "system".into(),
                     install_path: launch_path.clone(),
                     update_available: false,
+                    pending_restart: false,
                     latest_version: None,
                     can_uninstall: true,
                     can_launch: !launch_path.is_empty(),
@@ -1021,6 +1070,7 @@ pub fn build_statuses(
                     origin: "none".into(),
                     install_path: String::new(),
                     update_available: false,
+                    pending_restart: false,
                     latest_version: None,
                     can_uninstall: false,
                     can_launch: false,
@@ -1278,6 +1328,7 @@ impl<'a> StartAppIndex<'a> {
         let mut candidates = vec![catalog_name.to_string()];
         candidates.extend(detect_names_from_entry(entry));
         let exclude_names = detect_exclude_names_from_entry(entry);
+        let never_packaged = is_unpackaged_payload(entry);
         // Read out of the shared slice so that naming a candidate holds no
         // borrow of the index itself, which `is_real` needs mutably.
         let apps = self.apps;
@@ -1285,6 +1336,11 @@ impl<'a> StartAppIndex<'a> {
             // The ordering here is intentional: a path can be slow or can wake
             // a disconnected drive. It is inspected only after the in-memory
             // name comparison says this entry is a real candidate.
+            // Settled before any name is compared: this one cannot be the
+            // entry no matter how well the two read together.
+            if never_packaged && crate::msix::is_packaged(&apps[index].app_id) {
+                return false;
+            }
             let listed = apps[index].name.as_str();
             candidates
                 .iter()
@@ -1333,6 +1389,68 @@ mod tests {
         assert_eq!(is_newer("1.0", "1.0.0"), Some(false));
         assert_eq!(is_newer("24.08", "24.07"), Some(true));
         assert_eq!(is_newer("latest", "1.0"), None);
+    }
+
+    #[test]
+    fn a_category_word_never_names_a_product() {
+        // Windows lists its own Terminal as, simply, "Terminal". The store read
+        // that as WinSlimTerminal: the card said "Ya instalado", "Abrir" opened
+        // Microsoft's terminal on a bare PowerShell, and "Desinstalar" refused
+        // because a packaged application nobody had installed had nothing to
+        // remove.
+        assert!(!names_match("WinSlim Terminal", "Terminal"));
+        assert!(!names_match("WinSlimTerminal", "Terminal"));
+        // The product itself still answers to its own name.
+        assert!(names_match("WinSlimTerminal", "WinSlimTerminal"));
+        assert!(names_match("WinSlim Terminal", "WinSlimTerminal"));
+        // And a name that happens to be the category word exactly is still
+        // itself: this rule is about one name explaining another, not about
+        // banning the word.
+        assert!(names_match("Terminal", "Terminal"));
+    }
+
+    #[test]
+    fn a_trailing_brand_still_explains_the_whole_name() {
+        // The suffix rule is why these are found at all, and the fix above must
+        // not take them with it: a brand is not a category word.
+        assert!(names_match("Google Chrome", "Chrome"));
+        assert!(names_match("Mozilla Firefox", "Firefox"));
+        assert!(names_match("Microsoft Visual Studio Code", "Visual Studio Code"));
+    }
+
+    #[test]
+    fn an_unpacked_payload_is_never_a_packaged_application() {
+        // WinSlimTerminal arrives as a zip with an executable in it, so nothing
+        // ever registers it with Windows as a package: a packaged Start Menu
+        // entry cannot be it, whatever the two are called.
+        let terminal = serde_json::json!({
+            "launch_executable": "winslim-terminal.exe",
+            "detect_names": ["WinSlimTerminal", "WinSlim Terminal"]
+        });
+        assert!(is_unpackaged_payload(&terminal));
+        // An application WinGet installs may perfectly well be packaged —
+        // Anthropic's Claude is — and must stay detectable through its package.
+        let claude = serde_json::json!({ "winget_id": "Anthropic.Claude" });
+        assert!(!is_unpackaged_payload(&claude));
+        // Both declared: WinGet owns it, so the package is fair game.
+        let both = serde_json::json!({
+            "launch_executable": "app.exe",
+            "winget_id": "Vendor.App"
+        });
+        assert!(!is_unpackaged_payload(&both));
+    }
+
+    #[test]
+    fn the_terminal_does_not_match_the_one_windows_ships() {
+        let entry = serde_json::json!({
+            "launch_executable": "winslim-terminal.exe",
+            "detect_names": ["WinSlimTerminal", "WinSlim Terminal"]
+        });
+        let apps = vec![StartApp {
+            name: "Terminal".into(),
+            app_id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
+        }];
+        assert!(match_start_app(&entry, "WinSlimTerminal", &apps).is_none());
     }
 
     #[test]

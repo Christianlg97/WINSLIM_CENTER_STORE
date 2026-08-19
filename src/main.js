@@ -229,6 +229,7 @@ function replaceStatuses(statuses) {
   let updatesChanged = false;
   const signature = (status) => [
     status?.installed, status?.version, status?.origin, status?.update_available,
+    status?.pending_restart,
     status?.latest_version, status?.can_uninstall, status?.can_launch,
   ].join("|");
   for (const id of ids) {
@@ -816,6 +817,11 @@ function actionButtons(app, variant = "card") {
 }
 
 function updateVersionBadge(st, modal = false) {
+  if (st.pending_restart) {
+    const latest = String(st.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
+    const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
+    return `<span class="${cls}" title="La versión nueva ya está instalada; Windows la aplicará al cerrar la aplicación">Instalada v${escapeHtml(latest)} · ciérrala para aplicarla</span>`;
+  }
   if (!st.update_available) return "";
   const current = String(st.version || "desconocida").replace(/^v(?=\d)/i, "");
   const latest = String(st.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
@@ -829,12 +835,18 @@ function cardMetaHtml(app) {
   // Shown for anything installed, whoever installed it: the plain "en el
   // sistema" text only appeared for programs Windows had registered, so the
   // ones the store put there itself showed nothing at all.
+  // Three states, not two. A package Windows has installed but not yet applied
+  // is neither "up to date" nor "update available": offering the update again
+  // sends the user to re-download something already on the disk, which is what
+  // the store did to Claude twice in a row.
   const origin =
-    st.update_available
-      ? `<span class="origin-tag update-origin">actualización disponible</span>`
-      : st.installed
-        ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
-        : "";
+    st.pending_restart
+      ? `<span class="origin-tag update-origin">reinicia para aplicar</span>`
+      : st.update_available
+        ? `<span class="origin-tag update-origin">actualización disponible</span>`
+        : st.installed
+          ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
+          : "";
   return `
     <strong>${escapeHtml(app.name)}${origin}</strong>
     <small>${escapeHtml(app.author || "—")}  ·  v${escapeHtml(version)}</small>
@@ -1123,7 +1135,7 @@ function openAppModal(id) {
   // things and both are worth saying.
   const installedBanner = st.installed
     ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Ya instalado</div>
-       ${st.update_available ? `<div>${updateVersionBadge(st, true)}</div>` : ""}`
+       ${st.update_available || st.pending_restart ? `<div>${updateVersionBadge(st, true)}</div>` : ""}`
     : "";
 
   let actionBtnsHtml = "";
@@ -1214,10 +1226,19 @@ async function installApp(id, isUpdate = false) {
   }
 
   const title = isUpdate ? `Actualizar ${app.name}` : `Instalar ${app.name}`;
-  const message = isUpdate
-    ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
-    : `¿Deseas instalar '${app.name}' en tu equipo?`;
-  const confirmText = isUpdate ? "Actualizar" : "Instalar";
+  // A packaged application that is open cannot be swapped by Windows, so the
+  // choice is put here instead of being discovered after the download.
+  const blocker = isUpdate || st.installed ? await blockingRunningApp(id) : null;
+  const message = blocker
+    ? `${blocker.name} está abierto. Windows no aplicará la actualización mientras la aplicación esté en uso: puedes cerrarla ahora y terminar de una vez, o instalarla igualmente y aplicarla la próxima vez que la cierres.`
+    : isUpdate
+      ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
+      : `¿Deseas instalar '${app.name}' en tu equipo?`;
+  const confirmText = blocker
+    ? `Cerrar ${blocker.name} y actualizar`
+    : isUpdate
+      ? "Actualizar"
+      : "Instalar";
 
   // An application published in several builds asks which one on the way in.
   // An update never asks: it reinstalls the build already chosen, because
@@ -1235,8 +1256,10 @@ async function installApp(id, isUpdate = false) {
     confirmText,
     confirmVariant: "primary",
     choices,
-    onConfirm: async (picked) => {
+    secondary: blocker ? "Actualizar igualmente" : null,
+    onConfirm: async (picked, choice) => {
       const variant = picked || remembered || app.variants?.default || null;
+      const closeRunning = !!blocker && choice !== "secondary";
       state.busy[id] = isUpdate ? "updating" : "installing";
       updateVisibleAppActions(new Set([id]));
       state.finished.delete(id);
@@ -1247,6 +1270,7 @@ async function installApp(id, isUpdate = false) {
           appEntry: app,
           forceUpdate: !!isUpdate || !!st.update_available,
           variant,
+          closeRunning,
         });
       } catch (e) {
         delete state.busy[id];
@@ -1285,11 +1309,16 @@ async function uninstallApp(id) {
     return;
   }
 
+  // Windows defers the removal of a package in use exactly as it defers an
+  // update, so the same question is worth asking here.
+  const uninstallBlocker = await blockingRunningApp(id);
   showConfirmModal({
     title: `Desinstalar ${app.name}`,
-    message: `¿Estás seguro de que deseas desinstalar '${app.name}' de tu equipo?`,
+    message: uninstallBlocker
+      ? `${uninstallBlocker.name} está abierto. Windows no completará la desinstalación mientras la aplicación siga en uso, así que se cerrará antes de quitarla.`
+      : `¿Estás seguro de que deseas desinstalar '${app.name}' de tu equipo?`,
     app,
-    confirmText: "Desinstalar",
+    confirmText: uninstallBlocker ? `Cerrar ${uninstallBlocker.name} y desinstalar` : "Desinstalar",
     confirmVariant: "danger",
     onConfirm: async () => {
       state.operationAppId = null;
@@ -1322,7 +1351,10 @@ async function uninstallApp(id) {
         // El backend decide el mensaje: no es lo mismo haber quitado el programa
         // que descubrir que nunca estuvo y haber limpiado lo que lo daba por
         // instalado.
-        const outcome = await invoke("uninstall_app", { appId: id });
+        const outcome = await invoke("uninstall_app", {
+          appId: id,
+          closeRunning: !!uninstallBlocker,
+        });
         closeModal();
         const changes = await refreshInstalledFromBootstrap();
         reconcileStatusChanges(changes);
@@ -1604,7 +1636,7 @@ function showBackgroundOperationModal(app, title, initialStatus, withProgress = 
  * list the instant it ends leaves them to hunt for the card they were just
  * working with. It stays put with the only two things worth doing next.
  */
-function showOperationCompleted(app, { canLaunch, isUpdate, changed }) {
+function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRestart = false }) {
   const dialog = document.querySelector(".package-operation");
   if (!dialog) return;
   // Escape becomes a way out again now that nothing is in progress.
@@ -1632,11 +1664,16 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed }) {
   // The same dialog serves the Install and Update buttons, and WinGet answers a
   // package that was already current without installing anything: telling the
   // user it was installed would be wrong in two of the three cases.
-  const outcome = !changed
-    ? "ya estaba en su última versión"
-    : isUpdate
-      ? "se actualizó correctamente"
-      : "se instaló correctamente";
+  // Windows staged the package instead of applying it, because the application
+  // was open. Calling that "se actualizó correctamente" is what sent the user
+  // back to the store to update something already installed.
+  const outcome = pendingRestart
+    ? "se descargó e instaló · ciérralo y vuelve a abrirlo para aplicarlo"
+    : !changed
+      ? "ya estaba en su última versión"
+      : isUpdate
+        ? "se actualizó correctamente"
+        : "se instaló correctamente";
   const status = document.getElementById("package-operation-status");
   if (status) {
     status.textContent = app?.name
@@ -1730,7 +1767,7 @@ function renderChoices(choices) {
     </fieldset>`;
 }
 
-function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, onConfirm }) {
+function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, secondary = null, onConfirm }) {
   const avatar = app ? renderAvatar(app, app.name?.[0] || "?", true) : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
@@ -1760,17 +1797,37 @@ function showConfirmModal({ title, message, app, confirmText = "Confirmar", conf
       ${renderChoices(choices)}
       <div class="modal-foot" style="margin-top: 20px;">
         <button type="button" class="btn ghost" id="modal-btn-cancel">Cancelar</button>
+        ${secondary ? `<button type="button" class="btn ghost" id="modal-btn-secondary">${escapeHtml(secondary)}</button>` : ""}
         <button type="button" class="btn ${confirmVariant}" id="modal-btn-confirm">${escapeHtml(confirmText)}</button>
       </div>
     </div>
   `);
 
   document.getElementById("modal-btn-cancel").onclick = closeModal;
-  document.getElementById("modal-btn-confirm").onclick = async () => {
+  const answer = async (choice) => {
     const picked = document.querySelector('input[name="modal-choice"]:checked')?.value;
     closeModal();
-    if (onConfirm) await onConfirm(picked);
+    if (onConfirm) await onConfirm(picked, choice);
   };
+  document.getElementById("modal-btn-confirm").onclick = () => answer("confirm");
+  document
+    .getElementById("modal-btn-secondary")
+    ?.addEventListener("click", () => answer("secondary"));
+}
+
+// Whether this operation needs the application closed first. Asked before
+// anything is downloaded: Windows decides whether it can apply a package the
+// instant WinGet hands it over, so an application left open turns the operation
+// into one that finishes later, silently, whenever the user happens to quit it.
+// The store used to discover that afterwards — having spent the download — and
+// report it as success.
+async function blockingRunningApp(id) {
+  try {
+    return await invoke("running_blocker", { appId: id });
+  } catch (error) {
+    void clientLog("warn", "running-blocker", String(error?.stack || error));
+    return null;
+  }
 }
 
 function showAlertModal(title, message) {
@@ -2545,6 +2602,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       error,
       changed = true,
       is_update = false,
+      pending_restart = false,
       cancelled = false,
       cancellation_kind = "",
       interrupted = false,
@@ -2564,9 +2622,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       await reconcileRuntimeFromBootstrap();
       const app = findApp(app_id);
       if (app) {
-        const message = is_update
-          ? (changed ? `Actualizado: ${app.name}` : `${app.name} ya estaba actualizado`)
-          : `Instalado: ${app.name}`;
+        const message = pending_restart
+          ? `${app.name}: cierra la aplicación para aplicar la actualización`
+          : is_update
+            ? (changed ? `Actualizado: ${app.name}` : `${app.name} ya estaba actualizado`)
+            : `Instalado: ${app.name}`;
         setTransientStatus(message, "var(--green)", 5000);
       }
       if (ownsModal) {
@@ -2574,6 +2634,7 @@ window.addEventListener("DOMContentLoaded", async () => {
           canLaunch: !!appStatus(app_id).can_launch,
           isUpdate: is_update,
           changed,
+          pendingRestart: pending_restart,
         });
       }
       // Installation is already confirmed by the backend, so let the user see

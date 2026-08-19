@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "center-app"
-version = "2.0.9"
+version = "2.1.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",

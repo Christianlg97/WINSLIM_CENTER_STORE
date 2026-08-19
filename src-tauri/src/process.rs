@@ -475,6 +475,124 @@ pub fn stop_application_at(_folder: &Path) -> StoppedApplication {
     StoppedApplication::default()
 }
 
+/// How many processes are running out of a folder, without touching any of them.
+///
+/// Asked before an operation rather than during it: a packaged application that
+/// is open turns an update into something Windows will only finish later, and
+/// the user deserves to be told that before the download starts, not after.
+#[cfg(windows)]
+pub fn processes_running_at(folder: &Path) -> usize {
+    let folder_text = folder.to_string_lossy().trim_end_matches('\\').to_string();
+    if folder_text.len() < 4 {
+        return 0;
+    }
+    let quoted = folder_text.replace('\'', "''");
+    let script = format!(
+        r#"$ErrorActionPreference='SilentlyContinue';
+$prefix = '{quoted}' + '\';
+@(Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }}).Count;"#
+    );
+    let Ok(output) = hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    ) else {
+        return 0;
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .lines()
+        .last()
+        .and_then(|line| line.trim().parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(not(windows))]
+pub fn processes_running_at(_folder: &Path) -> usize {
+    0
+}
+
+/// Closes what runs out of a folder, asking before insisting.
+///
+/// `stop_application_at` kills outright, which is the right answer for an
+/// installer about to overwrite files nobody may hold open. This one is for the
+/// application the user is looking at: it closes the window first and gives the
+/// program a few seconds to put its own house in order, because the alternative
+/// is taking a half-written message away from somebody who only wanted to
+/// install an update. Anything still there when the grace period ends is
+/// stopped, since the operation cannot proceed while it runs.
+#[cfg(windows)]
+pub fn close_application_at(folder: &Path, grace: std::time::Duration) -> StoppedApplication {
+    let mut stopped = StoppedApplication::default();
+    let folder_text = folder.to_string_lossy().trim_end_matches('\\').to_string();
+    if folder_text.len() < 4 {
+        return stopped;
+    }
+    let quoted = folder_text.replace('\'', "''");
+    let grace_ms = grace.as_millis().min(30_000).max(500);
+    let script = format!(
+        r#"$ErrorActionPreference='SilentlyContinue';
+$prefix = '{quoted}' + '\';
+function Ours {{ Get-Process | Where-Object {{ $_.Path -and $_.Path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase) }} }};
+$running = @(Ours);
+if ($running.Count -eq 0) {{ return }};
+[Console]::Out.WriteLine('RUNNING:' + $running.Count);
+foreach ($process in $running) {{ $null = $process.CloseMainWindow() }};
+$deadline = (Get-Date).AddMilliseconds({grace_ms});
+while ((Get-Date) -lt $deadline -and @(Ours).Count -gt 0) {{ Start-Sleep -Milliseconds 250 }};
+foreach ($process in @(Ours)) {{ Stop-Process -Id $process.Id -Force; [Console]::Out.WriteLine('FORCED:' + $process.Name) }};"#
+    );
+    let Ok(output) = hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    ) else {
+        return stopped;
+    };
+    let mut forced: Vec<String> = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        match line.trim().split_once(':') {
+            Some(("RUNNING", _)) => stopped.had_processes = true,
+            Some(("FORCED", name)) => forced.push(name.to_string()),
+            _ => {}
+        }
+    }
+    if stopped.had_processes {
+        crate::logger::info(
+            "process-close",
+            if forced.is_empty() {
+                format!("Cerrado lo que corría en {}.", folder.display())
+            } else {
+                format!(
+                    "Cerrado lo que corría en {}; hubo que forzar: {}.",
+                    folder.display(),
+                    forced.join(", ")
+                )
+            },
+        );
+    }
+    stopped
+}
+
+#[cfg(not(windows))]
+pub fn close_application_at(_folder: &Path, _grace: std::time::Duration) -> StoppedApplication {
+    StoppedApplication::default()
+}
+
 /// Starts the services stopped above, once the installer has finished with
 /// them. A service the new version renamed or removed simply fails to start and
 /// is reported, never treated as a failed installation.

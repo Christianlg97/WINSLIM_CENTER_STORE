@@ -621,12 +621,43 @@ async fn watch_winget_download(
     }
 }
 
+/// What a WinGet install or upgrade actually achieved.
+#[derive(Debug, Clone, Default)]
+pub struct WingetInstall {
+    /// `false` when the package was already at its latest version.
+    pub changed: bool,
+    /// WinGet installed the package and Windows will not apply it until the
+    /// application is closed. Only packaged applications end up here, and only
+    /// while one of their processes is running.
+    pub deferred_to_restart: bool,
+    /// The version WinGet says it installed, read from its own output.
+    pub version: Option<String>,
+}
+
+/// The version WinGet names in `Encontrado Claude [Anthropic.Claude] Versión 1.30096.1`.
+fn version_in_winget_output(output: &str) -> Option<String> {
+    output.lines().find_map(|line| {
+        let lowered = line.to_lowercase();
+        let marker = ["versión ", "version "]
+            .iter()
+            .find_map(|marker| lowered.find(marker).map(|at| (at, marker.len())))?;
+        let (at, width) = marker;
+        let candidate = line.get(at + width..)?.trim();
+        let version = candidate.split_whitespace().next()?;
+        version
+            .chars()
+            .next()
+            .filter(char::is_ascii_digit)
+            .map(|_| version.to_string())
+    })
+}
+
 async fn install_with_winget(
     app: &Value,
     force_update: bool,
     flags: &Arc<DownloadFlags>,
     on_progress: &mut impl FnMut(u32, String, bool),
-) -> Result<bool, String> {
+) -> Result<WingetInstall, String> {
     let package_id = app
         .get("winget_id")
         .and_then(|value| value.as_str())
@@ -691,7 +722,7 @@ async fn install_with_winget(
                 "La aplicación ya está en su última versión".into(),
                 false,
             );
-            return Ok(false);
+            return Ok(WingetInstall::default());
         }
 
         let detail = if stderr.is_empty() { stdout } else { stderr };
@@ -705,11 +736,35 @@ async fn install_with_winget(
         ));
     }
 
-    // Not "instalada correctamente": nothing is settled until Windows says so,
-    // and announcing it here put a success message on screen that the dialog
-    // then repeated a second later with its tick and its buttons.
-    on_progress(100, "Comprobando la instalación...".into(), false);
-    Ok(true)
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // WinGet exits `0` whether Windows applied the package or merely staged it,
+    // so its own prose is the only thing that tells the two apart. Reported up
+    // rather than swallowed: a staged upgrade that the store calls "actualizado"
+    // is the whole reason the update badge kept coming back.
+    let deferred_to_restart = crate::msix::output_defers_to_restart(&stdout);
+    if deferred_to_restart {
+        crate::logger::info(
+            "installer",
+            format!(
+                "WinGet instaló {package_id}, pero Windows no lo aplicará hasta que se cierre la aplicación."
+            ),
+        );
+        on_progress(
+            100,
+            "Instalado. Falta cerrar la aplicación para aplicarlo...".into(),
+            false,
+        );
+    } else {
+        // Not "instalada correctamente": nothing is settled until Windows says
+        // so, and announcing it here put a success message on screen that the
+        // dialog then repeated a second later with its tick and its buttons.
+        on_progress(100, "Comprobando la instalación...".into(), false);
+    }
+    Ok(WingetInstall {
+        changed: true,
+        deferred_to_restart,
+        version: version_in_winget_output(&stdout),
+    })
 }
 
 async fn winget_installer_url(app: &Value) -> Result<String, String> {
@@ -1539,6 +1594,11 @@ pub struct InstallOutcome {
     pub changed: bool,
     /// Present only for portable packages that WinSlimCenter manages itself.
     pub registered: Option<(String, InstalledInfo)>,
+    /// The package is installed but Windows has not applied it yet, and will not
+    /// until the application is closed. Carries the version that is waiting, so
+    /// the store can tell when the restart has happened without asking WinGet
+    /// again.
+    pub pending_restart: Option<String>,
 }
 
 impl InstallOutcome {
@@ -1546,6 +1606,7 @@ impl InstallOutcome {
         Self {
             changed: false,
             registered: None,
+            pending_restart: None,
         }
     }
 
@@ -1553,6 +1614,7 @@ impl InstallOutcome {
         Self {
             changed: true,
             registered: None,
+            pending_restart: None,
         }
     }
 }
@@ -1643,6 +1705,7 @@ where
         return Ok(InstallOutcome {
             changed: true,
             registered: Some((app_id.to_string(), registered)),
+            pending_restart: None,
         });
     }
 
@@ -1671,13 +1734,16 @@ where
             }
         }
         match install_with_winget(app, force_update, flags, &mut on_progress).await {
-            Ok(changed) => {
+            Ok(installed) => {
                 if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
                     return Err(CANCELLED_MARKER.into());
                 }
                 return Ok(InstallOutcome {
-                    changed,
+                    changed: installed.changed,
                     registered: None,
+                    pending_restart: installed
+                        .deferred_to_restart
+                        .then(|| installed.version.clone().unwrap_or_default()),
                 });
             }
             Err(winget_error) => {
@@ -2019,6 +2085,7 @@ where
     Ok(InstallOutcome {
         changed: true,
         registered: Some((app_id.to_string(), registered)),
+        pending_restart: None,
     })
 }
 

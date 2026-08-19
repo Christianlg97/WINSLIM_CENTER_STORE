@@ -1,7 +1,9 @@
 mod detect;
 mod download;
+mod env_path;
 mod installer;
 mod logger;
+mod msix;
 mod paths;
 mod process;
 mod residue;
@@ -324,8 +326,47 @@ fn preserve_update_metadata(
         if status.installed && old.installed && status.version == old.version {
             status.update_available = old.update_available;
             status.latest_version = old.latest_version.clone();
+            // A rescan cannot see a staged package — that is the whole problem —
+            // so the pending restart is carried across and only ever cleared by
+            // `settle_pending_restart`, which asks Windows directly.
+            status.pending_restart = old.pending_restart;
+            settle_pending_restart(status);
         }
     }
+}
+
+/// Works out whether a packaged application that was updated while it was
+/// running has been restarted since.
+///
+/// Windows applies the staged package once the last of its processes exits, and
+/// tells nobody. The answer has to be asked for, which is one registry read, so
+/// it is asked on every status pass — and it is the only thing that takes the
+/// "reinicia la aplicación" notice off the card and leaves the version right.
+fn settle_pending_restart(status: &mut AppStatus) {
+    if !status.pending_restart {
+        return;
+    }
+    let Some(family) = msix::family_from_identifier(&status.install_path) else {
+        // Not a packaged application after all, so nothing here was ever
+        // deferred: the notice would sit on the card forever.
+        status.pending_restart = false;
+        return;
+    };
+    let target = status.latest_version.clone().unwrap_or_default();
+    // With no version to wait for there is nothing to compare against, and a
+    // notice nothing can clear is worse than no notice.
+    if !target.trim().is_empty() && !msix::registration_caught_up(&family, &target) {
+        return;
+    }
+    status.pending_restart = false;
+    status.update_available = false;
+    if let Some(package) = msix::registered_package(&family) {
+        status.version = package.version;
+    }
+    logger::info(
+        "updates",
+        format!("Windows ya aplicó la actualización en espera de {family}."),
+    );
 }
 
 fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
@@ -450,6 +491,83 @@ async fn rebuild_statuses_async(
     .map_err(|error| format!("Falló la comprobación del sistema: {error}"))
 }
 
+/// A packaged application that is open, and therefore in the way.
+#[derive(Debug, Clone, Serialize)]
+pub struct RunningApp {
+    pub name: String,
+    pub processes: usize,
+}
+
+/// How long an application is given to close its own windows before it is
+/// stopped. Long enough for a save prompt to appear and be answered, short
+/// enough that an update does not look stuck.
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
+
+/// Whether this operation has to wait for the user to close something first.
+///
+/// Only packaged applications are asked about. Windows will not swap or remove a
+/// package whose processes are still running: it stages the work and applies it
+/// whenever the last one exits, which is minutes or hours later and looks
+/// exactly like an update that did not happen. Every other kind of install
+/// either replaces files directly — where `stop_application_at` already clears
+/// the way — or runs a setup that asks for itself.
+#[tauri::command]
+async fn running_blocker(
+    app: AppHandle,
+    app_id: String,
+) -> Result<Option<RunningApp>, String> {
+    let state = app.state::<AppState>();
+    let (install_path, name) = {
+        let statuses = state.statuses.lock();
+        let Some(status) = statuses.get(&app_id).filter(|status| status.installed) else {
+            return Ok(None);
+        };
+        (status.install_path.clone(), app_id.clone())
+    };
+    if !msix::is_packaged(&install_path) {
+        return Ok(None);
+    }
+    let name = state
+        .catalog
+        .lock()
+        .iter()
+        .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
+        .and_then(|entry| entry.get("name").and_then(Value::as_str).map(str::to_string))
+        .unwrap_or(name);
+    let processes = async_runtime::spawn_blocking(move || {
+        msix::folder_of(&install_path)
+            .map(|folder| process::processes_running_at(&folder))
+            .unwrap_or(0)
+    })
+    .await
+    .map_err(|error| format!("No se pudo comprobar si la aplicación está abierta: {error}"))?;
+
+    Ok((processes > 0).then_some(RunningApp { name, processes }))
+}
+
+/// Closes a packaged application so Windows will act on its package now rather
+/// than at some point after the user next quits it.
+///
+/// Never done without being asked: the request carries the user's answer to the
+/// dialog, because closing somebody's application costs them whatever they had
+/// on screen.
+fn close_packaged_app(install_path: &str, name: &str) {
+    let Some(folder) = msix::folder_of(install_path) else {
+        return;
+    };
+    if !msix::is_package_folder(&folder) {
+        logger::warn(
+            "install",
+            format!("No se cierra {name}: {} no parece un paquete.", folder.display()),
+        );
+        return;
+    }
+    let stopped = process::close_application_at(&folder, CLOSE_GRACE);
+    if stopped.was_running() {
+        logger::info("install", format!("{name} se cerró antes de la operación."));
+    }
+}
+
 /// Refresh one application while an install/uninstall is being confirmed.
 /// Building all ~250 catalog entries on every half-second poll dominated the
 /// operation even though the caller only inspected one result.
@@ -506,6 +624,8 @@ fn probe_app_status(state: &AppState, app_id: &str) -> Option<AppStatus> {
             if status.installed && previous.installed && status.version == previous.version {
                 status.update_available = previous.update_available;
                 status.latest_version = previous.latest_version.clone();
+                status.pending_restart = previous.pending_restart;
+                settle_pending_restart(&mut status);
             }
         }
         statuses.insert(app_id.to_string(), status.clone());
@@ -846,6 +966,35 @@ async fn confirm_uninstalled(
     name: &str,
     attempted: &[String],
 ) -> Result<(), String> {
+    // What Windows actually knows about a packaged application, which is not
+    // what the Start Menu says about it. Asked once, before the polling starts:
+    // if the package is gone the answer is already here and there is nothing to
+    // wait for.
+    let packaged_family = state
+        .statuses
+        .lock()
+        .get(app_id)
+        .and_then(|status| msix::family_from_identifier(&status.install_path));
+    if let Some(family) = packaged_family.as_deref() {
+        if !msix::is_registered(family) {
+            logger::info(
+                "uninstall-verify",
+                format!("Desinstalación confirmada: app_id={app_id}, el paquete {family} ya no está registrado."),
+            );
+            if let Some(status) = state.statuses.lock().get_mut(app_id) {
+                status.installed = false;
+                status.origin = "none".into();
+                status.install_path.clear();
+                status.update_available = false;
+                status.pending_restart = false;
+                status.latest_version = None;
+                status.can_uninstall = false;
+                status.can_launch = false;
+            }
+            return Ok(());
+        }
+    }
+
     for attempt in 1..=12 {
         if attempt % DETECTION_RESCAN_EVERY == 1 {
             detect::clear_detection_caches();
@@ -910,6 +1059,17 @@ async fn confirm_uninstalled(
         "uninstall-verify",
         format!("Windows sigue informando de que {app_id} está instalada"),
     );
+    // A package still registered after a successful removal is Windows waiting
+    // for the application to close, not an uninstaller that failed. Saying so is
+    // the difference between a user who closes the app and one who goes hunting
+    // for a problem that does not exist.
+    if let Some(family) = packaged_family.as_deref() {
+        if msix::is_registered(family) {
+            return Err(format!(
+                "Se quitó '{name}', pero Windows no completará la desinstalación mientras la aplicación siga abierta.                  Ciérrala del todo y volverá a comprobarse sola."
+            ));
+        }
+    }
     // Saying "the uninstall ran" when nothing could act on the application was
     // the most confusing part of the old message: it sent the user looking for
     // an uninstaller window that never existed.
@@ -1152,6 +1312,7 @@ async fn uninstall_app(
     app: AppHandle,
     state: State<'_, AppState>,
     app_id: String,
+    close_running: Option<bool>,
 ) -> Result<String, String> {
     logger::info(
         "uninstall",
@@ -1165,6 +1326,24 @@ async fn uninstall_app(
         .ok_or_else(|| "No se encontró el estado de la aplicación".to_string())?;
     if !st.can_uninstall {
         return Err("No se puede desinstalar esta aplicación desde Center.".into());
+    }
+    // Windows defers the removal of a package that is in use in the same way it
+    // defers an update: WinGet reports success, the package stays registered,
+    // and the store spent six seconds probing before announcing that Windows
+    // still had the application installed. Closing it first is what makes the
+    // removal something the verification below can actually observe.
+    if close_running.unwrap_or(false) && msix::is_packaged(&st.install_path) {
+        let identity = st.install_path.clone();
+        let closing_name = app_id.clone();
+        if let Err(error) =
+            async_runtime::spawn_blocking(move || close_packaged_app(&identity, &closing_name))
+                .await
+        {
+            logger::warn(
+                "uninstall",
+                format!("No se pudo esperar el cierre de {app_id}: {error}"),
+            );
+        }
     }
     let catalog_entry = state
         .catalog
@@ -1882,6 +2061,17 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
             continue;
         }
 
+        // Windows still reports the version it has registered, which for a
+        // package updated while it was running is the old one. WinGet therefore
+        // keeps offering an upgrade that is already installed — the loop that
+        // put the badge back on Claude's card every few seconds. Asked first, so
+        // that a package merely waiting for a restart never reaches the
+        // comparison below.
+        settle_pending_restart(st);
+        if st.pending_restart {
+            continue;
+        }
+
         let package_id = entry
             .get("winget_id")
             .and_then(|value| value.as_str())
@@ -1923,6 +2113,7 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
             }
             current.update_available = checked.update_available;
             current.latest_version = checked.latest_version.clone();
+            current.pending_restart = checked.pending_restart;
             if !checked.version.is_empty()
                 && (current.version.is_empty() || current.version.eq_ignore_ascii_case("latest"))
             {
@@ -2232,6 +2423,10 @@ async fn install_app(
     app_entry: Value,
     force_update: Option<bool>,
     variant: Option<String>,
+    // The user's answer to "this application is open": closing it is the only
+    // way Windows applies a package update straight away, and it is never
+    // decided here.
+    close_running: Option<bool>,
 ) -> Result<(), String> {
     let app_id = app_entry
         .get("id")
@@ -2289,6 +2484,7 @@ async fn install_app(
     // Where the copy being replaced lives, so that whatever is running in that
     // folder can be stopped before its installer tries to overwrite it.
     let mut installed_at = None;
+    let mut installed_identity = String::new();
     let current_version = {
         let statuses = state.statuses.lock();
         if let Some(st) = statuses.get(&app_id) {
@@ -2307,6 +2503,7 @@ async fn install_app(
                     .filter(|location| !location.trim().is_empty())
                     .or_else(|| Some(st.install_path.clone()))
                     .filter(|location| !location.trim().is_empty());
+                installed_identity = st.install_path.clone();
                 Some(st.version.clone())
             } else {
                 None
@@ -2338,6 +2535,36 @@ async fn install_app(
         let operation_started = std::time::Instant::now();
         let mut last_logged_progress: Option<u32> = None;
         let mut last_progress_log = std::time::Instant::now();
+
+        // Before anything is downloaded. Windows decides whether it can apply a
+        // package the moment WinGet hands it over, so closing the application
+        // afterwards would be too late for this operation and would only help
+        // the next one.
+        if close_running.unwrap_or(false) && msix::is_packaged(&installed_identity) {
+            let identity = installed_identity.clone();
+            let closing_name = name_for_task.clone();
+            {
+                let mut dl = downloads.lock();
+                dl.update(
+                    &app_id_for_task,
+                    Some(TaskState::Installing),
+                    Some(0),
+                    Some(format!("Cerrando {closing_name}...")),
+                    None,
+                );
+            }
+            emit_dl(&app_handle, &app_state);
+            if let Err(error) = async_runtime::spawn_blocking(move || {
+                close_packaged_app(&identity, &closing_name)
+            })
+            .await
+            {
+                logger::warn(
+                    "install",
+                    format!("No se pudo esperar el cierre de {app_id_for_task}: {error}"),
+                );
+            }
+        }
 
         let result = match acquire_download_slot(&flags_for_task).await {
             Ok(download_permit) => {
@@ -2421,12 +2648,49 @@ async fn install_app(
             Err(error) => Err(error),
         };
 
+        // Kept out of the match so the completion below can tell a finished
+        // update from one Windows is holding until the application is closed.
+        let mut staged_version: Option<String> = None;
         let result = match result {
             Ok(outcome) => {
+                staged_version = outcome.pending_restart.clone();
                 // Apply the registration under the lock and persist from the live
                 // map, so a second installation finishing in parallel cannot
                 // overwrite this entry with its own stale snapshot.
                 if let Some((registered_id, info)) = outcome.registered {
+                    // A command-line tool the store extracted itself is reachable
+                    // from nowhere until its folder is on the PATH: the archive
+                    // brought no installer to register anything. Done here, where
+                    // the install path is known and the folder is already on disk,
+                    // and only for the entries that ask for it — see
+                    // `env_path::requested_entries` for why it is never inferred.
+                    let path_entries =
+                        env_path::requested_entries(&app_entry_for_task, &info.install_path);
+                    if !path_entries.is_empty() {
+                        match async_runtime::spawn_blocking(move || {
+                            env_path::add_entries(&path_entries)
+                        })
+                        .await
+                        {
+                            Ok(added) if !added.is_empty() => logger::info(
+                                "install",
+                                format!(
+                                    "PATH ampliado para {app_id_for_task}: {}",
+                                    added.join(", ")
+                                ),
+                            ),
+                            Ok(_) => logger::debug(
+                                "install",
+                                format!("{app_id_for_task} ya era accesible desde el PATH."),
+                            ),
+                            Err(error) => logger::warn(
+                                "install",
+                                format!(
+                                    "No se pudo esperar la actualización del PATH de {app_id_for_task}: {error}"
+                                ),
+                            ),
+                        }
+                    }
                     let registration_handle = app_handle.clone();
                     match async_runtime::spawn_blocking(move || {
                         let state = registration_handle.state::<AppState>();
@@ -2608,7 +2872,30 @@ async fn install_app(
                         ),
                     }
                 }
-                let completion = if force_for_task {
+                // Windows staged the package instead of applying it, because the
+                // application was open. Recorded on the status so the card stops
+                // offering an update that is already downloaded and installed,
+                // and so the next check knows what version it is waiting for.
+                if let Some(version) = staged_version.as_deref() {
+                    let mut statuses = app_state.statuses.lock();
+                    if let Some(status) = statuses.get_mut(&app_id_for_task) {
+                        status.pending_restart = true;
+                        status.update_available = false;
+                        if !version.trim().is_empty() {
+                            status.latest_version = Some(version.to_string());
+                        }
+                    }
+                    logger::info(
+                        "install",
+                        format!(
+                            "{app_id_for_task} quedó pendiente de reinicio de la aplicación para aplicar la versión {version}."
+                        ),
+                    );
+                }
+
+                let completion = if staged_version.is_some() {
+                    format!("{name_for_task} actualizado · falta cerrarlo y volver a abrirlo")
+                } else if force_for_task {
                     if changed {
                         format!("{name_for_task} actualizado correctamente")
                     } else {
@@ -2634,7 +2921,8 @@ async fn install_app(
                         "app_id": app_id_for_task,
                         "ok": true,
                         "changed": changed,
-                        "is_update": force_for_task
+                        "is_update": force_for_task,
+                        "pending_restart": staged_version.is_some()
                     }),
                 );
             }
@@ -2812,6 +3100,7 @@ pub fn run() {
             run_woa,
             open_url,
             uninstall_app,
+            running_blocker,
             launch_app,
             launch_app_elevated,
             install_app,
@@ -2844,6 +3133,7 @@ mod tests {
             install_path: String::new(),
             update_available,
             latest_version: latest.map(str::to_string),
+            pending_restart: false,
             can_uninstall: true,
             can_launch: false,
             uninstall_command: None,

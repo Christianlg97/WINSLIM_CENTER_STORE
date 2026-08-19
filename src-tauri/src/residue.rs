@@ -103,7 +103,7 @@ fn push_executable_name(list: &mut Vec<String>, value: &str) {
     }
 }
 
-fn normalized(path: &Path) -> String {
+pub(crate) fn normalized(path: &Path) -> String {
     path.to_string_lossy()
         .replace('/', "\\")
         .trim_end_matches('\\')
@@ -111,7 +111,7 @@ fn normalized(path: &Path) -> String {
 }
 
 /// `true` when `candidate` is `root` itself or lives under it.
-fn is_inside(root: &Path, candidate: &Path) -> bool {
+pub(crate) fn is_inside(root: &Path, candidate: &Path) -> bool {
     let root = normalized(root);
     let candidate = normalized(candidate);
     // An empty root would appear to own every path on the computer.
@@ -123,7 +123,7 @@ fn is_inside(root: &Path, candidate: &Path) -> bool {
 
 /// Expands the `%NAME%` placeholders Windows stores unexpanded in PATH and in
 /// the registry.
-fn expand_environment(value: &str) -> String {
+pub(crate) fn expand_environment(value: &str) -> String {
     if !value.contains('%') {
         return value.to_string();
     }
@@ -500,10 +500,14 @@ pub fn start_menu_target_is_real(target: &str, names: &[String]) -> bool {
     if app_id.is_empty() {
         return false;
     }
-    // A packaged application is registered by Windows itself and leaves the list
-    // the moment it is removed, so its entry is taken at face value.
-    if app_id.contains('!') {
-        return true;
+    // A packaged application: ask Windows whether the package is still
+    // registered for this user. The Start Menu was trusted here on the grounds
+    // that Windows withdraws a packaged entry the moment it is removed, and that
+    // is not what happens — the entry outlived the package for the whole of an
+    // uninstall, which is how a removal WinGet had completed was reported as
+    // "Windows sigue informando de que está instalada".
+    if let Some(family) = crate::msix::family_from_identifier(app_id) {
+        return crate::msix::is_registered(&family);
     }
     let path = Path::new(app_id);
     if path.is_absolute() {
@@ -650,7 +654,7 @@ pub fn purge_install_residue(install_dir: &Path) -> usize {
     };
     let registry_entries = remove_uninstall_entries(install_dir);
     let app_paths = remove_app_paths_entries(install_dir);
-    let path_entries = remove_path_entries(install_dir);
+    let path_entries = crate::env_path::remove_entries_under(install_dir);
 
     let total = shortcuts + registry_entries + app_paths + path_entries;
     crate::logger::info(
@@ -952,134 +956,6 @@ fn remove_app_paths_entries(_install_dir: &Path) -> usize {
     0
 }
 
-/// Splits a PATH value keeping its empty segments, which are part of the value
-/// as the user had it and none of our business.
-fn path_entries_without(value: &str, install_dir: &Path) -> Option<(String, Vec<String>)> {
-    let mut kept: Vec<&str> = Vec::new();
-    let mut removed: Vec<String> = Vec::new();
-    for item in value.split(';') {
-        let cleaned = item.trim().trim_matches('"');
-        let expanded = expand_environment(cleaned);
-        if !cleaned.is_empty() && is_inside(install_dir, Path::new(expanded.trim())) {
-            removed.push(item.trim().to_string());
-        } else {
-            kept.push(item);
-        }
-    }
-    if removed.is_empty() {
-        None
-    } else {
-        Some((kept.join(";"), removed))
-    }
-}
-
-#[cfg(windows)]
-fn decode_registry_string(value: &winreg::RegValue) -> String {
-    let units: Vec<u16> = value
-        .bytes
-        .chunks_exact(2)
-        .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-        .collect();
-    let end = units
-        .iter()
-        .position(|unit| *unit == 0)
-        .unwrap_or(units.len());
-    String::from_utf16_lossy(&units[..end])
-}
-
-#[cfg(windows)]
-fn encode_registry_string(text: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity((text.len() + 1) * 2);
-    for unit in text.encode_utf16().chain(std::iter::once(0)) {
-        bytes.extend_from_slice(&unit.to_le_bytes());
-    }
-    bytes
-}
-
-/// Drops the directories that pointed into the deleted folder from the user's
-/// PATH.
-///
-/// The value is written back keeping its original type: many PATHs are stored as
-/// `REG_EXPAND_SZ` and turning one into `REG_SZ` would leave the `%USERPROFILE%`
-/// of every other entry unexpanded. The machine PATH is only inspected — editing
-/// it requires elevation and a mistake there would reach every program on the
-/// computer.
-#[cfg(windows)]
-fn remove_path_entries(install_dir: &Path) -> usize {
-    use winreg::enums::*;
-    use winreg::{RegKey, RegValue};
-
-    report_machine_path_entries(install_dir);
-
-    let Ok(environment) = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey_with_flags("Environment", KEY_READ | KEY_WRITE)
-    else {
-        return 0;
-    };
-    let Ok(current) = environment.get_raw_value("Path") else {
-        return 0;
-    };
-    let Some((updated, removed)) =
-        path_entries_without(&decode_registry_string(&current), install_dir)
-    else {
-        return 0;
-    };
-    let value = RegValue {
-        bytes: encode_registry_string(&updated),
-        vtype: current.vtype,
-    };
-    match environment.set_raw_value("Path", &value) {
-        Ok(()) => {
-            crate::logger::info(
-                "uninstall-residue",
-                format!(
-                    "Entradas retiradas del PATH del usuario: {}. El cambio se aplica a los programas que se inicien a partir de ahora.",
-                    removed.join(", ")
-                ),
-            );
-            removed.len()
-        }
-        Err(error) => {
-            crate::logger::warn(
-                "uninstall-residue",
-                format!("No se pudo actualizar el PATH del usuario: {error}"),
-            );
-            0
-        }
-    }
-}
-
-#[cfg(windows)]
-fn report_machine_path_entries(install_dir: &Path) {
-    use winreg::enums::*;
-    use winreg::RegKey;
-
-    const MACHINE_ENVIRONMENT: &str =
-        r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment";
-    let Ok(environment) = RegKey::predef(HKEY_LOCAL_MACHINE).open_subkey(MACHINE_ENVIRONMENT)
-    else {
-        return;
-    };
-    let Ok(current) = environment.get_raw_value("Path") else {
-        return;
-    };
-    if let Some((_, removed)) = path_entries_without(&decode_registry_string(&current), install_dir)
-    {
-        crate::logger::warn(
-            "uninstall-residue",
-            format!(
-                "El PATH del sistema aún contiene {}; su edición requiere permisos de administrador y no se modifica automáticamente.",
-                removed.join(", ")
-            ),
-        );
-    }
-}
-
-#[cfg(not(windows))]
-fn remove_path_entries(_install_dir: &Path) -> usize {
-    0
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1118,17 +994,6 @@ mod tests {
         // With no ancestor carrying the application's name nothing is widened.
         let unrelated = PathBuf::from(&program_files).join("Otra").join("bin");
         assert_eq!(narrow_to_application_folder(&unrelated, &names), unrelated);
-    }
-
-    #[test]
-    fn only_the_entries_pointing_at_the_removed_folder_leave_the_path() {
-        let install_dir = Path::new(r"C:\Program Files\Ejemplo");
-        let value = r"C:\Windows\system32;C:\Program Files\Ejemplo\bin;C:\Program Files\Otra";
-        let (updated, removed) = path_entries_without(value, install_dir).unwrap();
-        assert_eq!(updated, r"C:\Windows\system32;C:\Program Files\Otra");
-        assert_eq!(removed, vec![r"C:\Program Files\Ejemplo\bin".to_string()]);
-        // A PATH with no trace of the program is left exactly as it was.
-        assert!(path_entries_without(r"C:\Windows\system32;", install_dir).is_none());
     }
 
     #[test]
