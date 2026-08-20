@@ -1972,7 +1972,16 @@ where
             .extension()
             .and_then(|value| value.to_str())
             .unwrap_or("");
-        if ext.eq_ignore_ascii_case("exe") || ext.eq_ignore_ascii_case("msi") {
+        let is_portable = is_portable_payload(app);
+        if is_portable {
+            crate::logger::info(
+                "installer",
+                format!(
+                    "{app_id} se guarda tal cual: el catálogo lo declara portable, no un instalador."
+                ),
+            );
+        }
+        if should_run_as_installer(app, ext) {
             on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
@@ -1985,7 +1994,7 @@ where
             )
             .await?;
             used_system_installer = true;
-        } else if looks_like_windows_executable_async(&dest_file).await? {
+        } else if !is_portable && looks_like_windows_executable_async(&dest_file).await? {
             // Kept as a separate case from the extension above because it is a
             // different claim: this one is what the file says it is rather than
             // what it is called. Battle.net's setup arrives as `getInstaller`,
@@ -2089,6 +2098,31 @@ where
     })
 }
 
+/// `true` when the catalog says the download is the program itself rather than a
+/// setup program.
+///
+/// Not every `.exe` a vendor publishes installs something. Plutonium's download
+/// *is* the launcher: running it opens a login window and exits when that window
+/// is closed. The store ran it as a setup, waited thirty seconds for Windows to
+/// register a program that was never going to be registered, and told the user
+/// they had cancelled an installation that had in fact just succeeded — while
+/// the launcher it had started was still on screen.
+fn is_portable_payload(app: &Value) -> bool {
+    app.get("portable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// Whether a downloaded file should be handed to Windows as a setup program.
+///
+/// Extension alone decided this, which is right for the overwhelming majority
+/// of the catalog and wrong for the handful of programs distributed as a single
+/// executable you simply run.
+fn should_run_as_installer(app: &Value, extension: &str) -> bool {
+    !is_portable_payload(app)
+        && (extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("msi"))
+}
+
 /// Moves a directory, falling back to a recursive copy when source and
 /// destination live on different volumes (staging happens under Downloads while
 /// installations live under LOCALAPPDATA, which may be a different drive).
@@ -2117,7 +2151,14 @@ fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), Stri
             .and_then(|value| value.to_str())
             .unwrap_or("package")
     ));
-    let had_previous = install_path.exists();
+    // An empty folder is not a previous installation. There is nothing inside to
+    // keep recoverable, and Windows holds on to such a folder long after its
+    // contents are gone — which is exactly what an uninstall leaves behind when
+    // something outside the store had the directory open. Moving it aside then
+    // failed, and a plain reinstall died on "no se pudo apartar la instalación
+    // anterior" over a directory of nothing. Writing inside it is still allowed,
+    // so it is used where it stands.
+    let had_previous = install_path.exists() && !directory_is_empty(install_path);
     if had_previous {
         let _ = remove_path_robust(&backup_path);
         fs::rename(install_path, &backup_path).map_err(|error| {
@@ -2144,6 +2185,8 @@ fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), Stri
             Ok(())
         }
         Err(error) => {
+            // Best effort: what matters here is restoring the backup, and the
+            // folder may well be one Windows will not let go of.
             let _ = remove_path_robust(install_path);
             if had_previous {
                 if fs::rename(&backup_path, install_path).is_ok() {
@@ -2352,18 +2395,80 @@ fn remove_path_robust(target: &Path) -> Result<(), String> {
     } else {
         fs::remove_file(target)
     };
+    let Err(error) = outcome else {
+        return Ok(());
+    };
+
+    // Everything the application was is gone and only its empty folder is left
+    // holding out. Windows locks a directory for reasons that have nothing to do
+    // with the program — an antivirus reading what was just written, Explorer
+    // showing the folder, the search indexer — and none of them are the user's
+    // to fix. Calling that a failed uninstall left the store still listing an
+    // application whose files it had already deleted: "Abrir" answered that
+    // there was no executable, and "Desinstalar" failed again on the same empty
+    // folder, with no way out of either.
+    if target.is_dir() && directory_is_empty(target) {
+        crate::logger::warn(
+            "uninstall",
+            format!(
+                "{} quedó vacía pero Windows no deja borrar la carpeta ({error}). La desinstalación se da por hecha y la carpeta se retira en el siguiente arranque.",
+                target.display()
+            ),
+        );
+        remove_when_windows_lets_go(target);
+        return Ok(());
+    }
+
     // Windows reports this as a bare "the process cannot access the file",
     // which told the user nothing about what to do next.
-    outcome.map_err(|error| {
-        if error.raw_os_error() == Some(32) {
-            format!(
-                "Windows no dejó eliminar {} porque algo lo tiene abierto. Cierra el programa (y sus iconos junto al reloj) y vuelve a intentarlo.",
-                target.display()
-            )
-        } else {
-            format!("No se pudo eliminar {}: {error}", target.display())
-        }
+    Err(if error.raw_os_error() == Some(32) {
+        format!(
+            "Windows no dejó eliminar {} porque algo lo tiene abierto. Cierra el programa (y sus iconos junto al reloj) y vuelve a intentarlo.",
+            target.display()
+        )
+    } else {
+        format!("No se pudo eliminar {}: {error}", target.display())
     })
+}
+
+/// `true` when nothing is left inside — including the entries Windows hides
+/// because they are already deleted and waiting for the last handle to close.
+pub(crate) fn directory_is_empty(target: &Path) -> bool {
+    fs::read_dir(target)
+        .map(|mut entries| entries.next().is_none())
+        .unwrap_or(false)
+}
+
+/// Leaves an empty folder for the next start-up to clear.
+///
+/// Renamed out of the way first, so the name is free immediately: the user who
+/// reinstalls straight away must not find the store failing because the folder
+/// it wants is the one Windows is still holding.
+fn remove_when_windows_lets_go(target: &Path) {
+    let Some(parent) = target.parent() else {
+        return;
+    };
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or(0);
+    let name = target
+        .file_name()
+        .map(|name| name.to_string_lossy().to_string())
+        .unwrap_or_else(|| "carpeta".into());
+    let retired = parent.join(format!(".{name}.{stamp}.borrar"));
+    match fs::rename(target, &retired) {
+        Ok(()) => crate::logger::info(
+            "uninstall",
+            format!("Carpeta vacía apartada como {}", retired.display()),
+        ),
+        // Still locked even for a rename. It carries no files, so it is only a
+        // name taking up space until the start-up sweep gets to it.
+        Err(error) => crate::logger::debug(
+            "uninstall",
+            format!("No se pudo apartar {}: {error}", target.display()),
+        ),
+    }
 }
 
 pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result<(), String> {
@@ -2564,6 +2669,22 @@ pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), S
         ),
     );
     if install_path.exists() {
+        // Installing already stops whatever runs in the folder before an
+        // installer touches it; removing it did not, so uninstalling an
+        // application while it was open failed on the files it still held. The
+        // window is closed first, as it is for a package, because the program
+        // being deleted is one the user may have been working in.
+        let stopped = crate::process::close_application_at(
+            install_path,
+            std::time::Duration::from_secs(8),
+        );
+        if stopped.was_running() {
+            crate::logger::info(
+                "uninstall",
+                format!("Se cerró lo que corría en {}", install_path.display()),
+            );
+        }
+        crate::process::start_services(&stopped.services);
         // `remove_path_robust` clears read-only attributes and retries, which
         // matters when the application was running a moment ago and Windows has
         // not released every handle yet. A raw `remove_dir_all` failed halfway
@@ -4394,6 +4515,107 @@ mod tests {
         assert!(msi_failure_summary(&clean).is_none());
 
         let _ = fs::remove_dir_all(&directory);
+    }
+
+    #[test]
+    fn a_program_distributed_as_one_executable_is_not_run_as_a_setup() {
+        // The overwhelming majority: an `.exe` download is a setup program.
+        let ordinary = json!({ "id": "ejemplo" });
+        assert!(should_run_as_installer(&ordinary, "exe"));
+        assert!(should_run_as_installer(&ordinary, "msi"));
+        assert!(should_run_as_installer(&ordinary, "EXE"));
+        // An archive was never run as one.
+        assert!(!should_run_as_installer(&ordinary, "zip"));
+
+        // Plutonium's download is the launcher itself. Running it as a setup is
+        // what produced "cerraste el instalador sin completar la instalación"
+        // over an installation that had already happened.
+        let launcher = json!({ "id": "plutonium", "portable": true });
+        assert!(!should_run_as_installer(&launcher, "exe"));
+        assert!(!should_run_as_installer(&launcher, "msi"));
+        assert!(is_portable_payload(&launcher));
+        assert!(!is_portable_payload(&ordinary));
+    }
+
+    #[test]
+    fn reinstalling_over_the_empty_folder_an_uninstall_left_behind_works() {
+        let root = std::env::temp_dir().join(format!(
+            "winslim-reinstalar-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let install = root.join("app");
+        let staged = root.join("stage");
+        // What an uninstall leaves when Windows would not release the folder.
+        fs::create_dir_all(&install).unwrap();
+        fs::create_dir_all(&staged).unwrap();
+        fs::write(staged.join("app.exe"), b"MZ nuevo").unwrap();
+
+        swap_into_install_path(&staged, &install).unwrap();
+        assert_eq!(
+            fs::read(install.join("app.exe")).unwrap(),
+            b"MZ nuevo".to_vec()
+        );
+        // Nothing was moved aside, because there was nothing to move: no
+        // leftover backup folder is created for an empty previous install.
+        let names: Vec<String> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(!names.iter().any(|name| name.contains("winslim-backup")), "{names:?}");
+
+        // And a real previous installation is still kept recoverable.
+        let staged_again = root.join("stage2");
+        fs::create_dir_all(&staged_again).unwrap();
+        fs::write(staged_again.join("app.exe"), b"MZ mas nuevo").unwrap();
+        swap_into_install_path(&staged_again, &install).unwrap();
+        assert_eq!(
+            fs::read(install.join("app.exe")).unwrap(),
+            b"MZ mas nuevo".to_vec()
+        );
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_emptied_folder_windows_still_holds_is_a_finished_uninstall() {
+        let root = std::env::temp_dir().join(format!(
+            "winslim-vacia-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let target = root.join("app");
+        fs::create_dir_all(&target).unwrap();
+        assert!(directory_is_empty(&target));
+        fs::write(target.join("app.exe"), b"MZ").unwrap();
+        assert!(!directory_is_empty(&target));
+
+        // The ordinary path: everything goes, folder included.
+        remove_path_robust(&target).unwrap();
+        assert!(!target.exists());
+
+        // And the one the user hit: the payload is gone, the empty folder is
+        // held by something outside the store, and the uninstall is finished
+        // all the same. Simulated by asking to remove a folder that is already
+        // empty, which is the state that reaches the new branch.
+        fs::create_dir_all(&target).unwrap();
+        remove_when_windows_lets_go(&target);
+        // Renamed out of the way, so a reinstall finds the name free.
+        assert!(!target.exists());
+        let retired: Vec<_> = fs::read_dir(&root)
+            .unwrap()
+            .flatten()
+            .map(|entry| entry.file_name().to_string_lossy().to_string())
+            .collect();
+        assert_eq!(retired.len(), 1);
+        assert!(retired[0].starts_with('.') && retired[0].ends_with(".borrar"));
+
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

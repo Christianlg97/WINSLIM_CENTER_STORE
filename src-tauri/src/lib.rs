@@ -250,6 +250,7 @@ fn schedule_startup_cleanup(app: AppHandle) {
             }
             let _ = async_runtime::spawn_blocking(move || {
                 let _slots = all_slots;
+                paths::purge_retired_folders();
                 let (removed, freed) = paths::purge_downloads();
                 if removed > 0 {
                     logger::info(

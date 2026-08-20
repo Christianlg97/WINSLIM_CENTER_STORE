@@ -52,6 +52,42 @@ pub fn settings_json() -> PathBuf {
     app_dir().join("settings.json")
 }
 
+/// Clears the empty folders an uninstall had to leave behind.
+///
+/// A directory Windows was still holding when its contents were deleted is
+/// renamed out of the way and picked up here, once whatever had it open — an
+/// antivirus reading what had just been written, Explorer, the search indexer —
+/// has long since let go. Answers with how many went.
+pub fn purge_retired_folders() -> usize {
+    let Ok(entries) = std::fs::read_dir(app_dir()) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        // Written by `remove_when_windows_lets_go`, and nothing else looks like
+        // this: a leading dot the store never uses, and the suffix spelled out.
+        if !(name.starts_with('.') && name.ends_with(".borrar")) {
+            continue;
+        }
+        match remove_path_measured(&entry.path()) {
+            Ok(_) => removed += 1,
+            Err(error) => crate::logger::debug(
+                "startup-cleanup",
+                format!("{} sigue retenida: {error}", entry.path().display()),
+            ),
+        }
+    }
+    if removed > 0 {
+        crate::logger::info(
+            "startup-cleanup",
+            format!("Carpetas vacías de desinstalaciones anteriores eliminadas: {removed}"),
+        );
+    }
+    removed
+}
+
 /// Empties the folder the store downloads packages into, and answers with how
 /// many entries went and how much room that freed.
 ///

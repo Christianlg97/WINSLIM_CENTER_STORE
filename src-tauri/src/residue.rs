@@ -631,7 +631,12 @@ pub fn purge_install_residue(install_dir: &Path) -> usize {
     // The "installed" markers are only withdrawn once the program is really off
     // the disk. Doing it with the files still in place would leave the store
     // claiming it uninstalled something that is still there.
-    if install_dir.exists() {
+    //
+    // An empty folder is not a program on the disk. One is left behind whenever
+    // Windows keeps a handle on the directory after its contents are deleted,
+    // and treating that as "still installed" skipped the cleanup entirely: the
+    // Start Menu shortcut of an uninstalled application stayed where it was.
+    if install_dir.exists() && !installer::directory_is_empty(install_dir) {
         crate::logger::warn(
             "uninstall-residue",
             format!(

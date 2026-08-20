@@ -1113,6 +1113,9 @@
     "section": "Juegos",
     "source_type": "wget",
     "download_url": "https://cdn.plutonium.pw/updater/plutonium.exe",
+    "download_filename": "plutonium.exe",
+    "portable": true,
+    "launch_executable": "plutonium.exe",
     "icon_url": "assets/catalog/plutonium.svg",
     "accent_color": "#dc2626",
     "featured": false
