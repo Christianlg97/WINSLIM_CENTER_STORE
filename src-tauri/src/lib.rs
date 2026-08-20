@@ -2847,31 +2847,26 @@ async fn install_app(
                     );
                     let launch_handle = app_handle.clone();
                     let launch_id = app_id_for_task.clone();
-                    match async_runtime::spawn_blocking(move || {
+                    // Opening the application is a courtesy; the installation
+                    // does not depend on it and neither does the dialog. Waited
+                    // for, it made the end of the operation hostage to whatever
+                    // the launcher decided to do — Windows raises its own
+                    // message boxes from inside the call that starts a process —
+                    // and the interface sat on "Comprobando la instalación..."
+                    // for as long as one of them went unanswered.
+                    async_runtime::spawn_blocking(move || {
                         let state = launch_handle.state::<AppState>();
-                        launch_app_internal(&state, &launch_id)
-                    })
-                    .await
-                    {
-                        Ok(Ok(msg)) => {
-                            logger::info(
+                        match launch_app_internal(&state, &launch_id) {
+                            Ok(message) => logger::info(
                                 "install",
-                                format!("Aplicación {app_id_for_task} iniciada correctamente tras WinGet: {msg}"),
-                            );
-                        }
-                        Ok(Err(err)) => {
-                            logger::warn(
-                                "install",
-                                format!("No se pudo iniciar automáticamente {app_id_for_task} tras WinGet: {err}"),
-                            );
-                        }
-                        Err(err) => logger::warn(
-                            "install",
-                            format!(
-                                "No se pudo esperar la apertura automática de {app_id_for_task}: {err}"
+                                format!("Aplicación {launch_id} iniciada correctamente tras WinGet: {message}"),
                             ),
-                        ),
-                    }
+                            Err(error) => logger::warn(
+                                "install",
+                                format!("No se pudo iniciar automáticamente {launch_id} tras WinGet: {error}"),
+                            ),
+                        }
+                    });
                 }
                 // Windows staged the package instead of applying it, because the
                 // application was open. Recorded on the status so the card stops

@@ -3403,13 +3403,33 @@ enum ExecutableArchitecture {
     Unknown,
 }
 
-/// The two PE fields used to choose a launcher. Reading them together means a
+/// Whether the file behind an `.exe` name is a program Windows can actually run.
+///
+/// The extension is a claim, not a fact. Amazon Games installs its folder with
+/// the resource forks a macOS packaging step left behind — `._Amazon Games.exe`,
+/// four hundred bytes of AppleDouble sitting next to the real launcher — and
+/// those carry the extension without carrying a program. Windows answers a
+/// request to run one with the modal "Aplicación de 16 bits no compatible",
+/// raised inside `CreateProcess`: the call does not come back while the box is
+/// on screen, and the box opens behind the store's own window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ExecutableImage {
+    /// The headers are there: Windows will run this.
+    Windows,
+    /// The file was read and holds something else entirely.
+    Foreign,
+    /// The file could not be opened, so nothing is claimed either way.
+    Unreadable,
+}
+
+/// The PE fields used to choose a launcher. Reading them together means a
 /// candidate is opened once, rather than once for architecture and again for
 /// subsystem while ranking a directory.
 #[derive(Debug, Clone, Copy)]
 struct ExecutableMetadata {
     architecture: ExecutableArchitecture,
     subsystem: ExecutableSubsystem,
+    image: ExecutableImage,
 }
 
 impl Default for ExecutableMetadata {
@@ -3417,8 +3437,19 @@ impl Default for ExecutableMetadata {
         Self {
             architecture: ExecutableArchitecture::Unknown,
             subsystem: ExecutableSubsystem::Unknown,
+            image: ExecutableImage::Unreadable,
         }
     }
+}
+
+/// `false` only when the file was read and proved not to be a Windows program.
+///
+/// A candidate the store cannot open — held by an antivirus, or inside a folder
+/// Windows keeps to itself — keeps the benefit of the doubt it always had: the
+/// point is to rule out the files that are demonstrably not programs, not to
+/// demand read permission on every launcher before offering to open it.
+fn looks_like_a_program(path: &Path) -> bool {
+    executable_metadata(path).image != ExecutableImage::Foreign
 }
 
 fn executable_metadata(path: &Path) -> ExecutableMetadata {
@@ -3427,17 +3458,24 @@ fn executable_metadata(path: &Path) -> ExecutableMetadata {
     let Ok(mut file) = fs::File::open(path) else {
         return ExecutableMetadata::default();
     };
+    // Past this point the file has been read, so the answer is no longer
+    // "unknown": it is either a Windows program or something wearing the
+    // extension of one.
+    let foreign = ExecutableMetadata {
+        image: ExecutableImage::Foreign,
+        ..ExecutableMetadata::default()
+    };
     let mut dos = [0_u8; 64];
     if file.read_exact(&mut dos).is_err() || &dos[..2] != b"MZ" {
-        return ExecutableMetadata::default();
+        return foreign;
     }
     let pe_offset = u32::from_le_bytes([dos[0x3c], dos[0x3d], dos[0x3e], dos[0x3f]]) as u64;
     if file.seek(SeekFrom::Start(pe_offset)).is_err() {
-        return ExecutableMetadata::default();
+        return foreign;
     }
     let mut header = [0_u8; 6];
     if file.read_exact(&mut header).is_err() || &header[..4] != b"PE\0\0" {
-        return ExecutableMetadata::default();
+        return foreign;
     }
     let architecture = match u16::from_le_bytes([header[4], header[5]]) {
         0x8664 => ExecutableArchitecture::X64,
@@ -3462,6 +3500,7 @@ fn executable_metadata(path: &Path) -> ExecutableMetadata {
     ExecutableMetadata {
         architecture,
         subsystem,
+        image: ExecutableImage::Windows,
     }
 }
 
@@ -3579,9 +3618,10 @@ fn x64_sibling(path: &Path) -> Option<PathBuf> {
                     .and_then(|value| value.to_str())
                     .map(|value| value.eq_ignore_ascii_case("exe"))
                     .unwrap_or(false)
-                && executable_architecture_score(candidate) > 0
                 && executable_family(candidate) == family
                 && !is_installer_artifact(candidate)
+                && looks_like_a_program(candidate)
+                && executable_architecture_score(candidate) > 0
         })
         .collect();
     candidates.sort();
@@ -3604,7 +3644,10 @@ pub fn prefer_x64_executable(path: &Path) -> Option<PathBuf> {
     if let Some(sibling) = x64_sibling(path) {
         return Some(sibling);
     }
-    (executable_architecture_score(path) >= -1_000).then(|| path.to_path_buf())
+    let metadata = executable_metadata(path);
+    (metadata.image != ExecutableImage::Foreign
+        && executable_architecture_score_with(path, metadata.architecture) >= -1_000)
+        .then(|| path.to_path_buf())
 }
 
 pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
@@ -3617,7 +3660,11 @@ pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
             let metadata = executable_metadata(&path);
             let architecture_score =
                 executable_architecture_score_with(&path, metadata.architecture);
-            (architecture_score >= -1_000).then(|| {
+            // A candidate whose architecture could not be read scores zero,
+            // which is above every real x86 build: that is how four hundred
+            // bytes of AppleDouble named `._Amazon Games.exe` beat the launcher
+            // sitting next to it. Files that are not programs never rank.
+            (metadata.image != ExecutableImage::Foreign && architecture_score >= -1_000).then(|| {
                 (
                     launcher_score(install_dir, &path, architecture_score, metadata.subsystem),
                     path,
@@ -4054,6 +4101,27 @@ pub fn launch_path_with_preferred(
             executable_architecture_label(&executable)
         ),
     );
+    // Asked to run a file that is not a program, Windows raises a message box
+    // from inside `CreateProcess` and does not return until it is dismissed —
+    // and it opens behind the store, where nobody looks for it. The store hung
+    // there with "Comprobando la instalación..." on screen after installing
+    // Amazon Games, whose folder carries a `._Amazon Games.exe` left over from
+    // the vendor's macOS packaging. Checked again here, and not only while
+    // resolving, because `installed.json` remembers paths chosen before this
+    // rule existed.
+    if !looks_like_a_program(&executable) {
+        crate::logger::error(
+            "launch",
+            format!(
+                "No es un programa de Windows: {}",
+                executable.display()
+            ),
+        );
+        return Err(format!(
+            "'{}' no es un programa de Windows, así que no se puede abrir.",
+            executable.display()
+        ));
+    }
     let mut command = std::process::Command::new(&executable);
     // A shortcut made by Windows always carries a "Start in" folder, and plenty
     // of programs need it: UNIGINE Heaven reads its configuration through a path
@@ -4149,6 +4217,12 @@ pub fn launch_path_elevated_with_preferred(
         "launch",
         format!("Ejecutable elevado resuelto: {}", executable.display()),
     );
+    if !looks_like_a_program(&executable) {
+        return Err(format!(
+            "'{}' no es un programa de Windows, así que no se puede abrir.",
+            executable.display()
+        ));
+    }
     crate::process::launch_elevated(&executable)?;
     Ok(format!(
         "Lanzando {} como administrador",
@@ -4237,6 +4311,17 @@ mod naming_tests {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// The smallest file that still answers the two questions the ranking asks
+    /// of a candidate: is this a Windows program, and what was it built for.
+    fn write_program(path: &Path, machine: u16) {
+        let mut bytes = vec![0_u8; 134];
+        bytes[0..2].copy_from_slice(b"MZ");
+        bytes[0x3c..0x40].copy_from_slice(&128_u32.to_le_bytes());
+        bytes[128..132].copy_from_slice(b"PE\0\0");
+        bytes[132..134].copy_from_slice(&machine.to_le_bytes());
+        fs::write(path, bytes).unwrap();
+    }
 
     #[test]
     fn default_exe_installers_launch_interactively() {
@@ -4405,8 +4490,8 @@ mod tests {
         fs::create_dir_all(&test_dir).unwrap();
         let arm = test_dir.join("Ventoy2Disk_ARM.exe");
         let x64 = test_dir.join("Ventoy2Disk_X64.exe");
-        fs::write(&arm, []).unwrap();
-        fs::write(&x64, []).unwrap();
+        write_program(&arm, 0xaa64);
+        write_program(&x64, 0x8664);
 
         assert_eq!(prefer_x64_executable(&arm), Some(x64));
 
@@ -5063,15 +5148,6 @@ mod tests {
 
     #[test]
     fn pe_header_architecture_overrides_a_neutral_filename() {
-        fn write_pe(path: &Path, machine: u16) {
-            let mut bytes = vec![0_u8; 134];
-            bytes[0..2].copy_from_slice(b"MZ");
-            bytes[0x3c..0x40].copy_from_slice(&128_u32.to_le_bytes());
-            bytes[128..132].copy_from_slice(b"PE\0\0");
-            bytes[132..134].copy_from_slice(&machine.to_le_bytes());
-            fs::write(path, bytes).unwrap();
-        }
-
         let test_dir = std::env::temp_dir().join(format!(
             "winslimcenter-pe-architecture-test-{}",
             std::process::id()
@@ -5079,13 +5155,39 @@ mod tests {
         fs::create_dir_all(&test_dir).unwrap();
         let x64 = test_dir.join("application.exe");
         let x86 = test_dir.join("legacy.exe");
-        write_pe(&x64, 0x8664);
-        write_pe(&x86, 0x014c);
+        write_program(&x64, 0x8664);
+        write_program(&x86, 0x014c);
 
         assert_eq!(executable_architecture(&x64), ExecutableArchitecture::X64);
         assert_eq!(executable_architecture(&x86), ExecutableArchitecture::X86);
         assert!(executable_architecture_score(&x64) > 0);
         assert!(executable_architecture_score(&x86) < 0);
+
+        fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    #[test]
+    fn a_resource_fork_never_passes_for_the_program_beside_it() {
+        // Amazon Games installs `._Amazon Games.exe` — the AppleDouble its
+        // vendor's macOS packaging left behind — a folder away from its real
+        // 32-bit launcher. Nothing can be read from that file's header, which
+        // used to score it above every x86 build, and running it stopped the
+        // store dead on a message box raised behind its own window.
+        let test_dir = std::env::temp_dir().join(format!(
+            "winslimcenter-resource-fork-test-{}",
+            std::process::id()
+        ));
+        let app_dir = test_dir.join("App");
+        fs::create_dir_all(app_dir.join("App")).unwrap();
+        let launcher = app_dir.join("Amazon Games.exe");
+        write_program(&launcher, 0x014c);
+        let fork = app_dir.join("App").join("._Amazon Games.exe");
+        fs::write(&fork, [0_u8, 5, 22, 7, 0, 2, 0, 0]).unwrap();
+
+        assert_eq!(find_executable(&app_dir), Some(launcher.clone()));
+        assert_eq!(resolve_launchable_path(&app_dir, None), Some(launcher));
+        assert_eq!(prefer_x64_executable(&fork), None);
+        assert!(launch_path_with_preferred(&fork, None).is_err());
 
         fs::remove_dir_all(test_dir).unwrap();
     }
