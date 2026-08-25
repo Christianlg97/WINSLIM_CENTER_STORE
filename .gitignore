@@ -25,3 +25,7 @@ desktop.ini
 .idea/
 *.suo
 *.user
+
+
+# Revision tools Source Code
+revision-tool Source/*
