@@ -25,6 +25,32 @@ const NAV = [
  * página— sepan que esta sección no les pertenece.
  */
 const MSSTORE_SECTION = "msstore";
+const MSSTORE_SUPPRESSED_UPDATES_KEY = "winslimcenter-msstore-suppressed-updates-v1";
+
+/**
+ * Versiones que Windows ya rechazó porque el equipo tiene un paquete superior.
+ *
+ * Se guardan por familia y versión publicada. Un reescaneo de la misma versión
+ * no debe volver a ensuciar Pendientes; una versión distinta elimina sola la
+ * exclusión y vuelve a mostrarse.
+ */
+function loadMsStoreSuppressedUpdates() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(MSSTORE_SUPPRESSED_UPDATES_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveMsStoreSuppressedUpdates(entries) {
+  try {
+    localStorage.setItem(MSSTORE_SUPPRESSED_UPDATES_KEY, JSON.stringify(entries));
+  } catch {
+    // En modo privado el almacenamiento puede no estar disponible. La
+    // exclusión sigue funcionando durante la sesión actual.
+  }
+}
 
 /**
  * Las arquitecturas entre las que se puede elegir. `auto` es la del equipo, y
@@ -198,6 +224,17 @@ const state = {
     loading: false,
     error: "",
     installing: {},
+    // Lo que Windows tiene puesto de la tienda, y lo que se sabe de sus
+    // versiones. Lo primero se pregunta al equipo y es instantáneo; lo segundo
+    // hay que ir a buscarlo al servicio de entrega y tarda.
+    installed: [],
+    installedLoaded: false,
+    updates: {},
+    suppressedUpdates: loadMsStoreSuppressedUpdates(),
+    updateFamilyByProduct: {},
+    scanning: false,
+    lastScan: null,
+    busy: {},
   },
 };
 
@@ -677,6 +714,12 @@ async function scanForUpdates() {
     setProgress(65);
     replaceStatuses((await invoke("check_updates")) || state.statuses);
     state.lastUpdateScan = new Date();
+    // La Microsoft Store se pregunta después y por su cuenta: es otro servicio,
+    // tarda lo suyo y un fallo suyo no puede invalidar lo que ya dijo WinGet.
+    setStatus("Consultando la Microsoft Store...", "var(--accent)");
+    setProgress(85);
+    await ensureMsStoreInstalled({ force: true });
+    await scanMsStoreUpdates({ quiet: true });
     const updates = updatesCount();
     clientLog("info", "updates-scan", { updates });
     if (updates) {
@@ -685,10 +728,10 @@ async function scanForUpdates() {
         "var(--accent)",
       );
     } else {
-      setTransientStatus("WinGet no reporta actualizaciones pendientes.", "var(--green)", 5000);
+      setTransientStatus("No hay actualizaciones pendientes.", "var(--green)", 5000);
     }
   } catch (error) {
-    setTransientStatus(`No se pudo comprobar con WinGet: ${error}`, "var(--red)", 8000);
+    setTransientStatus(`No se pudo comprobar las actualizaciones: ${error}`, "var(--red)", 8000);
     clientLog("warn", "updates-scan", String(error?.stack || error));
   } finally {
     state.scanningUpdates = false;
@@ -704,8 +747,11 @@ function installedCount() {
   return derived.installedCount;
 }
 
+/// Las actualizaciones pendientes son las del catálogo y las de la Microsoft
+/// Store: el usuario ve una sola sección y una sola cifra, porque para él es
+/// una sola cosa.
 function updatesCount() {
-  return derived.updatesCount;
+  return derived.updatesCount + msStoreUpdatesList().length;
 }
 
 function sectionFilter(app) {
@@ -985,6 +1031,167 @@ function msStoreProductById(productId) {
   return state.msstore.results.find((product) => product.product_id === id) || null;
 }
 
+function msStoreInstalledByFamily(family) {
+  const wanted = String(family || "").toLowerCase();
+  return (
+    state.msstore.installed.find((app) => app.family.toLowerCase() === wanted) || null
+  );
+}
+
+/**
+ * El registro de lo instalado que corresponde a un resultado de búsqueda.
+ *
+ * El backend ya comprobó contra Windows si el producto está puesto y con qué
+ * versión, así que un resultado marcado como instalado lo está aunque la lista
+ * local todavía no haya llegado; de ella sólo falta con qué abrirlo.
+ */
+function msStoreInstalledRecord(product) {
+  if (!product?.installed || !product.installed_family) return null;
+  return (
+    msStoreInstalledByFamily(product.installed_family) || {
+      family: product.installed_family,
+      full_name: "",
+      name: product.title || product.installed_family,
+      display_name: product.title || product.installed_family,
+      version: product.installed_version || "",
+      install_location: "",
+      can_uninstall: !!product.can_uninstall,
+      launch_target: null,
+    }
+  );
+}
+
+/** Lo que se sabe de la versión publicada de una familia, si ya se preguntó. */
+function msStoreUpdateOf(family) {
+  return state.msstore.updates[String(family || "").toLowerCase()] || null;
+}
+
+function msStoreUpdateVersion(report) {
+  return String(report?.latest_version || "").trim();
+}
+
+/** Oculta la misma versión rechazada y libera automáticamente una nueva. */
+function applyMsStoreUpdateSuppression(report) {
+  const store = state.msstore;
+  const family = String(report?.family || "").toLowerCase();
+  const skipped = store.suppressedUpdates[family];
+  if (!family || !skipped) return report;
+
+  const published = msStoreUpdateVersion(report);
+  const sameVersion = published && published === String(skipped.latestVersion || "");
+  if (report?.update_available && sameVersion) {
+    return { ...report, update_available: false, suppressed: true };
+  }
+
+  // Un informe concluyente sin actualización, o una versión publicada nueva,
+  // deja obsoleta la exclusión. Los errores de red no deben borrarla.
+  if (!report?.error && (!report?.update_available || (published && !sameVersion))) {
+    delete store.suppressedUpdates[family];
+    saveMsStoreSuppressedUpdates(store.suppressedUpdates);
+  }
+  return report;
+}
+
+function suppressMsStoreUpdate(family, report) {
+  const store = state.msstore;
+  const key = String(family || "").toLowerCase();
+  const latestVersion = msStoreUpdateVersion(report);
+  if (!key || !latestVersion) return false;
+
+  store.suppressedUpdates[key] = {
+    latestVersion,
+    productId: String(report?.product_id || "").toUpperCase(),
+  };
+  saveMsStoreSuppressedUpdates(store.suppressedUpdates);
+  if (store.updates[key]) {
+    store.updates[key] = { ...store.updates[key], update_available: false, suppressed: true };
+  }
+  void clientLog(
+    "info",
+    "msstore-update-suppressed",
+    `${family}: se oculta la versión ${latestVersion} después de que Windows la rechazara`,
+  );
+  return true;
+}
+
+/** Las aplicaciones instaladas para las que el canal publica algo más nuevo. */
+function msStoreUpdatesList() {
+  return state.msstore.installed.filter(
+    (app) => msStoreUpdateOf(app.family)?.update_available
+  );
+}
+
+/**
+ * Una aplicación instalada, vestida de aplicación del catálogo para que la
+ * dibujen las mismas funciones. El nombre y el icono buenos llegan con la
+ * comprobación de versiones; hasta entonces valen los que da Windows.
+ */
+function msStoreInstalledShape(app) {
+  const known = msStoreUpdateOf(app.family);
+  return {
+    id: `msstore-app:${app.family}`,
+    name: known?.title || app.display_name || app.name,
+    author: "Microsoft Store",
+    icon_url: msStoreImageUrl(known?.icon_url) || null,
+    icon_padding: 4,
+  };
+}
+
+async function ensureMsStoreInstalled({ force = false } = {}) {
+  const store = state.msstore;
+  if (store.installedLoaded && !force) return store.installed;
+  try {
+    store.installed = (await invoke("msstore_installed")) || [];
+    store.installedLoaded = true;
+  } catch (error) {
+    void clientLog("warn", "msstore-installed", String(error?.stack || error));
+  }
+  return store.installed;
+}
+
+/**
+ * Pregunta al canal elegido qué versión publica de cada aplicación.
+ *
+ * Cuesta dos viajes por aplicación, así que sin `families` —que es como lo
+ * llama el escaneo general— puede tardar unos segundos. Lo que devuelve se
+ * acumula: una comprobación de dos aplicaciones no borra lo que se sabía de
+ * las demás.
+ */
+async function scanMsStoreUpdates({ families = null, quiet = false } = {}) {
+  const store = state.msstore;
+  if (store.scanning) return;
+  await ensureMsStoreOptions();
+  if (!families) {
+    await ensureMsStoreInstalled();
+    families = store.installed.map((app) => app.family);
+  }
+  if (!families.length) return;
+
+  store.scanning = true;
+  if (!quiet) renderContent();
+  try {
+    const reports =
+      (await invoke("msstore_check_updates", {
+        ring: store.ring,
+        arch: store.arch,
+        families,
+      })) || [];
+    for (const report of reports) {
+      store.updates[report.family.toLowerCase()] = applyMsStoreUpdateSuppression(report);
+      if (report.error) {
+        void clientLog("debug", "msstore-updates", `${report.family}: ${report.error}`);
+      }
+    }
+    store.lastScan = new Date();
+  } catch (error) {
+    void clientLog("warn", "msstore-updates", String(error?.stack || error));
+  } finally {
+    store.scanning = false;
+    renderSidebar();
+    renderContent();
+  }
+}
+
 async function ensureMsStoreOptions() {
   const store = state.msstore;
   if (store.options) return store.options;
@@ -1016,7 +1223,7 @@ function msStoreArchPhrase() {
 
 function msStoreRingLabel() {
   const rings = state.msstore.options?.rings || [];
-  return rings.find((ring) => ring.id === state.msstore.ring)?.label || "Release Preview";
+  return rings.find((ring) => ring.id === state.msstore.ring)?.label || "Retail (Base)";
 }
 
 function msStoreBytes(bytes) {
@@ -1093,12 +1300,7 @@ function msStoreHeroHtml() {
     <section class="hero ms-hero" aria-label="Qué es esta sección">
       <div class="hero-left">
         <div class="ms-hero-logo" aria-hidden="true">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
-            stroke-linecap="round" stroke-linejoin="round">
-            <path d="M4 8h16l-1.1 11.2A2 2 0 0 1 16.9 21H7.1a2 2 0 0 1-2-1.8L4 8Z" />
-            <path d="M8.5 8V6.5a3.5 3.5 0 0 1 7 0V8" />
-            <path d="M9.5 12.5h5" />
-          </svg>
+          <img src="assets/microsoft_store.png" alt="" />
         </div>
         <div class="project-hero-copy">
           <div class="project-kicker">CATÁLOGO OFICIAL DE MICROSOFT</div>
@@ -1116,6 +1318,63 @@ function msStoreHeroHtml() {
     </section>`;
 }
 
+/// La insignia de versión de una aplicación instalada, con la misma forma que
+/// la del catálogo: la que hay puesta y la que publica el canal.
+function msStoreVersionBadge(app, { modal = false } = {}) {
+  const report = msStoreUpdateOf(app.family);
+  if (!report?.update_available) return "";
+  const current = String(app.version || "desconocida").replace(/^v(?=\d)/i, "");
+  const latest = String(report.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
+  const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
+  return `<span class="${cls}" title="Versión instalada y versión publicada en el canal ${escapeHtml(
+    msStoreRingLabel()
+  )}">Actualización · v${escapeHtml(current)} → v${escapeHtml(latest)}</span>`;
+}
+
+function msStoreOriginTag(app) {
+  return msStoreUpdateOf(app.family)?.update_available
+    ? `<span class="origin-tag update-origin">actualización disponible</span>`
+    : `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`;
+}
+
+/**
+ * Los botones de una aplicación de la tienda que ya está instalada.
+ *
+ * Sigue la misma regla que el catálogo: o se actualiza o se abre —nunca las dos
+ * cosas—, y desinstalar siempre está. Los paquetes que Windows se reserva no
+ * ofrecen un botón que no funcionaría.
+ */
+function msStoreInstalledActions(app, { productId = null, variant = "card" } = {}) {
+  const busy = state.msstore.busy[app.family];
+  const installing = productId && state.msstore.installing[productId];
+  if (busy || installing) {
+    const label = { uninstalling: "Desinstalando…", launching: "Abriendo…" }[busy] || "Actualizando…";
+    const cls = variant === "modal" ? "btn secondary" : "btn secondary";
+    return `<button type="button" class="${cls}" disabled aria-busy="true">${label}</button>`;
+  }
+
+  const report = msStoreUpdateOf(app.family);
+  const family = escapeHtml(app.family);
+  const parts = [];
+  if (report?.update_available && report.product_id) {
+    parts.push(
+      `<button type="button" class="btn secondary" data-ms-update="${escapeHtml(report.product_id)}"
+        data-ms-family="${family}">Actualizar</button>`
+    );
+  } else if (app.launch_target) {
+    parts.push(`<button type="button" class="btn primary" data-ms-launch="${family}">Abrir</button>`);
+  }
+  if (app.can_uninstall) {
+    parts.push(`<button type="button" class="btn danger" data-ms-uninstall="${family}">Desinstalar</button>`);
+  } else {
+    parts.push(
+      `<button type="button" class="btn installed-label" disabled
+        title="Windows no permite quitar este paquete: forma parte del sistema.">La protege Windows</button>`
+    );
+  }
+  return parts.join("");
+}
+
 function msStoreCardHtml(product, index) {
   const shape = msStoreAppShape(product);
   const accent = pickAccent(shape, index);
@@ -1123,6 +1382,30 @@ function msStoreCardHtml(product, index) {
   const letter = (product.title || product.product_id || "M")[0].toUpperCase();
   const kind = MSSTORE_KIND_LABELS[product.kind] || "";
   const installing = state.msstore.installing[product.product_id];
+  // Un resultado que el equipo ya tiene puesto deja de ser una oferta y pasa a
+  // ser la aplicación instalada, con lo que se puede hacer con ella.
+  const installed = msStoreInstalledRecord(product);
+
+  const tags = installed
+    ? msStoreOriginTag(installed)
+    : kind
+      ? `<span class="origin-tag ms-kind-tag">${escapeHtml(kind)}</span>`
+      : "";
+  const meta = installed
+    ? `${escapeHtml(product.publisher || "Microsoft Store")}  ·  v${escapeHtml(installed.version)}`
+    : `${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis`;
+
+  let actions;
+  if (installing) {
+    actions = `<button type="button" class="btn secondary" disabled aria-busy="true">${
+      installing === "update" ? "Actualizando…" : "Instalando…"
+    }</button>`;
+  } else if (installed) {
+    actions = msStoreInstalledActions(installed, { productId: product.product_id });
+  } else {
+    actions = `<button type="button" class="btn primary" data-ms-install="${escapeHtml(product.product_id)}">Instalar</button>`;
+  }
+
   return `
     <article class="app-card ms-card" data-ms-id="${escapeHtml(product.product_id)}" tabindex="0"
       aria-label="Ver detalles de ${escapeHtml(product.title || product.product_id)}"
@@ -1131,20 +1414,103 @@ function msStoreCardHtml(product, index) {
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
         <div>
           <strong>${escapeHtml(product.title || product.product_id)}
-            ${kind ? `<span class="origin-tag ms-kind-tag">${escapeHtml(kind)}</span>` : ""}
+            ${tags}
           </strong>
-          <small>${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis</small>
+          <small>${meta}</small>
+          ${installed ? msStoreVersionBadge(installed) : ""}
         </div>
       </div>
       <p class="card-desc">${escapeHtml(product.description || "")}</p>
-      <div class="card-actions">
-        ${
-          installing
-            ? '<button type="button" class="btn secondary" disabled aria-busy="true">Instalando…</button>'
-            : `<button type="button" class="btn primary" data-ms-install="${escapeHtml(product.product_id)}">Instalar</button>`
-        }
-      </div>
+      <div class="card-actions">${actions}</div>
     </article>`;
+}
+
+/// La tarjeta de una aplicación instalada de la que sólo se sabe lo que cuenta
+/// Windows, sin haber pasado por la tienda.
+function msStoreInstalledCardHtml(app, index) {
+  const shape = msStoreInstalledShape(app);
+  const accent = pickAccent(shape, index);
+  const avatarBg = avatarBackground(shape, accent);
+  const letter = (shape.name || "M")[0].toUpperCase();
+  const report = msStoreUpdateOf(app.family);
+  // Sólo es una ficha si se sabe de qué producto es; hasta entonces la tarjeta
+  // no promete una pantalla que no puede abrir.
+  const productAttribute = report?.product_id
+    ? ` data-ms-id="${escapeHtml(report.product_id)}" tabindex="0" aria-label="Ver detalles de ${escapeHtml(shape.name)}"`
+    : "";
+  return `
+    <article class="app-card ms-card ms-installed-card" data-ms-family="${escapeHtml(app.family)}"${productAttribute}
+      style="--card-accent:${accent}">
+      <div class="card-top">
+        <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
+        <div>
+          <strong>${escapeHtml(shape.name)}
+            ${msStoreOriginTag(app)}
+          </strong>
+          <small>Microsoft Store  ·  v${escapeHtml(app.version || "—")}</small>
+          ${msStoreVersionBadge(app)}
+        </div>
+      </div>
+      <p class="card-desc">${escapeHtml(app.name)}</p>
+      <div class="card-actions">${msStoreInstalledActions(app)}</div>
+    </article>`;
+}
+
+/// El control que sale a preguntar por las versiones publicadas. Reutiliza el
+/// icono y el vocabulario de ocupado del resto de la tienda.
+function msStoreScanButtonHtml() {
+  const scanning = state.msstore.scanning;
+  return `
+    <button type="button" class="btn updates-toolbar-scan" id="btn-ms-scan"
+      ${scanning ? 'disabled aria-busy="true"' : ""}
+      title="Consulta al canal ${escapeHtml(msStoreRingLabel())} qué versión publica de cada aplicación instalada">
+      <svg class="btn-svg-icon scan-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" />
+        <path d="M3 3v5h5" />
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16" />
+        <path d="M16 16h5v5" />
+      </svg>
+      ${scanning ? "Comprobando…" : "Comprobar versiones"}
+    </button>`;
+}
+
+function msStoreMatchesSearch(app, query) {
+  if (!query) return true;
+  return `${app.display_name} ${app.name} ${app.family}`.toLocaleLowerCase("es-ES").includes(query);
+}
+
+/// La subsección de «Mis aplicaciones» con lo que vino de la Microsoft Store.
+function msStoreInstalledSectionHtml(query) {
+  const apps = state.msstore.installed.filter((app) => msStoreMatchesSearch(app, query));
+  if (!apps.length) return "";
+  const pending = msStoreUpdatesList().length;
+  return `
+    <section class="section">
+      <div class="section-head ms-section-head">
+        <h3>Desde la Microsoft Store</h3>
+        <span>${apps.length} ${apps.length === 1 ? "aplicación" : "aplicaciones"}${
+          pending ? ` · ${pending} con actualización` : ""
+        }</span>
+        ${msStoreScanButtonHtml()}
+      </div>
+      <div class="grid">${apps.map(msStoreInstalledCardHtml).join("")}</div>
+    </section>`;
+}
+
+/// El bloque de actualizaciones pendientes que vienen de la Microsoft Store.
+function msStoreUpdatesSectionHtml(query) {
+  const apps = msStoreUpdatesList().filter((app) => msStoreMatchesSearch(app, query));
+  if (!apps.length) return "";
+  return `
+    <section class="section">
+      <div class="section-head ms-section-head">
+        <h3>Microsoft Store</h3>
+        <span>${apps.length} ${apps.length === 1 ? "actualización" : "actualizaciones"} · ${escapeHtml(msStoreRingLabel())}</span>
+        ${msStoreScanButtonHtml()}
+      </div>
+      <div class="grid">${apps.map(msStoreInstalledCardHtml).join("")}</div>
+    </section>`;
 }
 
 function renderMsStoreNow() {
@@ -1248,6 +1614,15 @@ async function runMsStoreSearch() {
         : `Sin resultados para «${query}» en la Microsoft Store`,
       products.length ? "var(--green)" : "var(--text-light)",
     );
+    // De los resultados, los que el equipo ya tiene puestos son casi siempre
+    // uno o ninguno: preguntar por sus versiones cuesta poco y es lo que
+    // convierte «ya instalada» en «tiene actualización».
+    const families = products
+      .filter((product) => product.installed && product.installed_family)
+      .map((product) => product.installed_family)
+      .filter((family) => !msStoreUpdateOf(family));
+    if (families.length) void scanMsStoreUpdates({ families, quiet: true });
+
     // Quien pega el enlace de una ficha no está buscando: ya sabe lo que
     // quiere, así que se le abre directamente.
     if (response?.direct && products.length === 1) openMsStoreModal(products[0].product_id);
@@ -1323,16 +1698,45 @@ function msStoreShotsHtml(details) {
     </div>`;
 }
 
+/**
+ * El producto detrás de un identificador, esté o no en los resultados.
+ *
+ * Una tarjeta de «Mis aplicaciones» conoce su producto pero nunca pasó por una
+ * búsqueda, así que la ficha se pide igual que cuando se pega su enlace.
+ */
+async function msStoreResolveProduct(productId) {
+  const id = String(productId || "").toUpperCase();
+  const known = msStoreProductById(id);
+  if (known) return known;
+  try {
+    const response = await invoke("msstore_search", { query: id });
+    const product = (response?.products || [])[0];
+    if (product) state.msstore.results = [...state.msstore.results, product];
+    return product || null;
+  } catch (error) {
+    void clientLog("warn", "msstore", `No se pudo abrir la ficha de ${id}: ${error}`);
+    return null;
+  }
+}
+
 async function openMsStoreModal(productId) {
   const id = String(productId || "").toUpperCase();
-  const product = msStoreProductById(id);
-  if (!product) return;
+  const product = await msStoreResolveProduct(id);
+  if (!product) {
+    showAlertModal(
+      "Ficha no disponible",
+      `La Microsoft Store no devolvió la ficha de ${id}.`,
+    );
+    return;
+  }
 
   const shape = msStoreAppShape(product);
   const accent = pickAccent(shape, 0);
   const avatarBg = avatarBackground(shape, accent);
   const letter = (product.title || id || "M")[0].toUpperCase();
   const kind = MSSTORE_KIND_LABELS[product.kind] || "";
+  const installed = msStoreInstalledRecord(product);
+  const report = installed ? msStoreUpdateOf(installed.family) : null;
 
   openModal(`
     <div class="confirm-dialog app-detail-modal ms-detail" data-ms-detail="${escapeHtml(id)}">
@@ -1346,6 +1750,12 @@ async function openMsStoreModal(productId) {
             Por ${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis${kind ? `  ·  ${escapeHtml(kind)}` : ""}
           </small>
           <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
+          ${
+            installed
+              ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Instalada · v${escapeHtml(installed.version)}</div>
+                 ${report?.update_available ? `<div>${msStoreVersionBadge(installed, { modal: true })}</div>` : ""}`
+              : ""
+          }
         </div>
       </div>
       <p class="confirm-dialog-msg" style="margin-top: 14px; font-size: 14px; line-height: 1.6;">
@@ -1357,16 +1767,55 @@ async function openMsStoreModal(productId) {
       <div class="modal-foot" style="margin-top: 24px;">
         <button type="button" class="btn ghost" id="ms-modal-close">Cerrar</button>
         <button type="button" class="btn secondary" id="ms-modal-web">Ver en la web</button>
-        <button type="button" class="btn primary" id="ms-modal-install">Instalar</button>
+        ${
+          installed
+            ? `${
+                report?.update_available && report.product_id
+                  ? `<button type="button" class="btn secondary" id="ms-modal-update">Actualizar</button>`
+                  : installed.launch_target
+                    ? `<button type="button" class="btn primary" id="ms-modal-launch">Abrir</button>`
+                    : ""
+              }
+               ${
+                 installed.can_uninstall
+                   ? `<button type="button" class="btn danger" id="ms-modal-uninstall">Desinstalar</button>`
+                   : `<button type="button" class="btn installed-label" disabled>La protege Windows</button>`
+               }`
+            : `<button type="button" class="btn primary" id="ms-modal-install">Instalar</button>`
+        }
       </div>
     </div>
   `);
 
   document.getElementById("ms-modal-close").onclick = closeModal;
-  document.getElementById("ms-modal-install").onclick = () => {
-    closeModal();
-    void installMsStoreProduct(id);
-  };
+  const installButton = document.getElementById("ms-modal-install");
+  if (installButton) {
+    installButton.onclick = () => {
+      closeModal();
+      void installMsStoreProduct(id);
+    };
+  }
+  const updateButton = document.getElementById("ms-modal-update");
+  if (updateButton) {
+    updateButton.onclick = () => {
+      closeModal();
+      updateMsStoreApp(report.product_id, installed.family);
+    };
+  }
+  const launchButton = document.getElementById("ms-modal-launch");
+  if (launchButton) {
+    launchButton.onclick = () => {
+      closeModal();
+      void launchMsStoreApp(installed.family);
+    };
+  }
+  const uninstallButton = document.getElementById("ms-modal-uninstall");
+  if (uninstallButton) {
+    uninstallButton.onclick = () => {
+      closeModal();
+      void uninstallMsStoreApp(installed.family);
+    };
+  }
   document.getElementById("ms-modal-web").onclick = () => {
     invoke("open_url", { url: `https://apps.microsoft.com/detail/${id}` }).catch((error) => {
       setStatus(`No se pudo abrir la ficha: ${error}`, "var(--red)");
@@ -1399,34 +1848,88 @@ async function openMsStoreModal(productId) {
   extra.innerHTML = `${msStoreFactsHtml(details)}${msStoreShotsHtml(details)}`;
 }
 
-async function installMsStoreProduct(productId) {
-  const id = String(productId || "").toUpperCase();
-  const product = msStoreProductById(id);
-  if (!product) return;
-  const store = state.msstore;
-  if (store.installing[id]) {
-    showAlertModal("Instalación en curso", `'${product.title}' ya se está instalando.`);
+/**
+ * Instala —o actualiza— un producto de la Microsoft Store.
+ *
+ * Actualizar es instalar la versión que publica el canal encima de la que hay:
+ * Windows sustituye el paquete registrado, así que no hay dos operaciones que
+ * distinguir, sólo dos maneras de contarlo.
+ */
+function isMsStoreNewerPackageError(error) {
+  const text = String(error || "");
+  return /0x80073D06/i.test(text) || /(?:versi[oó]n|version)\s+superior/i.test(text);
+}
+
+function showMsStoreInstallError(error, { name = "", newerPackage = false, suppressed = false } = {}) {
+  const detail = String(error || "Error desconocido").trim();
+  if (!newerPackage) {
+    showAlertModal("Error de instalación", detail);
     return;
   }
 
-  const shape = msStoreAppShape(product);
+  openModal(`
+    <div class="confirm-dialog msstore-error-dialog">
+      <h2 class="confirm-dialog-title">Actualización no aplicable</h2>
+      <p class="confirm-dialog-msg msstore-error-lead">
+        Windows ya tiene una versión más reciente de uno de los componentes que necesita
+        ${escapeHtml(name || "esta aplicación")}. No es necesario sustituirla por una anterior.
+      </p>
+      <div class="msstore-error-resolution">
+        ${
+          suppressed
+            ? "Esta versión se retiró de las actualizaciones pendientes. Volverá a aparecer automáticamente cuando Microsoft publique una versión distinta."
+            : "Windows no hizo cambios en el paquete instalado."
+        }
+      </div>
+      <details class="msstore-error-details">
+        <summary>Ver detalle técnico</summary>
+        <div class="msstore-error-raw">${escapeHtml(detail)}</div>
+      </details>
+      <div class="modal-foot">
+        <button type="button" class="btn primary" id="modal-btn-close">Aceptar</button>
+      </div>
+    </div>
+  `);
+  document.getElementById("modal-btn-close").onclick = closeModal;
+}
+
+async function installMsStoreProduct(
+  productId,
+  { product = null, isUpdate = false, family = null } = {},
+) {
+  const id = String(productId || "").toUpperCase();
+  const store = state.msstore;
+  const target = product || msStoreProductById(id);
+  if (!target) return;
+  const name = target.title || id;
+  if (store.installing[id]) {
+    showAlertModal("Instalación en curso", `'${name}' ya se está instalando.`);
+    return;
+  }
+
+  const shape = msStoreAppShape(target);
   showConfirmModal({
-    title: `Instalar ${product.title || id}`,
-    message:
-      `Se descargará desde la Microsoft Store por el canal ${msStoreRingLabel()}, ` +
-      `para ${msStoreArchPhrase()}, junto con las dependencias que necesite, ` +
-      `y se instalará en Windows. ¿Continuar?`,
+    title: `${isUpdate ? "Actualizar" : "Instalar"} ${name}`,
+    message: isUpdate
+      ? `Se descargará la versión que publica el canal ${msStoreRingLabel()} ` +
+        `para ${msStoreArchPhrase()} y Windows sustituirá la instalada. ` +
+        `Si la aplicación está abierta se cerrará para poder aplicarla. ¿Continuar?`
+      : `Se descargará desde la Microsoft Store por el canal ${msStoreRingLabel()}, ` +
+        `para ${msStoreArchPhrase()}, junto con las dependencias que necesite, ` +
+        `y se instalará en Windows. ¿Continuar?`,
     app: shape,
-    confirmText: "Instalar",
+    confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     onConfirm: async () => {
-      store.installing[id] = true;
+      store.installing[id] = isUpdate ? "update" : "install";
+      if (isUpdate && family) store.updateFamilyByProduct[id] = family;
+      else delete store.updateFamilyByProduct[id];
       state.finished.delete(msStoreTaskId(id));
       renderContent();
       state.operationAppId = msStoreTaskId(id);
       showBackgroundOperationModal(
         shape,
-        `Instalando ${product.title || id}`,
+        `${isUpdate ? "Actualizando" : "Instalando"} ${name}`,
         "Consultando la Microsoft Store…",
         true,
       );
@@ -1439,17 +1942,97 @@ async function installMsStoreProduct(productId) {
       try {
         await invoke("msstore_install", {
           productId: id,
-          name: product.title || id,
+          name,
           ring: store.ring,
           arch: store.arch,
         });
       } catch (error) {
+        const newerPackage = isUpdate && isMsStoreNewerPackageError(error);
+        const report = family ? msStoreUpdateOf(family) : null;
+        const suppressed = newerPackage && suppressMsStoreUpdate(family, report);
         delete store.installing[id];
+        delete store.updateFamilyByProduct[id];
         state.operationAppId = null;
         closeModal();
+        renderSidebar();
         renderContent();
         setStatus(`Error: ${error}`, "var(--red)");
-        showAlertModal("Error de instalación", String(error));
+        showMsStoreInstallError(error, { name, newerPackage, suppressed });
+      }
+    },
+  });
+}
+
+/// Actualiza una aplicación instalada, que es su producto reinstalado.
+function updateMsStoreApp(productId, family) {
+  const installed = msStoreInstalledByFamily(family);
+  const report = msStoreUpdateOf(family);
+  void installMsStoreProduct(productId, {
+    isUpdate: true,
+    family,
+    product: msStoreProductById(productId) || {
+      product_id: String(productId || "").toUpperCase(),
+      title: report?.title || installed?.display_name || family,
+      publisher: "Microsoft Store",
+      icon_url: report?.icon_url || null,
+    },
+  });
+}
+
+async function launchMsStoreApp(family) {
+  const app = msStoreInstalledByFamily(family);
+  if (!app) return;
+  state.msstore.busy[family] = "launching";
+  renderContent();
+  try {
+    setStatus(await invoke("msstore_launch", { family }), "var(--accent)");
+  } catch (error) {
+    setStatus(`No se pudo abrir ${app.display_name}: ${error}`, "var(--red)");
+    showAlertModal("Error al abrir la aplicación", String(error));
+  } finally {
+    delete state.msstore.busy[family];
+    renderContent();
+  }
+}
+
+async function uninstallMsStoreApp(family) {
+  const app = msStoreInstalledByFamily(family);
+  if (!app) return;
+  const shape = msStoreInstalledShape(app);
+  showConfirmModal({
+    title: `Desinstalar ${shape.name}`,
+    message:
+      `Windows quitará el paquete de este usuario. Si la aplicación está abierta ` +
+      `se cerrará antes, porque de lo contrario la retirada quedaría pendiente. ` +
+      `¿Estás seguro?`,
+    app: shape,
+    confirmText: "Desinstalar",
+    confirmVariant: "danger",
+    onConfirm: async () => {
+      state.msstore.busy[family] = "uninstalling";
+      state.operationAppId = null;
+      renderContent();
+      showBackgroundOperationModal(
+        shape,
+        `Desinstalación de ${shape.name}`,
+        "Quitando el paquete de Windows…",
+      );
+      try {
+        const outcome = await invoke("msstore_uninstall", { family });
+        closeModal();
+        delete state.msstore.updates[String(family).toLowerCase()];
+        await ensureMsStoreInstalled({ force: true });
+        setTransientStatus(`${shape.name} se desinstaló correctamente`, "var(--green)", 5000);
+        showAlertModal("Desinstalación completada", outcome);
+      } catch (error) {
+        closeModal();
+        await ensureMsStoreInstalled({ force: true });
+        setTransientStatus(`No se pudo desinstalar ${shape.name}`, "var(--red)", 5000);
+        showAlertModal("Error al desinstalar", String(error));
+      } finally {
+        delete state.msstore.busy[family];
+        renderSidebar();
+        renderContent();
       }
     },
   });
@@ -1478,15 +2061,25 @@ function renderContentNow() {
   const apps = filteredApps();
   const searching = !!state.search.trim();
   const label = NAV.find((n) => n.id === state.section)?.label || "Inicio";
+  // Las aplicaciones de la Microsoft Store cuentan en las dos secciones donde
+  // aparecen: dejarlas fuera de la cifra diría que hay menos de las que se ven.
+  const searchQuery = state.search.trim().toLocaleLowerCase("es-ES");
+  const storeApps =
+    state.section === "installed"
+      ? state.msstore.installed.filter((app) => msStoreMatchesSearch(app, searchQuery))
+      : state.section === "updates"
+        ? msStoreUpdatesList().filter((app) => msStoreMatchesSearch(app, searchQuery))
+        : [];
+  const total = apps.length + storeApps.length;
   let html = `
     <div class="page-title">
       <h1>${escapeHtml(label)}</h1>
-      <span>${apps.length} aplicaciones</span>
+      <span>${total} ${total === 1 ? "aplicación" : "aplicaciones"}</span>
     </div>`;
 
   // With pending updates on screen the empty-state card is not rendered, so the
   // rescan action needs its own place to live.
-  if (state.section === "updates" && apps.length) {
+  if (state.section === "updates" && total) {
     html += `
       <div class="updates-toolbar">
         <span class="updates-toolbar-note">${escapeHtml(lastScanLabel())}</span>
@@ -1532,7 +2125,18 @@ function renderContentNow() {
     html += sectionHtml(label, apps, { prioritizeIcons: true });
   }
 
-  if (!apps.length) {
+  // Lo que vino de la Microsoft Store vive en el mismo sitio que el resto: es
+  // software instalado en el equipo y no tiene por qué estar en otra pantalla.
+  // Va en su propio bloque porque de él se saben cosas distintas.
+  const storeSection =
+    state.section === "installed"
+      ? msStoreInstalledSectionHtml(searchQuery)
+      : state.section === "updates"
+        ? msStoreUpdatesSectionHtml(searchQuery)
+        : "";
+  html += storeSection;
+
+  if (!apps.length && !storeSection) {
     if (state.section === "updates") {
       const scanning = state.scanningUpdates;
       html += `
@@ -1630,7 +2234,14 @@ function bindShellDelegation() {
         // Los canales se piden al entrar y se dibujan cuando llegan: la
         // sección ya está en pantalla mientras tanto.
         if (nextSection === MSSTORE_SECTION) {
-          void ensureMsStoreOptions().then(renderContent);
+          void Promise.all([ensureMsStoreOptions(), ensureMsStoreInstalled()]).then(renderContent);
+        }
+        // Las dos secciones donde también aparece lo instalado desde la tienda.
+        if (nextSection === "installed" || nextSection === "updates") {
+          void ensureMsStoreInstalled().then(() => {
+            renderSidebar();
+            renderContent();
+          });
         }
       }
       return;
@@ -1685,9 +2296,32 @@ function bindShellDelegation() {
       return;
     }
 
+    if (event.target.closest("#btn-ms-scan")) {
+      void scanMsStoreUpdates();
+      return;
+    }
+
     const msInstall = event.target.closest("[data-ms-install]");
     if (msInstall) {
       void installMsStoreProduct(msInstall.dataset.msInstall);
+      return;
+    }
+
+    const msUpdate = event.target.closest("[data-ms-update]");
+    if (msUpdate) {
+      updateMsStoreApp(msUpdate.dataset.msUpdate, msUpdate.dataset.msFamily);
+      return;
+    }
+
+    const msLaunch = event.target.closest("[data-ms-launch]");
+    if (msLaunch) {
+      void launchMsStoreApp(msLaunch.dataset.msLaunch);
+      return;
+    }
+
+    const msUninstall = event.target.closest("[data-ms-uninstall]");
+    if (msUninstall) {
+      void uninstallMsStoreApp(msUninstall.dataset.msUninstall);
       return;
     }
 
@@ -2256,7 +2890,7 @@ function showBackgroundOperationModal(app, title, initialStatus, withProgress = 
  * list the instant it ends leaves them to hunt for the card they were just
  * working with. It stays put with the only two things worth doing next.
  */
-function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRestart = false }) {
+function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRestart = false, onLaunch = null }) {
   const dialog = document.querySelector(".package-operation");
   if (!dialog) return;
   // Escape becomes a way out again now that nothing is in progress.
@@ -2307,9 +2941,12 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRest
     ${canLaunch ? '<button type="button" class="btn primary" id="operation-launch">Lanzar</button>' : ""}
     <button type="button" class="btn ghost" id="operation-close">Cerrar</button>
   `;
+  // Una aplicación de la Microsoft Store no se abre como las del catálogo, así
+  // que quien la conoce dice cómo hacerlo.
   actions.querySelector("#operation-launch")?.addEventListener("click", () => {
     closeModal();
-    if (app) launchApp(app.id);
+    if (onLaunch) onLaunch();
+    else if (app) launchApp(app.id);
   });
   actions.querySelector("#operation-close")?.addEventListener("click", closeModal);
   actions.querySelector("button")?.focus();
@@ -2819,6 +3456,10 @@ async function finishStartupInBackground() {
   showSyncModal("Iniciando WinSlimCenter", "Analizando el equipo y preparando la tienda...");
   updateSyncModal(20, "Escaneando aplicaciones instaladas y registro...");
   try {
+    // Preguntar a Windows qué paquetes de la tienda tiene puestos es cuestión
+    // de milisegundos y no sale a la red, así que entra en el arranque: sin
+    // ello «Mis aplicaciones» empezaría media.
+    await ensureMsStoreInstalled({ force: true });
     const detectedChanges = replaceStatuses((await invoke("refresh_statuses")) || state.statuses);
     reconcileStatusChanges(detectedChanges);
 
@@ -2855,6 +3496,10 @@ async function finishStartupInBackground() {
     // Only once the start-up screen has let go of the modal, so the two never
     // fight over it.
     void checkStoreUpdate();
+    // Preguntar al servicio de entrega por cada aplicación de la tienda cuesta
+    // dos viajes por aplicación, así que se hace con la tienda ya en pantalla y
+    // sin retenerla: cuando conteste, aparecen sus actualizaciones.
+    void scanMsStoreUpdates({ quiet: true });
   }
 }
 
@@ -3228,10 +3873,42 @@ window.addEventListener("DOMContentLoaded", async () => {
   // Un producto de la Microsoft Store no está en el catálogo: no hay tarjeta
   // que actualizar ni estado que reconciliar, sólo el diálogo que el usuario
   // tiene delante y el aviso de que Windows ya lo tiene.
-  backendEventHandlers.set("msstore-install-finished", (ev) => {
+  backendEventHandlers.set("msstore-install-finished", async (ev) => {
     const { ok, product_id: productId, name, cancelled = false, error } = ev.payload || {};
     const id = String(productId || "").toUpperCase();
+    // Lo que se pidió —instalar o actualizar— sólo lo sabe quien lo pidió, y es
+    // lo que decide cómo se cuenta al terminar.
+    const wasUpdate = state.msstore.installing[id] === "update";
+    const attemptedFamily =
+      state.msstore.updateFamilyByProduct[id] ||
+      Object.entries(state.msstore.updates).find(
+        ([, report]) => String(report?.product_id || "").toUpperCase() === id,
+      )?.[0] ||
+      null;
     delete state.msstore.installing[id];
+    delete state.msstore.updateFamilyByProduct[id];
+    let launchFamily = null;
+    if (ok) {
+      // Windows acaba de registrar o sustituir el paquete: lo que se sabía de
+      // su versión dejó de ser cierto en ese mismo instante. Las familias
+      // afectadas se conocen por el producto —si vino de una búsqueda— o por lo
+      // que ya se había comprobado de él, que es el caso de una actualización
+      // lanzada desde «Mis aplicaciones».
+      const families = new Set(
+        (msStoreProductById(id)?.package_families || []).map((family) => family.toLowerCase()),
+      );
+      for (const [family, report] of Object.entries(state.msstore.updates)) {
+        if (String(report?.product_id || "").toUpperCase() === id) families.add(family);
+      }
+      for (const family of families) delete state.msstore.updates[family];
+      await ensureMsStoreInstalled({ force: true });
+      const installedNow = [...families].filter((family) => msStoreInstalledByFamily(family));
+      if (installedNow.length) {
+        void scanMsStoreUpdates({ families: installedNow, quiet: true });
+      }
+      launchFamily =
+        installedNow.find((family) => msStoreInstalledByFamily(family)?.launch_target) || null;
+    }
     const shape = msStoreAppShape(msStoreProductById(id)) || {
       id: msStoreTaskId(id),
       name: name || id,
@@ -3240,20 +3917,43 @@ window.addEventListener("DOMContentLoaded", async () => {
     if (ownsModal) state.operationAppId = null;
 
     if (ok) {
-      setTransientStatus(`Instalado: ${shape.name}`, "var(--green)", 5000);
+      setTransientStatus(
+        `${wasUpdate ? "Actualizado" : "Instalado"}: ${shape.name}`,
+        "var(--green)",
+        5000,
+      );
       if (ownsModal) {
-        showOperationCompleted(shape, { canLaunch: false, isUpdate: false, changed: true });
+        showOperationCompleted(shape, {
+          canLaunch: !!launchFamily,
+          isUpdate: wasUpdate,
+          changed: true,
+          onLaunch: launchFamily ? () => void launchMsStoreApp(launchFamily) : null,
+        });
       }
     } else {
       if (ownsModal) closeModal();
       if (cancelled) {
         setTransientStatus(`Instalación cancelada: ${shape.name}`, "var(--text-light)", 5000);
       } else {
-        setTransientStatus(`Error al instalar ${shape.name}`, "var(--red)", 5000);
-        showAlertModal("Error de instalación", String(error || "Error desconocido"));
+        const newerPackage = wasUpdate && isMsStoreNewerPackageError(error);
+        const report = attemptedFamily ? msStoreUpdateOf(attemptedFamily) : null;
+        const suppressed = newerPackage && suppressMsStoreUpdate(attemptedFamily, report);
+        setTransientStatus(
+          suppressed
+            ? `Actualización retirada de pendientes: ${shape.name}`
+            : `Error al instalar ${shape.name}`,
+          suppressed ? "var(--accent)" : "var(--red)",
+          5000,
+        );
+        showMsStoreInstallError(error, {
+          name: shape.name,
+          newerPackage,
+          suppressed,
+        });
       }
     }
-    if (state.section === MSSTORE_SECTION) renderContent();
+    renderSidebar();
+    renderContent();
   });
 
   backendEventHandlers.set("install-finished", async (ev) => {

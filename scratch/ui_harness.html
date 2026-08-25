@@ -7,16 +7,46 @@
     <base href="/src/" />
     <link rel="stylesheet" href="/src/styles.css" />
     <script>
+      // Un navegador con la pestaña oculta no dispara requestAnimationFrame, y
+      // la tienda dibuja dentro de él: sin ventana visible no llega a pintarse
+      // nunca. Con ?headless se sustituye por una microtarea —asíncrona, como
+      // la de verdad, para que el guardia de re-render siga funcionando— y así
+      // la interfaz se puede inspeccionar desde una comprobación automática.
+      if (new URLSearchParams(location.search).has("headless")) {
+        window.requestAnimationFrame = (callback) => {
+          queueMicrotask(() => callback(performance.now()));
+          return 1;
+        };
+      }
       const listeners = {};
+      const msStoreTestParams = new URLSearchParams(location.search);
+      const simulateNewerPackageError = msStoreTestParams.has("ms-newer-error");
       let mockTasks = [];
       const installTimers = new Map();
       // Productos de mentira para la sección de la Microsoft Store: iconos
       // locales, para que el banco de pruebas funcione sin red.
       const msStoreProducts = [
-        { product_id: "9WZDNCRFJ3PZ", kind: "uwp", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/notepad_plus_plus.svg", price: "Free", family: "Apps" },
-        { product_id: "9NBLGGH4NNS1", kind: "uwp", title: "Contoso Player", description: "Reproductor de vídeo de ejemplo con listas de reproducción.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/vlc.svg", price: "Free", family: "Apps" },
-        { product_id: "XPDC2RH70K22MN", kind: "win32", title: "Contoso Studio", description: "Editor clásico de ejemplo que se instala con su propio asistente.", publisher: "Contoso Labs", icon_url: "/src/assets/catalog/obsidian.svg", price: "Free", family: "Apps" },
+        { product_id: "9WZDNCRFJ3PZ", kind: "uwp", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/notepad_plus_plus.svg", price: "Free", family: "Apps", package_families: ["Contoso.Notes_abc"] },
+        { product_id: "9NBLGGH4NNS1", kind: "uwp", title: "Contoso Player", description: "Reproductor de vídeo de ejemplo con listas de reproducción.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/vlc.svg", price: "Free", family: "Apps", package_families: ["Contoso.Player_abc"] },
+        { product_id: "XPDC2RH70K22MN", kind: "win32", title: "Contoso Studio", description: "Editor clásico de ejemplo que se instala con su propio asistente.", publisher: "Contoso Labs", icon_url: "/src/assets/catalog/obsidian.svg", price: "Free", family: "Apps", package_families: [] },
       ];
+      // Lo que este equipo de mentira tiene instalado de la tienda.
+      let msStoreInstalled = [
+        { family: "Contoso.Notes_abc", full_name: "Contoso.Notes_3.10.0_x64__abc", name: "Contoso.Notes", display_name: "Contoso Notes", version: "3.10.0", install_location: "C:\\Program Files\\WindowsApps\\Contoso.Notes_3.10.0_x64__abc", can_uninstall: true, launch_target: "shell:AppsFolder\\Contoso.Notes_abc!App" },
+        { family: "Contoso.Legacy_xyz", full_name: "Contoso.Legacy_1.0.0_x64__xyz", name: "Contoso.Legacy", display_name: "Contoso Legacy", version: "1.0.0", install_location: "C:\\Program Files\\WindowsApps\\Contoso.Legacy_1.0.0_x64__xyz", can_uninstall: false, launch_target: null },
+      ];
+      const msStorePublished = {
+        "Contoso.Notes_abc": msStoreTestParams.get("ms-published") || "3.14.2",
+        "Contoso.Legacy_xyz": "1.0.0",
+      };
+      // El backend marca los resultados contra lo que Windows tiene puesto.
+      const annotateInstalled = (products) => products.map((product) => {
+        const family = (product.package_families || []).find((f) => msStoreInstalled.some((a) => a.family === f));
+        const app = family && msStoreInstalled.find((a) => a.family === family);
+        return app
+          ? { ...product, installed: true, installed_family: app.family, installed_version: app.version, can_uninstall: app.can_uninstall }
+          : { ...product, installed: false, installed_family: null, installed_version: null, can_uninstall: false };
+      });
       const msStoreDetails = {
         "9WZDNCRFJ3PZ": {
           productId: "9WZDNCRFJ3PZ", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.",
@@ -78,22 +108,59 @@
                   { id: "WIS", label: "Insider Slow" },
                   { id: "WIF", label: "Insider Fast" },
                 ],
-                default_ring: "RP",
+                default_ring: "Retail",
                 host_arch: "x64",
               };
             }
             if (command === "msstore_search") {
               const query = String(args.query || "").trim();
               if (/^(9|xp)/i.test(query)) {
-                return { direct: true, products: [msStoreProducts[0]] };
+                const match = msStoreProducts.find((p) => p.product_id.toLowerCase() === query.toLowerCase()) || msStoreProducts[0];
+                return { direct: true, products: annotateInstalled([match]) };
               }
               await new Promise((resolve) => setTimeout(resolve, 400));
               return {
                 direct: false,
-                products: msStoreProducts.filter((product) =>
+                products: annotateInstalled(msStoreProducts.filter((product) =>
                   `${product.title} ${product.publisher}`.toLowerCase().includes(query.toLowerCase())
-                ),
+                )),
               };
+            }
+            if (command === "msstore_installed") {
+              await new Promise((resolve) => setTimeout(resolve, 120));
+              return msStoreInstalled.map((app) => ({ ...app }));
+            }
+            if (command === "msstore_check_updates") {
+              const families = args.families || msStoreInstalled.map((a) => a.family);
+              await new Promise((resolve) => setTimeout(resolve, 700));
+              return families.map((family) => {
+                const app = msStoreInstalled.find((a) => a.family === family);
+                const latest = msStorePublished[family] || null;
+                const product = msStoreProducts.find((p) => (p.package_families || []).includes(family));
+                return {
+                  family,
+                  product_id: product?.product_id || null,
+                  title: product?.title || null,
+                  icon_url: product?.icon_url || null,
+                  installed_version: app?.version || "",
+                  latest_version: latest,
+                  update_available: !!(app && latest && latest !== app.version),
+                  error: product ? null : "La Microsoft Store no reconoce el paquete.",
+                };
+              });
+            }
+            if (command === "msstore_uninstall") {
+              await new Promise((resolve) => setTimeout(resolve, 900));
+              const app = msStoreInstalled.find((a) => a.family === args.family);
+              if (!app) throw new Error("Windows ya no tiene registrada esa aplicación.");
+              if (!app.can_uninstall) throw new Error(`Windows no permite quitar '${app.display_name}'.`);
+              msStoreInstalled = msStoreInstalled.filter((a) => a.family !== args.family);
+              return `${app.display_name} se desinstaló correctamente.`;
+            }
+            if (command === "msstore_launch") {
+              const app = msStoreInstalled.find((a) => a.family === args.family);
+              if (!app?.launch_target) throw new Error("No hay nada que abrir.");
+              return "Aplicación abierta mediante Windows";
             }
             if (command === "msstore_details") {
               await new Promise((resolve) => setTimeout(resolve, 300));
@@ -116,6 +183,29 @@
                 setTimeout(() => {
                   mockTasks = [];
                   emitTasks();
+                  if (simulateNewerPackageError) {
+                    listeners["msstore-install-finished"]?.({
+                      payload: {
+                        ok: false,
+                        product_id: args.productId,
+                        name,
+                        error:
+                          "Windows rechazó el paquete: Error de implementación con HRESULT: 0x80073D06. " +
+                          "No se pudo instalar el paquete porque ya hay instalada una versión superior.\n\n" +
+                          "Windows no puede instalar Microsoft.UI.Xaml.2.8 porque ya está instalada " +
+                          "la versión 8.2511.26001.0, que es superior.",
+                      },
+                    });
+                    return;
+                  }
+                  // Windows registra el paquete: el equipo de mentira lo anota.
+                  const product = msStoreProducts.find((p) => p.product_id.toLowerCase() === String(args.productId).toLowerCase());
+                  for (const family of product?.package_families || []) {
+                    const version = msStorePublished[family] || "1.0.0";
+                    const existing = msStoreInstalled.find((a) => a.family === family);
+                    if (existing) existing.version = version;
+                    else msStoreInstalled.push({ family, full_name: `${family}_${version}`, name: family.split("_")[0], display_name: product.title, version, install_location: "", can_uninstall: true, launch_target: `shell:AppsFolder\\${family}!App` });
+                  }
                   listeners["msstore-install-finished"]?.({ payload: { ok: true, product_id: args.productId, name, packages: 2 } });
                 }, 600);
               }, 400);

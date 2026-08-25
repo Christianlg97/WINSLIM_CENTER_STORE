@@ -25,6 +25,10 @@ pub fn http_client() -> Result<&'static reqwest::Client, String> {
         .get_or_init(|| {
             reqwest::Client::builder()
                 .user_agent(USER_AGENT)
+                // Los paquetes de la Microsoft Store se descargan del dominio de
+                // Windows Update, firmado por la PKI propia de Microsoft y no
+                // por una autoridad pública. Ver `msstore::MICROSOFT_UPDATE_ROOT`.
+                .add_root_certificate(crate::msstore::microsoft_update_root()?)
                 .connect_timeout(std::time::Duration::from_secs(10))
                 .pool_idle_timeout(std::time::Duration::from_secs(90))
                 .pool_max_idle_per_host(8)

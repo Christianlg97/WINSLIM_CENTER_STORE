@@ -25,7 +25,7 @@
 
 use crate::download::{self, DownloadFlags};
 use parking_lot::Mutex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -70,17 +70,16 @@ pub const RINGS: [(&str, &str); 4] = [
     ("WIF", "Insider Fast"),
 ];
 
-/// El canal por defecto. Release Preview publica lo mismo que la tienda salvo
-/// cuando hay una corrección en camino, que es justo el caso en el que
-/// interesa tenerla.
-pub const DEFAULT_RING: &str = "RP";
+/// El canal estable que usa la Microsoft Store pública.
+pub const DEFAULT_RING: &str = "Retail";
 
 pub fn normalize_ring(ring: &str) -> &'static str {
     match ring.trim().to_ascii_uppercase().as_str() {
         "RETAIL" => "Retail",
+        "RP" | "RELEASEPREVIEW" => "RP",
         "WIS" | "INSIDERSLOW" => "WIS",
         "WIF" | "INSIDERFAST" => "WIF",
-        _ => "RP",
+        _ => DEFAULT_RING,
     }
 }
 
@@ -90,7 +89,7 @@ pub fn ring_label(ring: &str) -> &'static str {
         .iter()
         .find(|(id, _)| *id == value)
         .map(|(_, label)| *label)
-        .unwrap_or("Release Preview")
+        .unwrap_or("Retail (Base)")
 }
 
 /// La arquitectura de la máquina, tal y como la nombran los paquetes.
@@ -596,17 +595,80 @@ fn urlencoding(value: &str) -> String {
 // Conversación con los servicios
 // ---------------------------------------------------------------------------
 
+/// La raíz con la que Microsoft firma su servicio de entrega.
+///
+/// El resto de la tienda habla con servidores cuyo certificado cuelga de una
+/// autoridad pública —DigiCert—, y con esos el juego de raíces con el que se
+/// compila el cliente basta. `fe3.delivery.mp.microsoft.com` no: presenta un
+/// certificado de la PKI propia de Microsoft, la misma con la que se firma
+/// Windows Update, cuya raíz Windows trae en su almacén pero que nunca ha
+/// estado en el juego de raíces públicas. Sin ella la conversación no llega
+/// ni a empezar —`invalid peer certificate: UnknownIssuer`— y ninguna
+/// aplicación de la tienda se puede instalar.
+///
+/// Se añade a las públicas, no las sustituye. Es una raíz autofirmada de
+/// Microsoft Corporation, válida hasta 2036, con huella SHA-1
+/// `8F43288AD272F3103B6FB1428485EA3014C0BCFE`.
+///
+/// La comparte el cliente general de descargas: los enlaces que devuelve el
+/// servicio de entrega apuntan hoy a un CDN con certificado público, pero son
+/// del mismo dominio y nada garantiza que sigan estándolo.
+pub const MICROSOFT_UPDATE_ROOT: &str = include_str!("../certs/microsoft_update_root_2011.pem");
+
+/// La raíz de arriba, lista para dársela a un cliente HTTP.
+pub fn microsoft_update_root() -> Result<reqwest::Certificate, String> {
+    reqwest::Certificate::from_pem(MICROSOFT_UPDATE_ROOT.as_bytes())
+        .map_err(|error| format!("El certificado raíz de Windows Update no se pudo leer: {error}"))
+}
+
+static HTTP_CLIENT: std::sync::OnceLock<Result<reqwest::Client, String>> =
+    std::sync::OnceLock::new();
+
+/// El cliente con el que se habla con Microsoft.
+///
+/// Propio y no el general de la tienda por la raíz de arriba, y de paso porque
+/// el agente con el que se presenta es otro: los servicios de la tienda
+/// contestan de distinta manera —o no contestan— a un agente que no reconocen.
+fn client() -> Result<&'static reqwest::Client, String> {
+    HTTP_CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(MICROSOFT_USER_AGENT)
+                .add_root_certificate(microsoft_update_root()?)
+                .connect_timeout(Duration::from_secs(10))
+                .pool_idle_timeout(Duration::from_secs(90))
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// El error con todo lo que lo causó.
+///
+/// `reqwest` resume cualquier fallo de conexión como «error sending request for
+/// url», que en un aviso al usuario no dice nada y en un informe de fallo,
+/// menos. La causa real —el certificado, el DNS, el cortafuegos— está una capa
+/// más abajo y es la única parte accionable.
+fn describe(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        let cause_text = cause.to_string();
+        if !text.contains(&cause_text) {
+            text.push_str(&format!(": {cause_text}"));
+        }
+        source = cause.source();
+    }
+    text
+}
+
 async fn get_json(url: &str, what: &str) -> Result<Value, String> {
-    let client = download::http_client()?;
-    let request = client
-        .get(url)
-        .header("accept", "application/json")
-        .header("user-agent", MICROSOFT_USER_AGENT)
-        .send();
+    let request = client()?.get(url).header("accept", "application/json").send();
     let response = tokio::time::timeout(API_TIMEOUT, request)
         .await
         .map_err(|_| format!("La Microsoft Store no contestó a tiempo al {what}."))?
-        .map_err(|error| format!("No se pudo {what}: {error}"))?;
+        .map_err(|error| format!("No se pudo {what}: {}", describe(&error)))?;
 
     let status = response.status();
     let body = response
@@ -623,10 +685,8 @@ async fn get_json(url: &str, what: &str) -> Result<Value, String> {
 }
 
 async fn post_soap(url: &str, body: String, what: &str) -> Result<String, String> {
-    let client = download::http_client()?;
-    let request = client
+    let request = client()?
         .post(url)
-        .header("user-agent", MICROSOFT_USER_AGENT)
         .header("accept", "*/*")
         .header("content-type", "application/soap+xml")
         .body(body)
@@ -634,7 +694,7 @@ async fn post_soap(url: &str, body: String, what: &str) -> Result<String, String
     let response = tokio::time::timeout(API_TIMEOUT, request)
         .await
         .map_err(|_| format!("El servicio de entrega no contestó a tiempo al {what}."))?
-        .map_err(|error| format!("No se pudo {what}: {error}"))?;
+        .map_err(|error| format!("No se pudo {what}: {}", describe(&error)))?;
 
     let status = response.status();
     let text = response
@@ -666,6 +726,16 @@ pub struct StoreProduct {
     pub icon_url: Option<String>,
     pub price: String,
     pub family: Option<String>,
+    /// Los paquetes que este producto instala. Vienen en la propia respuesta de
+    /// la búsqueda, y son lo que permite saber si la aplicación ya está puesta
+    /// sin preguntarle nada más a nadie.
+    pub package_families: Vec<String>,
+    pub installed: bool,
+    pub installed_version: Option<String>,
+    pub can_uninstall: bool,
+    /// La familia concreta que el equipo tiene instalada, de entre las que el
+    /// producto publica.
+    pub installed_family: Option<String>,
 }
 
 fn text_field(value: &Value, key: &str) -> Option<String> {
@@ -694,9 +764,37 @@ fn icon_of(value: &Value) -> Option<String> {
     })
 }
 
+/// Las familias de paquetes que publica un producto, como llegan tanto en los
+/// resultados de búsqueda como en la ficha.
+fn package_families_of(value: &Value) -> Vec<String> {
+    ["packageFamilyNames", "PackageFamilyNames"]
+        .iter()
+        .filter_map(|key| value.get(*key))
+        .filter_map(Value::as_array)
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::trim)
+        .filter(|family| !family.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 fn product_from(value: &Value) -> Option<StoreProduct> {
-    let product_id = text_field(value, "productId")?.to_uppercase();
+    let product_id = text_field(value, "productId")
+        .or_else(|| text_field(value, "ProductId"))?
+        .to_uppercase();
     let kind = ProductKind::from_product_id(&product_id)?;
+    let package_families = package_families_of(value);
+    // Lo que se aprende aquí sirve después para reconocer un paquete instalado
+    // sin volver a preguntar quién lo publica.
+    let brief = ProductBrief {
+        product_id: product_id.clone(),
+        title: text_field(value, "title").or_else(|| text_field(value, "Title")),
+        icon_url: icon_of(value),
+    };
+    for family in &package_families {
+        remember_family(family, brief.clone());
+    }
     Some(StoreProduct {
         product_id,
         kind: kind.as_str(),
@@ -706,7 +804,43 @@ fn product_from(value: &Value) -> Option<StoreProduct> {
         icon_url: icon_of(value),
         price: text_field(value, "displayPrice").unwrap_or_else(|| "Free".into()),
         family: text_field(value, "productFamilyName"),
+        package_families,
+        installed: false,
+        installed_version: None,
+        can_uninstall: false,
+        installed_family: None,
     })
+}
+
+/// Marca los productos que este equipo ya tiene puestos.
+///
+/// Es una comprobación local contra lo que Windows tiene registrado: la
+/// búsqueda ya trae las familias de cada resultado, así que saber cuáles están
+/// instaladas no cuesta ni un viaje más a la red.
+pub fn annotate_installed(products: &mut [StoreProduct]) {
+    if products.is_empty() {
+        return;
+    }
+    annotate_installed_with(products, &installed_apps());
+}
+
+fn annotate_installed_with(products: &mut [StoreProduct], installed: &[InstalledApp]) {
+    if installed.is_empty() {
+        return;
+    }
+    for product in products.iter_mut() {
+        let Some(app) = product.package_families.iter().find_map(|family| {
+            installed
+                .iter()
+                .find(|app| app.family.eq_ignore_ascii_case(family))
+        }) else {
+            continue;
+        };
+        product.installed = true;
+        product.installed_version = Some(app.version.clone());
+        product.can_uninstall = app.can_uninstall;
+        product.installed_family = Some(app.family.clone());
+    }
 }
 
 /// `true` cuando el producto puede instalarse sin pasar por caja.
@@ -742,6 +876,7 @@ pub async fn search(query: &str) -> Result<Vec<StoreProduct>, String> {
             products.push(product);
         }
     }
+    annotate_installed(&mut products);
     Ok(products)
 }
 
@@ -788,16 +923,19 @@ pub async fn details(product_id: &str) -> Result<Value, String> {
 pub async fn product_summary(product_id: &str) -> Result<StoreProduct, String> {
     let product_id = normalize_product_id(product_id)?;
     let details = details(&product_id).await?;
-    product_from(&details)
-        .or_else(|| {
-            // La ficha no siempre repite el identificador con el que se pidió.
-            let mut with_id = details.clone();
-            if let Some(object) = with_id.as_object_mut() {
-                object.insert("productId".into(), Value::String(product_id.clone()));
-            }
-            product_from(&with_id)
-        })
-        .ok_or_else(|| format!("La Microsoft Store no tiene una ficha de {product_id}."))
+    let product = product_from(&details).or_else(|| {
+        // La ficha no siempre repite el identificador con el que se pidió.
+        let mut with_id = details.clone();
+        if let Some(object) = with_id.as_object_mut() {
+            object.insert("productId".into(), Value::String(product_id.clone()));
+        }
+        product_from(&with_id)
+    });
+    let mut product = [product
+        .ok_or_else(|| format!("La Microsoft Store no tiene una ficha de {product_id}."))?];
+    annotate_installed(&mut product);
+    let [product] = product;
+    Ok(product)
 }
 
 // ---------------------------------------------------------------------------
@@ -817,8 +955,15 @@ pub struct StorePackage {
     pub file_name: String,
     pub file_type: String,
     pub size: u64,
+    /// Con la que se comprueba lo descargado: SHA-256 cuando Microsoft lo
+    /// publica, y el SHA-1 histórico cuando es lo único que hay.
     pub digest: Option<String>,
     pub digest_algorithm: Option<String>,
+    /// La del atributo `Digest`, siempre SHA-1, que es con la que el servicio de
+    /// entrega nombra este archivo entre los que devuelve. No sirve para
+    /// comprobar nada —para eso está `digest`—, sirve para saber cuál de los
+    /// enlaces es el nuestro.
+    pub file_digest: Option<String>,
     /// La identidad con la que se canjea la dirección de descarga (UWP).
     pub update_id: Option<String>,
     pub revision_number: Option<String>,
@@ -1123,6 +1268,7 @@ pub fn parse_package_list(xml_text: &str, product_id: &str) -> Result<Vec<StoreP
                                 .unwrap_or(0),
                             digest,
                             digest_algorithm,
+                            file_digest: file.attr("Digest").map(str::to_string),
                             update_id: None,
                             revision_number: None,
                             silent_args: None,
@@ -1293,6 +1439,9 @@ fn win32_packages_from_details(product_id: &str, details: &Value) -> Vec<StorePa
                 size: 0,
                 digest_algorithm: hash.as_ref().map(|_| "SHA256".to_string()),
                 digest: hash,
+                // Un instalador clásico trae su enlace directo: no hay nada
+                // que correlacionar.
+                file_digest: None,
                 update_id: None,
                 revision_number: None,
                 silent_args: text_field(entry, "args").map(|args| args.replace('"', "")),
@@ -1358,6 +1507,9 @@ async fn win32_packages_from_manifest(product_id: &str) -> Result<Vec<StorePacka
                 size: 0,
                 digest_algorithm: hash.as_ref().map(|_| "SHA256".to_string()),
                 digest: hash,
+                // Un instalador clásico trae su enlace directo: no hay nada
+                // que correlacionar.
+                file_digest: None,
                 update_id: None,
                 revision_number: None,
                 silent_args: installer
@@ -1449,29 +1601,43 @@ pub async fn download_url(package: &StorePackage, ring: &str) -> Result<String, 
         "obtener el enlace de descarga del paquete",
     )
     .await?;
-    parse_download_url(&response, package.digest.as_deref())
+    // `FileDigest` no es la huella preferida para comprobar el contenido. Es
+    // el SHA-1 histórico con el que el servicio identifica cuál de los enlaces
+    // devueltos pertenece a este paquete. Usar aquí el SHA-256 hace que no case
+    // ninguno y puede acabar descargando otro archivo de la misma respuesta.
+    parse_download_url(&response, package.file_digest.as_deref())
 }
 
 /// La dirección de descarga dentro de la respuesta.
 ///
 /// Cuando la respuesta trae varias, la que corresponde es la del archivo cuya
 /// huella coincide con la del paquete que se está descargando.
-pub fn parse_download_url(xml_text: &str, digest: Option<&str>) -> Result<String, String> {
+pub fn parse_download_url(xml_text: &str, file_digest: Option<&str>) -> Result<String, String> {
     let document = xml::parse(xml_text)?;
 
-    if let Some(digest) = digest.map(str::trim).filter(|value| !value.is_empty()) {
+    if let Some(file_digest) = file_digest
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
         let mut locations = Vec::new();
         document.find_all("FileLocation", &mut locations);
         for location in locations {
             if location
                 .text_of("FileDigest")
-                .is_some_and(|value| value == digest)
+                .is_some_and(|value| value == file_digest)
             {
                 if let Some(url) = location.text_of("Url") {
                     return Ok(url);
                 }
             }
         }
+        // Con una identidad concreta no es seguro escoger el primer enlace:
+        // una sola respuesta puede contener archivos distintos. Fallar aquí
+        // evita descargar cientos de megas para descubrir al final que la
+        // huella de ese otro archivo, correctamente, no coincide.
+        return Err(format!(
+            "El servicio de entrega no devolvió el enlace del archivo con huella {file_digest}."
+        ));
     }
 
     document
@@ -1579,7 +1745,9 @@ fn install_appx(path: &Path) -> Result<(), String> {
     let escaped = path.to_string_lossy().replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference='Stop'; try {{ Add-AppxPackage -Path '{escaped}' \
--ForceApplicationShutdown }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+-ForceApplicationShutdown }} catch {{ $bytes=[Text.Encoding]::UTF8.GetBytes($_.Exception.Message); \
+$encoded=[Convert]::ToBase64String($bytes); \
+[Console]::Error.WriteLine('WINSLIM_UTF8:'+$encoded); exit 1 }}"
     );
     let output = crate::process::hidden_output(
         "powershell.exe",
@@ -1598,7 +1766,7 @@ fn install_appx(path: &Path) -> Result<(), String> {
     if output.success() {
         return Ok(());
     }
-    let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let detail = decode_powershell_error(&output.stderr);
     Err(if detail.is_empty() {
         format!(
             "Windows rechazó el paquete {} sin dar explicaciones.",
@@ -1607,6 +1775,28 @@ fn install_appx(path: &Path) -> Result<(), String> {
     } else {
         format!("Windows rechazó el paquete: {detail}")
     })
+}
+
+/// PowerShell 5 escribe su consola redirigida con la página de códigos del
+/// sistema, no necesariamente UTF-8. Para no convertir `versión` en `versi�n`,
+/// el pequeño script de arriba envía el mensaje UTF-8 en Base64 y aquí se
+/// recupera. La salida sin prefijo se conserva como alternativa para errores
+/// producidos antes de entrar en el bloque `catch`.
+fn decode_powershell_error(stderr: &[u8]) -> String {
+    use base64::Engine;
+
+    let raw = String::from_utf8_lossy(stderr).trim().to_string();
+    let Some(encoded) = raw
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("WINSLIM_UTF8:"))
+    else {
+        return raw;
+    };
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded.trim())
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or(raw)
 }
 
 fn install_win32(package: &StorePackage, path: &Path) -> Result<(), String> {
@@ -1659,9 +1849,595 @@ fn install_win32(package: &StorePackage, path: &Path) -> Result<(), String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Lo que el equipo ya tiene puesto
+// ---------------------------------------------------------------------------
+
+/// Una aplicación de la tienda que Windows tiene registrada para este usuario.
+///
+/// Se pregunta por `SignatureKind` porque es lo único que distingue de verdad
+/// lo que salió de la tienda: por el nombre del paquete no se sabe, y media
+/// docena de componentes del propio Windows viven en el mismo sitio y con la
+/// misma forma. Los frameworks y los paquetes de recursos se quedan fuera: son
+/// piezas de otras aplicaciones, no aplicaciones.
+#[derive(Debug, Clone, Serialize)]
+pub struct InstalledApp {
+    /// `Microsoft.WindowsCalculator_8wekyb3d8bbwe`
+    pub family: String,
+    /// `Microsoft.WindowsCalculator_11.2210.0.0_x64__8wekyb3d8bbwe`
+    pub full_name: String,
+    /// `Microsoft.WindowsCalculator`
+    pub name: String,
+    /// El nombre con el que la llama el menú Inicio, cuando lo publica.
+    pub display_name: String,
+    pub version: String,
+    pub install_location: String,
+    /// Windows se reserva algunos paquetes suyos y no deja quitarlos.
+    pub can_uninstall: bool,
+    /// `shell:AppsFolder\Familia!Aplicación`, cuando hay algo que abrir.
+    pub launch_target: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AppxPackageRow {
+    #[serde(rename = "Name", default)]
+    name: String,
+    #[serde(rename = "PackageFamilyName", default)]
+    family: String,
+    #[serde(rename = "PackageFullName", default)]
+    full_name: String,
+    #[serde(rename = "Version", default)]
+    version: String,
+    #[serde(rename = "InstallLocation", default)]
+    install_location: String,
+    #[serde(rename = "NonRemovable", default)]
+    non_removable: bool,
+}
+
+const INSTALLED_TTL: Duration = Duration::from_secs(30);
+static INSTALLED_CACHE: Mutex<Option<(Instant, Vec<InstalledApp>)>> = Mutex::new(None);
+
+/// Olvida lo que se sabía del equipo, porque acaba de cambiar.
+pub fn forget_installed() {
+    *INSTALLED_CACHE.lock() = None;
+}
+
+/// Las aplicaciones de la tienda instaladas en este equipo.
+///
+/// No sale a la red: es una consulta a Windows y un cruce con el menú Inicio,
+/// las dos cosas ya cacheadas, así que se puede pedir cada vez que se dibuja
+/// una lista.
+pub fn installed_apps() -> Vec<InstalledApp> {
+    if let Some((stored, apps)) = INSTALLED_CACHE.lock().as_ref() {
+        if stored.elapsed() < INSTALLED_TTL {
+            return apps.clone();
+        }
+    }
+    let apps = scan_installed_apps();
+    *INSTALLED_CACHE.lock() = Some((Instant::now(), apps.clone()));
+    apps
+}
+
+/// El nombre visible de cada familia, según el menú Inicio, y con qué abrirla.
+fn start_menu_names() -> HashMap<String, (String, String)> {
+    let mut names = HashMap::new();
+    for app in crate::detect::scan_start_apps() {
+        let Some(family) = crate::msix::family_from_identifier(&app.app_id) else {
+            continue;
+        };
+        names
+            .entry(family)
+            .or_insert_with(|| (app.name.clone(), format!("shell:AppsFolder\\{}", app.app_id)));
+    }
+    names
+}
+
+#[cfg(windows)]
+fn scan_installed_apps() -> Vec<InstalledApp> {
+    const SCAN_TIMEOUT: Duration = Duration::from_secs(45);
+    // `Version` es un objeto de .NET: sin convertirlo a texto, `ConvertTo-Json`
+    // devuelve sus cuatro números por separado y aquí llegaría vacío.
+    let script = "Get-AppxPackage | Where-Object { $_.SignatureKind -eq 'Store' -and \
+-not $_.IsFramework -and -not $_.IsResourcePackage } | Select-Object Name,PackageFamilyName,\
+PackageFullName,@{n='Version';e={$_.Version.ToString()}},InstallLocation,NonRemovable | \
+ConvertTo-Json -Compress";
+    let output = match crate::process::hidden_output_timeout(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script,
+        ],
+        SCAN_TIMEOUT,
+    ) {
+        Ok(output) if output.success() => output,
+        Ok(output) => {
+            crate::logger::warn(
+                "msstore",
+                format!(
+                    "Get-AppxPackage terminó con código {:?}: {}",
+                    output.code,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ),
+            );
+            return Vec::new();
+        }
+        Err(error) => {
+            crate::logger::warn(
+                "msstore",
+                format!("No se pudo consultar los paquetes instalados: {error}"),
+            );
+            return Vec::new();
+        }
+    };
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let Ok(value) = serde_json::from_str::<Value>(text.trim()) else {
+        return Vec::new();
+    };
+    // Con un solo paquete instalado PowerShell devuelve el objeto suelto.
+    let rows = match value {
+        Value::Array(items) => items,
+        other => vec![other],
+    };
+    let names = start_menu_names();
+
+    let apps: Vec<InstalledApp> = rows
+        .into_iter()
+        .filter_map(|row| serde_json::from_value::<AppxPackageRow>(row).ok())
+        .filter(|row| !row.family.trim().is_empty())
+        .map(|row| {
+            let start_menu = names.get(&row.family);
+            InstalledApp {
+                display_name: start_menu
+                    .map(|(name, _)| name.clone())
+                    .unwrap_or_else(|| friendly_name(&row.name)),
+                launch_target: start_menu.map(|(_, target)| target.clone()),
+                family: row.family,
+                full_name: row.full_name,
+                name: row.name,
+                version: row.version,
+                install_location: row.install_location,
+                can_uninstall: !row.non_removable,
+            }
+        })
+        .collect();
+
+    crate::logger::debug(
+        "msstore",
+        format!("Aplicaciones de la tienda instaladas: {}", apps.len()),
+    );
+    apps
+}
+
+#[cfg(not(windows))]
+fn scan_installed_apps() -> Vec<InstalledApp> {
+    Vec::new()
+}
+
+/// Un nombre presentable a partir del identidad del paquete, para cuando el
+/// menú Inicio no publica ninguno: `Microsoft.WindowsCalculator` no es un
+/// nombre, pero `WindowsCalculator` al menos se lee.
+fn friendly_name(identity: &str) -> String {
+    identity
+        .rsplit('.')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(identity)
+        .to_string()
+}
+
+pub fn installed_by_family(family: &str) -> Option<InstalledApp> {
+    installed_apps()
+        .into_iter()
+        .find(|app| app.family.eq_ignore_ascii_case(family))
+}
+
+/// Quita una aplicación de la tienda.
+///
+/// Windows aplaza la retirada de un paquete que esté en uso igual que aplaza
+/// una actualización, así que se cierra antes lo que corra dentro de él; si no,
+/// la orden dice que fue bien y la aplicación sigue ahí.
+pub fn uninstall(family: &str) -> Result<String, String> {
+    let app = installed_by_family(family)
+        .ok_or_else(|| format!("Windows ya no tiene registrada la aplicación {family}."))?;
+    if !app.can_uninstall {
+        return Err(format!(
+            "Windows no permite quitar '{}': es un componente del sistema.",
+            app.display_name
+        ));
+    }
+
+    let folder = std::path::PathBuf::from(&app.install_location);
+    if crate::msix::is_package_folder(&folder) {
+        crate::process::close_application_at(&folder, Duration::from_secs(5));
+    }
+
+    let escaped = app.full_name.replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference='Stop'; try {{ Remove-AppxPackage -Package '{escaped}' }} \
+catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+    );
+    let output = crate::process::hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    )
+    .map_err(|error| format!("Windows no pudo quitar el paquete: {error}"))?;
+
+    forget_installed();
+    crate::detect::clear_detection_caches();
+
+    if !output.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        return Err(if detail.is_empty() {
+            format!(
+                "Windows no pudo quitar '{}' y no dio explicaciones.",
+                app.display_name
+            )
+        } else {
+            format!("Windows no pudo quitar '{}': {detail}", app.display_name)
+        });
+    }
+
+    // La orden puede terminar bien y dejar la retirada pendiente de que se
+    // cierre lo último que quede abierto del paquete.
+    if crate::msix::is_registered(&app.family) {
+        return Ok(format!(
+            "{} se quitará en cuanto se cierre del todo; Windows la mantiene registrada hasta entonces.",
+            app.display_name
+        ));
+    }
+    Ok(format!("{} se desinstaló correctamente.", app.display_name))
+}
+
+// ---------------------------------------------------------------------------
+// De un paquete instalado a su producto, y de ahí a su versión publicada
+// ---------------------------------------------------------------------------
+
+/// La familia a la que pertenece un paquete, leída de su nombre completo.
+///
+/// `Contoso.App_2.0.0.0_x64__abc` es de la familia `Contoso.App_abc`: la
+/// identidad y el editor, sin la versión ni la arquitectura que cambian debajo.
+pub fn family_in_moniker(moniker: &str) -> Option<String> {
+    let parts: Vec<&str> = moniker.split('_').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+    let (name, hash) = (parts[0], parts[parts.len() - 1]);
+    if name.is_empty() || hash.is_empty() {
+        return None;
+    }
+    Some(format!("{name}_{hash}"))
+}
+
+/// La versión que anuncia el nombre completo de un paquete.
+pub fn version_in_moniker(moniker: &str) -> Option<String> {
+    let version = moniker.split('_').nth(1)?;
+    if version.is_empty() || !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    Some(version.to_string())
+}
+
+/// Lo mínimo que hay que saber de un producto para nombrarlo y dibujarlo.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProductBrief {
+    pub product_id: String,
+    pub title: Option<String>,
+    pub icon_url: Option<String>,
+}
+
+/// De qué producto de la tienda es cada familia de paquetes.
+///
+/// La búsqueda ya trae esta correspondencia en cada resultado, así que casi
+/// siempre se sabe sin preguntar; sólo hace falta salir a la red por una
+/// aplicación que ya estaba instalada antes de que la tienda la viera.
+static FAMILY_PRODUCTS: Mutex<Option<HashMap<String, ProductBrief>>> = Mutex::new(None);
+
+pub fn remember_family(family: &str, brief: ProductBrief) {
+    if family.trim().is_empty() || brief.product_id.trim().is_empty() {
+        return;
+    }
+    let mut cache = FAMILY_PRODUCTS.lock();
+    let entry = cache
+        .get_or_insert_with(HashMap::new)
+        .entry(family.to_lowercase())
+        .or_insert_with(|| brief.clone());
+    // Un dato nuevo completa lo que ya se sabía, pero nunca lo borra: la
+    // búsqueda trae icono y la consulta por familia trae título, y quedarse con
+    // lo último visto perdería la mitad.
+    entry.product_id = brief.product_id;
+    if brief.title.is_some() {
+        entry.title = brief.title;
+    }
+    if brief.icon_url.is_some() {
+        entry.icon_url = brief.icon_url;
+    }
+}
+
+fn remembered_brief(family: &str) -> Option<ProductBrief> {
+    FAMILY_PRODUCTS
+        .lock()
+        .as_ref()
+        .and_then(|families| families.get(&family.to_lowercase()).cloned())
+}
+
+fn lookup_url(family: &str) -> String {
+    format!(
+        "https://storeedgefd.dsx.mp.microsoft.com/v9.0/products/lookup\
+?idType=PackageFamilyName&productId={family}&market={MARKET}&locale={LOCALE}\
+&deviceFamily={DEVICE_FAMILY}"
+    )
+}
+
+/// El logotipo más grande que publique la ficha del servicio de entrega.
+fn logo_in_payload(payload: &Value) -> Option<String> {
+    let images = payload.get("Images").and_then(Value::as_array)?;
+    images
+        .iter()
+        .filter(|image| {
+            image
+                .get("ImageType")
+                .and_then(Value::as_str)
+                .is_some_and(|kind| kind.eq_ignore_ascii_case("logo"))
+        })
+        .filter_map(|image| {
+            let url = text_field(image, "Url").or_else(|| text_field(image, "Uri"))?;
+            let width = image.get("Width").and_then(Value::as_u64).unwrap_or(0);
+            Some((width, url))
+        })
+        .max_by_key(|(width, _)| *width)
+        .map(|(_, url)| {
+            if url.starts_with("//") {
+                format!("https:{url}")
+            } else {
+                url
+            }
+        })
+}
+
+/// El producto al que corresponde una familia de paquetes.
+pub async fn product_for_family(family: &str) -> Result<ProductBrief, String> {
+    if let Some(brief) = remembered_brief(family) {
+        return Ok(brief);
+    }
+    let response = get_json(
+        &lookup_url(family),
+        "identificar la aplicación en la Microsoft Store",
+    )
+    .await?;
+    let payload = response
+        .get("Payload")
+        .ok_or_else(|| format!("La Microsoft Store no reconoce el paquete {family}."))?;
+    let product_id = payload
+        .get("ProductId")
+        .and_then(Value::as_str)
+        .map(str::to_uppercase)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("La Microsoft Store no reconoce el paquete {family}."))?;
+
+    let brief = ProductBrief {
+        product_id,
+        title: text_field(payload, "Title"),
+        icon_url: logo_in_payload(payload),
+    };
+    remember_family(family, brief.clone());
+    Ok(brief)
+}
+
+/// La versión que el canal elegido publica para esta familia, si publica alguna.
+pub async fn published_version(
+    family: &str,
+    product_id: &str,
+    ring: &str,
+    arch: &str,
+) -> Result<Option<String>, String> {
+    let packages = packages(product_id, ring, arch).await?;
+    let mut newest: Option<String> = None;
+    for package in packages.iter().filter(|package| !package.is_dependency) {
+        if family_in_moniker(&package.file_name).as_deref() != Some(family) {
+            continue;
+        }
+        let Some(version) = version_in_moniker(&package.file_name) else {
+            continue;
+        };
+        let replace = match newest.as_deref() {
+            None => true,
+            Some(current) => crate::detect::is_newer(&version, current).unwrap_or(false),
+        };
+        if replace {
+            newest = Some(version);
+        }
+    }
+    Ok(newest)
+}
+
+/// Lo que se sabe de una aplicación instalada tras preguntar por su producto.
+#[derive(Debug, Clone, Serialize)]
+pub struct UpdateReport {
+    pub family: String,
+    pub product_id: Option<String>,
+    /// El nombre y el icono con los que la tienda publica la aplicación. El
+    /// equipo por sí solo no los conoce, así que las tarjetas de lo instalado
+    /// los estrenan cuando termina esta comprobación.
+    pub title: Option<String>,
+    pub icon_url: Option<String>,
+    pub installed_version: String,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+    /// Por qué no se pudo comprobar, cuando no se pudo. Se dice en voz baja:
+    /// una aplicación que la tienda no reconoce no es un error del usuario.
+    pub error: Option<String>,
+}
+
+/// Comprueba, para cada familia, si el canal publica algo más nuevo.
+///
+/// Cada aplicación cuesta dos viajes al servicio de entrega, así que van de
+/// cuatro en cuatro: en serie una biblioteca corriente tardaría medio minuto, y
+/// todas a la vez es más de lo que ese servicio agradece.
+pub async fn scan_updates(families: Vec<String>, ring: &str, arch: &str) -> Vec<UpdateReport> {
+    use futures_util::StreamExt;
+
+    let installed = installed_apps();
+    let ring = normalize_ring(ring).to_string();
+    let arch = arch.to_string();
+
+    // La sesión se abre una sola vez, antes de repartir el trabajo.
+    if let Err(error) = cookie().await {
+        crate::logger::warn(
+            "msstore",
+            format!("No se pudo abrir sesión con el servicio de entrega: {error}"),
+        );
+    }
+
+    futures_util::stream::iter(families.into_iter().map(|family| {
+        let installed = installed.clone();
+        let ring = ring.clone();
+        let arch = arch.clone();
+        async move {
+            let installed_version = installed
+                .iter()
+                .find(|app| app.family.eq_ignore_ascii_case(&family))
+                .map(|app| app.version.clone())
+                .unwrap_or_default();
+
+            let mut report = UpdateReport {
+                family: family.clone(),
+                product_id: None,
+                title: None,
+                icon_url: None,
+                installed_version: installed_version.clone(),
+                latest_version: None,
+                update_available: false,
+                error: None,
+            };
+
+            let brief = match product_for_family(&family).await {
+                Ok(brief) => brief,
+                Err(error) => {
+                    report.error = Some(error);
+                    return report;
+                }
+            };
+            let product_id = brief.product_id.clone();
+            report.product_id = Some(product_id.clone());
+            report.title = brief.title;
+            report.icon_url = brief.icon_url;
+
+            match published_version(&family, &product_id, &ring, &arch).await {
+                Ok(latest) => {
+                    report.update_available = latest
+                        .as_deref()
+                        .zip(Some(installed_version.as_str()))
+                        .filter(|(_, installed)| !installed.is_empty())
+                        .and_then(|(latest, installed)| crate::detect::is_newer(latest, installed))
+                        .unwrap_or(false);
+                    report.latest_version = latest;
+                }
+                Err(error) => report.error = Some(error),
+            }
+            report
+        }
+    }))
+    .buffer_unordered(4)
+    .collect()
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Habla de verdad con los tres servicios de Microsoft.
+    ///
+    /// Fuera de la suite porque necesita red, pero se conserva porque comprueba
+    /// lo único que ninguna prueba con datos falsos puede: que la conversación
+    /// llega a establecerse, incluida la del servicio de entrega, que exige una
+    /// raíz que no está en el juego público.
+    ///
+    /// `cargo test --release --lib -- --ignored --nocapture sonda_servicios`
+    #[test]
+    #[ignore]
+    fn sonda_servicios() {
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            match search("terminal").await {
+                Ok(productos) => println!(
+                    "  [apps.microsoft.com] OK {} resultados; el primero: {:?}",
+                    productos.len(),
+                    productos.first().map(|p| &p.title)
+                ),
+                Err(error) => panic!("apps.microsoft.com falló: {error}"),
+            }
+
+            match cookie().await {
+                Ok(valor) => println!("  [fe3.delivery] OK sesión de {} caracteres", valor.len()),
+                Err(error) => panic!("el servicio de entrega falló: {error}"),
+            }
+
+            match product_for_family("Microsoft.WindowsStore_8wekyb3d8bbwe").await {
+                Ok(brief) => println!(
+                    "  [storeedgefd] OK producto={} título={:?}",
+                    brief.product_id, brief.title
+                ),
+                Err(error) => panic!("storeedgefd falló: {error}"),
+            }
+
+            let paquetes = match packages("9WZDNCRFJBMP", "RP", "auto").await {
+                Ok(paquetes) => {
+                    println!("  [paquetes] OK {} para la tienda:", paquetes.len());
+                    for paquete in paquetes.iter().take(4) {
+                        println!(
+                            "      {} | dependencia={} | {} bytes",
+                            paquete.file_name, paquete.is_dependency, paquete.size
+                        );
+                    }
+                    paquetes
+                }
+                Err(error) => panic!("la lista de paquetes falló: {error}"),
+            };
+
+            // El último paso de red antes de descargar: canjear la identidad de
+            // un paquete por su enlace firmado. Se pide un solo byte para
+            // comprobar que el enlace sirve sin bajarse nada.
+            let paquete = paquetes
+                .iter()
+                .find(|paquete| !paquete.is_dependency)
+                .expect("la tienda publica al menos su propio paquete");
+            let url = download_url(paquete, "RP")
+                .await
+                .unwrap_or_else(|error| panic!("el canje del enlace falló: {error}"));
+            let host = url::Url::parse(&url)
+                .ok()
+                .and_then(|parsed| parsed.host_str().map(str::to_string))
+                .unwrap_or_default();
+            // Con el cliente general, que es el que descarga de verdad.
+            let respuesta = download::http_client()
+                .unwrap()
+                .get(&url)
+                .header("range", "bytes=0-0")
+                .send()
+                .await
+                .unwrap_or_else(|error| panic!("el enlace no se pudo abrir: {}", describe(&error)));
+            println!(
+                "  [descarga] OK {} desde {host} ({} bytes anunciados)",
+                respuesta.status(),
+                paquete.size
+            );
+        });
+    }
 
     #[test]
     fn el_identificador_dice_de_que_clase_es_el_producto() {
@@ -1735,6 +2511,7 @@ mod tests {
             size: 0,
             digest: None,
             digest_algorithm: None,
+            file_digest: None,
             update_id: Some("id".into()),
             revision_number: Some("1".into()),
             silent_args: None,
@@ -1860,7 +2637,9 @@ mod tests {
       <ID>2</ID>
       <Xml>
         <ExtendedProperties PackageIdentityName="Contoso.App" IsAppxFramework="false" />
-        <Files><File FileName="app.msix" InstallerSpecificIdentifier="Contoso.App_2.0.0.0_x64__abc" Digest="ZGlnZXN0" DigestAlgorithm="SHA1" Size="130" Modified="2025-06-07T08:09:10.000" /></Files>
+        <Files><File FileName="app.msix" InstallerSpecificIdentifier="Contoso.App_2.0.0.0_x64__abc" Digest="c2hhMQ==" DigestAlgorithm="SHA1" Size="130" Modified="2025-06-07T08:09:10.000">
+          <AdditionalDigest Algorithm="SHA256">c2hhMjU2</AdditionalDigest>
+        </File></Files>
       </Xml>
     </Update>
     <Update>
@@ -1928,6 +2707,11 @@ mod tests {
         assert_eq!(app.update_id.as_deref(), Some("u-2"));
         assert_eq!(app.revision_number.as_deref(), Some("3"));
         assert_eq!(app.file_type, "msix");
+        // El SHA-1 selecciona el enlace; el SHA-256 comprueba lo descargado.
+        // Confundirlos fue la causa de descargar otro archivo al actualizar.
+        assert_eq!(app.file_digest.as_deref(), Some("c2hhMQ=="));
+        assert_eq!(app.digest.as_deref(), Some("c2hhMjU2"));
+        assert_eq!(app.digest_algorithm.as_deref(), Some("SHA256"));
         assert!(!app.is_dependency);
         assert!(packages[1].is_dependency);
     }
@@ -1955,6 +2739,8 @@ mod tests {
             parse_download_url(response, None).unwrap(),
             "https://uno/a.msix"
         );
+        // Con huella conocida jamás se cae silenciosamente al primer archivo.
+        assert!(parse_download_url(response, Some("otro")).is_err());
         assert!(parse_download_url("<vacio/>", None).is_err());
     }
 
@@ -2008,6 +2794,19 @@ mod tests {
     }
 
     #[test]
+    fn el_error_de_powershell_conserva_los_acentos() {
+        use base64::Engine;
+
+        let message = "Ya está instalada una versión superior de este paquete.";
+        let encoded = base64::engine::general_purpose::STANDARD.encode(message);
+        assert_eq!(
+            decode_powershell_error(format!("WINSLIM_UTF8:{encoded}\r\n").as_bytes()),
+            message
+        );
+        assert_eq!(decode_powershell_error(b"plain error\r\n"), "plain error");
+    }
+
+    #[test]
     fn de_la_ficha_win32_salen_los_instaladores_con_sus_modificadores() {
         let details = serde_json::json!({
             "installer": {
@@ -2030,6 +2829,111 @@ mod tests {
         assert_eq!(package.digest.as_deref(), Some("aabbcc"));
         assert_eq!(package.digest_algorithm.as_deref(), Some("SHA256"));
         assert_eq!(package.silent_args.as_deref(), Some("/silent /norestart"));
+    }
+
+    #[test]
+    fn del_nombre_de_un_paquete_salen_su_familia_y_su_version() {
+        let moniker = "Microsoft.WindowsCalculator_11.2210.0.0_x64__8wekyb3d8bbwe";
+        assert_eq!(
+            family_in_moniker(moniker).as_deref(),
+            Some("Microsoft.WindowsCalculator_8wekyb3d8bbwe")
+        );
+        assert_eq!(version_in_moniker(moniker).as_deref(), Some("11.2210.0.0"));
+
+        // El nombre completo con el doble guion bajo que usa Windows Update.
+        assert_eq!(
+            family_in_moniker("Contoso.App_2.0.0.0_x64__abc").as_deref(),
+            Some("Contoso.App_abc")
+        );
+        // Y lo que no es el nombre de un paquete no lo aparenta.
+        assert!(family_in_moniker("suelto").is_none());
+        assert!(version_in_moniker("Contoso.App_neutral_x64__abc").is_none());
+    }
+
+    #[test]
+    fn un_paquete_sin_nombre_en_el_menu_inicio_al_menos_se_lee() {
+        assert_eq!(friendly_name("Microsoft.WindowsCalculator"), "WindowsCalculator");
+        assert_eq!(friendly_name("5319275A.WhatsAppDesktop"), "WhatsAppDesktop");
+        assert_eq!(friendly_name("Suelto"), "Suelto");
+    }
+
+    #[test]
+    fn las_familias_de_un_producto_se_leen_de_la_respuesta() {
+        let busqueda = serde_json::json!({
+            "packageFamilyNames": ["Microsoft.WindowsTerminal_8wekyb3d8bbwe", "  "]
+        });
+        assert_eq!(
+            package_families_of(&busqueda),
+            vec!["Microsoft.WindowsTerminal_8wekyb3d8bbwe"]
+        );
+        // La ficha del servicio de entrega las nombra en mayúscula inicial.
+        let ficha = serde_json::json!({ "PackageFamilyNames": ["Contoso.App_abc"] });
+        assert_eq!(package_families_of(&ficha), vec!["Contoso.App_abc"]);
+        assert!(package_families_of(&serde_json::json!({})).is_empty());
+    }
+
+    #[test]
+    fn un_resultado_de_busqueda_sabe_si_ya_esta_instalado() {
+        let instaladas = vec![
+            InstalledApp {
+                family: "Microsoft.WindowsTerminal_8wekyb3d8bbwe".into(),
+                full_name: "Microsoft.WindowsTerminal_1.22.0_x64__8wekyb3d8bbwe".into(),
+                name: "Microsoft.WindowsTerminal".into(),
+                display_name: "Terminal".into(),
+                version: "1.22.0".into(),
+                install_location: String::new(),
+                can_uninstall: true,
+                launch_target: None,
+            },
+            InstalledApp {
+                family: "Microsoft.SecHealthUI_8wekyb3d8bbwe".into(),
+                full_name: "Microsoft.SecHealthUI_1000.0_x64__8wekyb3d8bbwe".into(),
+                name: "Microsoft.SecHealthUI".into(),
+                display_name: "Seguridad de Windows".into(),
+                version: "1000.0".into(),
+                install_location: String::new(),
+                can_uninstall: false,
+                launch_target: None,
+            },
+        ];
+
+        let product = |id: &str, families: &[&str]| StoreProduct {
+            product_id: id.into(),
+            kind: ProductKind::Uwp.as_str(),
+            title: id.into(),
+            description: String::new(),
+            publisher: String::new(),
+            icon_url: None,
+            price: "Free".into(),
+            family: None,
+            package_families: families.iter().map(|f| f.to_string()).collect(),
+            installed: false,
+            installed_version: None,
+            can_uninstall: false,
+            installed_family: None,
+        };
+
+        let mut products = [
+            product("9A", &["Microsoft.WindowsTerminal_8wekyb3d8bbwe"]),
+            product("9B", &["Contoso.Otra_abc"]),
+            product("9C", &["Microsoft.SecHealthUI_8wekyb3d8bbwe"]),
+            product("9D", &[]),
+        ];
+        annotate_installed_with(&mut products, &instaladas);
+
+        assert!(products[0].installed);
+        assert_eq!(products[0].installed_version.as_deref(), Some("1.22.0"));
+        assert!(products[0].can_uninstall);
+        assert_eq!(
+            products[0].installed_family.as_deref(),
+            Some("Microsoft.WindowsTerminal_8wekyb3d8bbwe")
+        );
+        // Lo que no está puesto se queda como estaba.
+        assert!(!products[1].installed);
+        assert!(!products[3].installed);
+        // Y lo que está puesto pero Windows no deja quitar lo dice.
+        assert!(products[2].installed);
+        assert!(!products[2].can_uninstall);
     }
 
     #[test]

@@ -1971,6 +1971,98 @@ async fn msstore_details(product_id: String) -> Result<Value, String> {
     msstore::details(&product_id).await
 }
 
+/// Las aplicaciones de la tienda que Windows ya tiene registradas.
+///
+/// No sale a la red: es una consulta al propio equipo, así que la interfaz
+/// puede pedirla cada vez que dibuja una lista.
+#[tauri::command]
+async fn msstore_installed() -> Result<Vec<msstore::InstalledApp>, String> {
+    async_runtime::spawn_blocking(msstore::installed_apps)
+        .await
+        .map_err(|error| format!("No se pudo consultar lo instalado: {error}"))
+}
+
+/// Comprueba qué aplicaciones de la tienda tienen una versión más nueva.
+///
+/// Sin `families` mira todas las instaladas; con ellas, sólo esas — que es lo
+/// que hace falta tras una búsqueda, donde como mucho una o dos de las que
+/// aparecen están puestas.
+#[tauri::command]
+async fn msstore_check_updates(
+    ring: Option<String>,
+    arch: Option<String>,
+    families: Option<Vec<String>>,
+) -> Result<Vec<msstore::UpdateReport>, String> {
+    let ring = ring.unwrap_or_else(|| msstore::DEFAULT_RING.to_string());
+    let arch = arch.unwrap_or_else(|| "auto".into());
+    let families = match families {
+        Some(families) => families,
+        None => async_runtime::spawn_blocking(|| {
+            msstore::installed_apps()
+                .into_iter()
+                .map(|app| app.family)
+                .collect::<Vec<String>>()
+        })
+        .await
+        .map_err(|error| format!("No se pudo consultar lo instalado: {error}"))?,
+    };
+    if families.is_empty() {
+        return Ok(Vec::new());
+    }
+    logger::info(
+        "msstore",
+        format!(
+            "Comprobando actualizaciones de {} aplicaciones en el canal {ring}",
+            families.len()
+        ),
+    );
+    let reports = msstore::scan_updates(families, &ring, &arch).await;
+    let pending = reports
+        .iter()
+        .filter(|report| report.update_available)
+        .count();
+    logger::info(
+        "msstore",
+        format!("Actualizaciones pendientes en la Microsoft Store: {pending}"),
+    );
+    Ok(reports)
+}
+
+/// Quita una aplicación de la tienda.
+#[tauri::command]
+async fn msstore_uninstall(family: String) -> Result<String, String> {
+    logger::info("msstore", format!("Desinstalación solicitada: {family}"));
+    let outcome = async_runtime::spawn_blocking(move || msstore::uninstall(&family))
+        .await
+        .map_err(|error| format!("La desinstalación no pudo completarse: {error}"))?;
+    match &outcome {
+        Ok(message) => logger::info("msstore", message),
+        Err(error) => logger::error("msstore", format!("Desinstalación fallida: {error}")),
+    }
+    outcome
+}
+
+/// Abre una aplicación de la tienda a través del propio Windows.
+///
+/// Va por un hilo aparte porque saber qué abrir puede costar una consulta a
+/// Windows, y la interfaz no tiene por qué esperarla parada.
+#[tauri::command]
+async fn msstore_launch(family: String) -> Result<String, String> {
+    async_runtime::spawn_blocking(move || {
+        let app = msstore::installed_by_family(&family)
+            .ok_or_else(|| format!("Windows ya no tiene registrada la aplicación {family}."))?;
+        let target = app.launch_target.ok_or_else(|| {
+            format!(
+                "'{}' no publica nada que abrir en el menú Inicio.",
+                app.display_name
+            )
+        })?;
+        installer::launch_shell_target(&target)
+    })
+    .await
+    .map_err(|error| format!("No se pudo abrir la aplicación: {error}"))?
+}
+
 /// Descarga e instala un producto de la Microsoft Store.
 ///
 /// Devuelve en cuanto la tarea está en la cola: el resto se sigue por los
@@ -2044,6 +2136,10 @@ async fn msstore_install(
                         started.elapsed().as_millis()
                     ),
                 );
+                // Windows acaba de registrar un paquete: lo que se recordaba de
+                // lo que hay puesto en el equipo ya no vale.
+                msstore::forget_installed();
+                detect::clear_detection_caches();
                 {
                     let mut dl = downloads.lock();
                     dl.update(
@@ -3432,6 +3528,10 @@ pub fn run() {
             msstore_search,
             msstore_details,
             msstore_install,
+            msstore_installed,
+            msstore_check_updates,
+            msstore_uninstall,
+            msstore_launch,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

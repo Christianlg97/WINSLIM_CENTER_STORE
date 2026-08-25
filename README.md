@@ -53,6 +53,7 @@ Combina la seguridad y velocidad de **Rust** en el backend con la flexibilidad d
 - **GitHub Release Sync**: Resolución dinámica de activos desde repositorios de código abierto de GitHub.
 - **Lanzadores y Enlaces Web**: Enlaces hacia instaladores web oficiales y tiendas secundarias.
 - **Microsoft Store Integrada**: Sección propia que busca en el catálogo oficial de Microsoft (`apps.microsoft.com`), resuelve el paquete real a través del servicio de entrega de Windows Update y lo instala con sus dependencias. Admite paquetes UWP/MSIX (`Add-AppxPackage`) e instaladores clásicos (`.exe`/`.msi`), con selección de canal (*Retail, Release Preview, Insider Slow, Insider Fast*) y de arquitectura, verificación de la huella SHA-256/SHA-1 publicada por Microsoft y solo productos gratuitos. Se puede buscar por nombre o pegando el enlace de la ficha.
+- **Ciclo Completo para las Apps de Tienda**: Los resultados de búsqueda detectan lo que el equipo ya tiene puesto y ofrecen **Abrir**, **Actualizar** o **Desinstalar** en lugar de instalar. *Mis aplicaciones* incluye la subsección **Desde la Microsoft Store** con todos los paquetes firmados por la tienda, y *Actualizaciones* suma las suyas a las de WinGet en una sola cifra: la versión publicada por el canal se compara con la registrada en Windows.
 
 ### ⚡ Automatización y Ejecución Inteligente
 - **Auto-Launch Post-Instalación**: Al completar con éxito la instalación de una aplicación WinGet, WinSlimCenter inicia automáticamente el programa.
@@ -216,6 +217,7 @@ WINSLIM_CENTER_STORE/
 │   └── styles.css              # Sistema de diseño CSS y tokens
 ├── src-tauri/                  # Backend en Rust (Tauri 2)
 │   ├── src/                    # Módulos de Rust (lib, detect, installer, etc.)
+│   ├── certs/                  # Raíz de Windows Update, que no está en el juego público
 │   ├── apps.json               # Catálogo completo de aplicaciones (200+ apps)
 │   ├── Cargo.toml              # Dependencias de Rust
 │   └── tauri.conf.json         # Configuración de Tauri 2

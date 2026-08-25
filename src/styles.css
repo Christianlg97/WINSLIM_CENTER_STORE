@@ -1965,6 +1965,52 @@ textarea {
   word-break: break-word;
 }
 
+.msstore-error-lead {
+  color: var(--text-dark);
+  font-size: 13.5px;
+  line-height: 1.6;
+  white-space: normal;
+}
+
+.msstore-error-resolution {
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+  color: var(--text-medium);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+
+.msstore-error-details {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+.msstore-error-details summary {
+  width: fit-content;
+  cursor: pointer;
+  user-select: none;
+  font-weight: 600;
+}
+
+.msstore-error-raw {
+  max-height: 180px;
+  margin-top: 10px;
+  overflow: auto;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--bg-input);
+  color: var(--text-light);
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .package-operation {
   display: grid;
   justify-items: center;
@@ -2564,8 +2610,8 @@ textarea {
   text-transform: uppercase;
 }
 
-/* El emblema de la sección va dibujado a trazo, como el resto de los iconos de
-   la interfaz, sobre la misma placa oscura que lleva el logotipo del héroe. */
+/* El emblema oficial se incluye desde el propio paquete Microsoft.WindowsStore
+   de Windows, de modo que conserva su identidad y no depende de la red. */
 .ms-hero-logo {
   display: flex;
   align-items: center;
@@ -2577,12 +2623,12 @@ textarea {
   background: #25262b;
   border: 1px solid rgba(255, 255, 255, 0.14);
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34), inset 0 0 0 2px rgba(255, 255, 255, 0.035);
-  color: var(--accent);
 }
 
-.ms-hero-logo svg {
-  width: 50px;
-  height: 50px;
+.ms-hero-logo img {
+  width: 78px;
+  height: 78px;
+  object-fit: contain;
 }
 
 .ms-hero h2 {
@@ -2679,8 +2725,28 @@ textarea {
     border-radius: 22px;
   }
 
-  .ms-hero-logo svg {
-    width: 40px;
-    height: 40px;
+  .ms-hero-logo img {
+    width: 62px;
+    height: 62px;
   }
+}
+
+/* La cabecera de las subsecciones de la tienda lleva su propio control para
+   salir a preguntar por las versiones, que es lo único que no se sabe sin
+   red. Se va al extremo opuesto del título, como la de «Actualizaciones». */
+.ms-section-head {
+  align-items: center;
+  gap: 10px;
+}
+
+.ms-section-head .btn {
+  margin-left: auto;
+}
+
+/* La identidad del paquete, que es lo que de verdad distingue a dos
+   aplicaciones con el mismo nombre visible. */
+.ms-installed-card .card-desc {
+  font-size: 10.5px;
+  letter-spacing: 0.01em;
+  opacity: 0.85;
 }
