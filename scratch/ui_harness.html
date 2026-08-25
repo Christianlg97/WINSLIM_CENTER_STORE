@@ -10,6 +10,22 @@
       const listeners = {};
       let mockTasks = [];
       const installTimers = new Map();
+      // Productos de mentira para la sección de la Microsoft Store: iconos
+      // locales, para que el banco de pruebas funcione sin red.
+      const msStoreProducts = [
+        { product_id: "9WZDNCRFJ3PZ", kind: "uwp", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/notepad_plus_plus.svg", price: "Free", family: "Apps" },
+        { product_id: "9NBLGGH4NNS1", kind: "uwp", title: "Contoso Player", description: "Reproductor de vídeo de ejemplo con listas de reproducción.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/vlc.svg", price: "Free", family: "Apps" },
+        { product_id: "XPDC2RH70K22MN", kind: "win32", title: "Contoso Studio", description: "Editor clásico de ejemplo que se instala con su propio asistente.", publisher: "Contoso Labs", icon_url: "/src/assets/catalog/obsidian.svg", price: "Free", family: "Apps" },
+      ];
+      const msStoreDetails = {
+        "9WZDNCRFJ3PZ": {
+          productId: "9WZDNCRFJ3PZ", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.",
+          version: "3.14.2", approximateSizeInBytes: 84 * 1024 * 1024, averageRating: 4.4, ratingCountFormatted: "12,3 K",
+          packageLastUpdateDateUtc: "2026-07-19T10:22:00Z", subcategoryName: "Productividad",
+          supportedLanguages: ["es-ES", "en-US", "fr-FR"],
+          screenshots: [{ url: "/src/assets/winslim-center-logo.png" }, { url: "/src/assets/catalog/notepad_plus_plus.svg" }],
+        },
+      };
       function emitTasks() {
         listeners["downloads-changed"]?.({ payload: { tasks: mockTasks } });
       }
@@ -54,6 +70,58 @@
               }, 40);
               return null;
             }
+            if (command === "msstore_options") {
+              return {
+                rings: [
+                  { id: "Retail", label: "Retail (Base)" },
+                  { id: "RP", label: "Release Preview" },
+                  { id: "WIS", label: "Insider Slow" },
+                  { id: "WIF", label: "Insider Fast" },
+                ],
+                default_ring: "RP",
+                host_arch: "x64",
+              };
+            }
+            if (command === "msstore_search") {
+              const query = String(args.query || "").trim();
+              if (/^(9|xp)/i.test(query)) {
+                return { direct: true, products: [msStoreProducts[0]] };
+              }
+              await new Promise((resolve) => setTimeout(resolve, 400));
+              return {
+                direct: false,
+                products: msStoreProducts.filter((product) =>
+                  `${product.title} ${product.publisher}`.toLowerCase().includes(query.toLowerCase())
+                ),
+              };
+            }
+            if (command === "msstore_details") {
+              await new Promise((resolve) => setTimeout(resolve, 300));
+              return msStoreDetails[args.productId] || {};
+            }
+            if (command === "msstore_install") {
+              const taskId = `msstore:${String(args.productId).toUpperCase()}`;
+              const name = args.name || taskId;
+              let progress = 0;
+              mockTasks = [{ app_id: taskId, name, progress, state: "downloading", status: "Consultando la Microsoft Store…", can_pause: true, can_resume: false, can_cancel: true, is_pausable: true }];
+              emitTasks();
+              const tick = setInterval(() => {
+                progress += 12;
+                const done = progress >= 100;
+                mockTasks = [{ app_id: taskId, name, progress: Math.min(progress, 100), state: done ? "installing" : "downloading", status: done ? "Instalando paquete…" : `Descargando · ${Math.min(progress, 100)}%`, can_pause: !done, can_resume: false, can_cancel: true, is_pausable: !done }];
+                emitTasks();
+                if (!done) return;
+                clearInterval(tick);
+                installTimers.delete(taskId);
+                setTimeout(() => {
+                  mockTasks = [];
+                  emitTasks();
+                  listeners["msstore-install-finished"]?.({ payload: { ok: true, product_id: args.productId, name, packages: 2 } });
+                }, 600);
+              }, 400);
+              installTimers.set(taskId, tick);
+              return taskId;
+            }
             return null;
           },
         },
@@ -74,6 +142,7 @@
         <div class="top-actions">
           <button type="button" class="icon-btn" id="btn-refresh" title="Recargar aplicaciones y buscar actualizaciones"><span>↻</span> Refrescar</button>
           <button type="button" class="icon-btn" id="btn-update"><span>⬆</span> Actualizar tienda</button>
+          <button type="button" class="about-btn" id="btn-about" aria-label="Acerca de WinSlimCenter">i</button>
         </div>
       </header>
       <div class="shell"><aside class="sidebar" id="sidebar"></aside><main class="main"><div class="scroll" id="content"></div></main></div>

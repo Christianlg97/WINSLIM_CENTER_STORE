@@ -33,6 +33,10 @@ zip = { version = "2", default-features = false, features = ["deflate"] }
 chrono = { version = "0.4", features = ["serde"] }
 url = "2"
 dirs = "5"
+# La Microsoft Store habla SOAP y publica las huellas de sus paquetes en base64.
+quick-xml = "0.41"
+sha2 = "0.10"
+base64 = "0.22"
 wildmatch = "2"
 parking_lot = "0.12"
 

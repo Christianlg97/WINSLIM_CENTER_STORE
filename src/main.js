@@ -15,6 +15,26 @@ const NAV = [
   { id: "product", label: "Productividad", icon: "📝", filter: "Productividad" },
   { id: "social", label: "Social y Comunicación", icon: "💬", filter: "Social y Comunicación" },
   { id: "installed", label: "Mis aplicaciones", icon: "✅", filter: "__INSTALLED__" },
+  { id: "msstore", label: "Microsoft Store", icon: "🛍️", filter: "__MSSTORE__" },
+];
+
+/**
+ * La sección de la Microsoft Store no lista el catálogo: lo que enseña llega
+ * de los servidores de Microsoft cuando se busca. Se anota aquí para que las
+ * partes que recorren el catálogo —el buscador de arriba, los contadores de la
+ * página— sepan que esta sección no les pertenece.
+ */
+const MSSTORE_SECTION = "msstore";
+
+/**
+ * Las arquitecturas entre las que se puede elegir. `auto` es la del equipo, y
+ * es la respuesta correcta salvo cuando se descarga un paquete para otro.
+ */
+const MSSTORE_ARCHS = [
+  { id: "auto", label: "Automática" },
+  { id: "x64", label: "x64" },
+  { id: "arm64", label: "ARM64" },
+  { id: "all", label: "Todas" },
 ];
 
 const FEATURED_ORDER = [
@@ -165,6 +185,20 @@ const state = {
   projectSlogan: chooseProjectSlogan(),
   scanningUpdates: false,
   lastUpdateScan: null,
+  // La Microsoft Store vive aparte del catálogo: su búsqueda, sus filtros y
+  // sus resultados no sobreviven a un reinicio y no tienen por qué.
+  msstore: {
+    options: null,
+    ring: null,
+    arch: "auto",
+    query: "",
+    lastQuery: "",
+    results: [],
+    details: {},
+    loading: false,
+    error: "",
+    installing: {},
+  },
 };
 
 const derived = {
@@ -677,6 +711,9 @@ function updatesCount() {
 function sectionFilter(app) {
   const nav = NAV.find((n) => n.id === state.section);
   if (!nav || nav.filter == null) return true;
+  // La Microsoft Store no enseña el catálogo propio, así que ninguna de sus
+  // aplicaciones le pertenece.
+  if (nav.filter === "__MSSTORE__") return false;
   if (nav.filter === "__INSTALLED__") return !!appStatus(app.id).installed;
   if (nav.filter === "__UPDATES__") return !!appStatus(app.id).update_available;
   if (nav.filter === "featured") return !!app.featured;
@@ -900,6 +937,524 @@ function projectHeroHtml() {
     </section>`;
 }
 
+// ---------------------------------------------------------------------------
+// Microsoft Store
+// ---------------------------------------------------------------------------
+//
+// Una sección que no lee el catálogo. Lo que enseña llega de los servidores de
+// Microsoft en el momento de buscar, así que tiene su propio buscador, sus
+// propios filtros y su propia lista; lo demás —las tarjetas, la ficha, el
+// diálogo de instalación, la barra de progreso— es exactamente lo mismo que usa
+// el resto de la tienda, porque no hay razón para que se parezca a otra cosa.
+
+const MSSTORE_KIND_LABELS = {
+  uwp: "Paquete de Windows",
+  win32: "Instalador clásico",
+};
+
+/**
+ * El nombre que el backend le da a la tarea de este producto, en
+ * `msstore::task_id`. Se compone aquí también porque el diálogo de progreso
+ * tiene que existir antes de que la orden llegue a contestar con él.
+ */
+function msStoreTaskId(productId) {
+  return `msstore:${String(productId || "").toUpperCase()}`;
+}
+
+/** Las imágenes de Microsoft viajan a veces sin esquema. */
+function msStoreImageUrl(raw) {
+  const url = String(raw || "").trim();
+  if (!url) return "";
+  return url.startsWith("//") ? `https:${url}` : url;
+}
+
+/** Un producto vestido de aplicación, para lo que ya sabe dibujar aplicaciones. */
+function msStoreAppShape(product) {
+  if (!product) return null;
+  return {
+    id: msStoreTaskId(product.product_id),
+    name: product.title || product.product_id,
+    author: product.publisher || "Microsoft Store",
+    icon_url: msStoreImageUrl(product.icon_url) || null,
+    icon_padding: 4,
+  };
+}
+
+function msStoreProductById(productId) {
+  const id = String(productId || "").toUpperCase();
+  return state.msstore.results.find((product) => product.product_id === id) || null;
+}
+
+async function ensureMsStoreOptions() {
+  const store = state.msstore;
+  if (store.options) return store.options;
+  try {
+    store.options = await invoke("msstore_options");
+    if (!store.ring) store.ring = store.options.default_ring;
+  } catch (error) {
+    // Sin los canales la sección sigue siendo utilizable: el backend aplica el
+    // suyo por defecto y la fila de filtros simplemente no se dibuja.
+    void clientLog("warn", "msstore-options", String(error?.stack || error));
+  }
+  return store.options;
+}
+
+function msStoreArchLabel(archId) {
+  const label = MSSTORE_ARCHS.find((arch) => arch.id === archId)?.label || archId;
+  const host = state.msstore.options?.host_arch;
+  return archId === "auto" && host ? `${label} · ${host}` : label;
+}
+
+/** Lo mismo, dicho dentro de una frase en lugar de dentro de un botón. */
+function msStoreArchPhrase() {
+  const { arch, options } = state.msstore;
+  if (arch === "all") return "todas las arquitecturas";
+  if (arch !== "auto") return arch;
+  const host = options?.host_arch;
+  return host ? `la arquitectura de este equipo (${host})` : "la arquitectura de este equipo";
+}
+
+function msStoreRingLabel() {
+  const rings = state.msstore.options?.rings || [];
+  return rings.find((ring) => ring.id === state.msstore.ring)?.label || "Release Preview";
+}
+
+function msStoreBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = value;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  return `${size >= 10 || unit === 0 ? Math.round(size) : size.toFixed(1)} ${units[unit]}`;
+}
+
+function msStoreDate(raw) {
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("es-ES", { year: "numeric", month: "short", day: "numeric" });
+}
+
+function msStoreSearchHtml() {
+  const store = state.msstore;
+  return `
+    <form class="ms-toolbar" id="ms-search-form" role="search">
+      <div class="ms-search-field">
+        <span class="ms-search-icon" aria-hidden="true">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7" /><line x1="16.5" y1="16.5" x2="21" y2="21" />
+          </svg>
+        </span>
+        <input id="ms-search" class="ms-search-input" type="text" autocomplete="off"
+          spellcheck="false" aria-label="Buscar en la Microsoft Store"
+          placeholder="Nombre de la aplicación, o el enlace de su ficha en apps.microsoft.com"
+          value="${escapeHtml(store.query)}" />
+      </div>
+      <button type="submit" class="btn primary" id="ms-search-go"${store.loading ? " disabled aria-busy=\"true\"" : ""}>
+        ${store.loading ? "Buscando…" : "Buscar"}
+      </button>
+    </form>`;
+}
+
+function msStoreFiltersHtml() {
+  const store = state.msstore;
+  const rings = store.options?.rings || [];
+  if (!rings.length) return "";
+  return `
+    <div class="ms-filters">
+      <div class="ms-filter-group" role="group" aria-label="Canal de publicación">
+        <span class="ms-filter-label">Canal</span>
+        ${rings
+          .map(
+            (ring) => `
+          <button type="button" class="console-filter ${store.ring === ring.id ? "active" : ""}"
+            data-ms-ring="${escapeHtml(ring.id)}">${escapeHtml(ring.label)}</button>`
+          )
+          .join("")}
+      </div>
+      <div class="ms-filter-group" role="group" aria-label="Arquitectura del paquete">
+        <span class="ms-filter-label">Arquitectura</span>
+        ${MSSTORE_ARCHS.map(
+          (arch) => `
+          <button type="button" class="console-filter ${store.arch === arch.id ? "active" : ""}"
+            data-ms-arch="${escapeHtml(arch.id)}">${escapeHtml(msStoreArchLabel(arch.id))}</button>`
+        ).join("")}
+      </div>
+    </div>`;
+}
+
+function msStoreHeroHtml() {
+  return `
+    <section class="hero ms-hero" aria-label="Qué es esta sección">
+      <div class="hero-left">
+        <div class="ms-hero-logo" aria-hidden="true">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"
+            stroke-linecap="round" stroke-linejoin="round">
+            <path d="M4 8h16l-1.1 11.2A2 2 0 0 1 16.9 21H7.1a2 2 0 0 1-2-1.8L4 8Z" />
+            <path d="M8.5 8V6.5a3.5 3.5 0 0 1 7 0V8" />
+            <path d="M9.5 12.5h5" />
+          </svg>
+        </div>
+        <div class="project-hero-copy">
+          <div class="project-kicker">CATÁLOGO OFICIAL DE MICROSOFT</div>
+          <h2>Microsoft Store</h2>
+          <p class="project-slogan">Lo que publica Microsoft, instalado desde aquí.</p>
+          <p class="desc">
+            Busca una aplicación por su nombre o pega el enlace de su ficha. WinSlimCenter
+            resuelve el paquete que le corresponde a este equipo, lo descarga del servicio de
+            entrega de Windows y lo instala con sus dependencias. Sólo se ofrecen productos
+            gratuitos.
+          </p>
+        </div>
+      </div>
+      <div class="hero-tag">Canal · ${escapeHtml(msStoreRingLabel())}</div>
+    </section>`;
+}
+
+function msStoreCardHtml(product, index) {
+  const shape = msStoreAppShape(product);
+  const accent = pickAccent(shape, index);
+  const avatarBg = avatarBackground(shape, accent);
+  const letter = (product.title || product.product_id || "M")[0].toUpperCase();
+  const kind = MSSTORE_KIND_LABELS[product.kind] || "";
+  const installing = state.msstore.installing[product.product_id];
+  return `
+    <article class="app-card ms-card" data-ms-id="${escapeHtml(product.product_id)}" tabindex="0"
+      aria-label="Ver detalles de ${escapeHtml(product.title || product.product_id)}"
+      style="--card-accent:${accent}">
+      <div class="card-top">
+        <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
+        <div>
+          <strong>${escapeHtml(product.title || product.product_id)}
+            ${kind ? `<span class="origin-tag ms-kind-tag">${escapeHtml(kind)}</span>` : ""}
+          </strong>
+          <small>${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis</small>
+        </div>
+      </div>
+      <p class="card-desc">${escapeHtml(product.description || "")}</p>
+      <div class="card-actions">
+        ${
+          installing
+            ? '<button type="button" class="btn secondary" disabled aria-busy="true">Instalando…</button>'
+            : `<button type="button" class="btn primary" data-ms-install="${escapeHtml(product.product_id)}">Instalar</button>`
+        }
+      </div>
+    </article>`;
+}
+
+function renderMsStoreNow() {
+  const store = state.msstore;
+  const content = document.getElementById("content");
+  // La caja de búsqueda vive dentro de la lista que se redibuja, así que hay
+  // que devolverle el foco y el cursor donde estaban o escribir en ella se
+  // interrumpe sola en cuanto llegan los resultados.
+  const focused = document.activeElement;
+  const keepFocus = focused?.id === "ms-search";
+  const caret = keepFocus ? focused.selectionStart : null;
+
+  const count = store.results.length;
+  let html = `
+    <div class="page-title">
+      <h1>Microsoft Store</h1>
+      <span>${
+        store.lastQuery
+          ? `${count} ${count === 1 ? "resultado" : "resultados"}`
+          : "Catálogo oficial de Microsoft"
+      }</span>
+    </div>
+    ${msStoreSearchHtml()}
+    ${msStoreFiltersHtml()}`;
+
+  if (store.loading) {
+    html += `
+      <div class="empty ms-loading">
+        <div class="ms-loading-status"><span class="pulse-dot"></span> Consultando la Microsoft Store…</div>
+        <p>Se busca en el catálogo oficial de Microsoft, no en el de WinSlimCenter.</p>
+      </div>`;
+  } else if (store.error) {
+    html += `
+      <div class="empty">
+        <h3>No se pudo consultar la Microsoft Store</h3>
+        <p>${escapeHtml(store.error)}</p>
+      </div>`;
+  } else if (!store.lastQuery) {
+    html += msStoreHeroHtml();
+  } else if (!count) {
+    html += `
+      <div class="empty">
+        <h3>Sin resultados</h3>
+        <p>No hay productos gratuitos que coincidan con «${escapeHtml(store.lastQuery)}».</p>
+      </div>`;
+  } else {
+    html += `
+      <section class="section">
+        <div class="section-head">
+          <h3>Resultados de «${escapeHtml(store.lastQuery)}»</h3>
+          <span>${count} ${count === 1 ? "producto" : "productos"} · ${escapeHtml(msStoreRingLabel())}</span>
+        </div>
+        <div class="grid">${store.results.map(msStoreCardHtml).join("")}</div>
+      </section>`;
+  }
+
+  const view = `msstore|${store.lastQuery}|${store.loading}`;
+  const restoreTo = view === lastRenderedView ? content.scrollTop : 0;
+  lastRenderedView = view;
+  content.innerHTML = html;
+  content.scrollTop = restoreTo;
+
+  if (keepFocus) {
+    const input = document.getElementById("ms-search");
+    if (input) {
+      input.focus();
+      if (caret != null) input.setSelectionRange(caret, caret);
+    }
+  }
+}
+
+async function runMsStoreSearch() {
+  const store = state.msstore;
+  const query = store.query.trim();
+  if (!query) {
+    store.results = [];
+    store.lastQuery = "";
+    store.error = "";
+    renderContent();
+    return;
+  }
+  if (store.loading) return;
+
+  store.loading = true;
+  store.error = "";
+  renderContent();
+  setStatus(`Buscando «${query}» en la Microsoft Store…`, "var(--accent)");
+  void clientLog("info", "msstore", `Búsqueda en la Microsoft Store: ${query}`);
+
+  try {
+    const response = await invoke("msstore_search", { query });
+    const products = Array.isArray(response?.products) ? response.products : [];
+    store.results = products;
+    store.lastQuery = query;
+    store.error = "";
+    store.loading = false;
+    renderContent();
+    setTransientStatus(
+      products.length
+        ? `${products.length} ${products.length === 1 ? "resultado" : "resultados"} en la Microsoft Store`
+        : `Sin resultados para «${query}» en la Microsoft Store`,
+      products.length ? "var(--green)" : "var(--text-light)",
+    );
+    // Quien pega el enlace de una ficha no está buscando: ya sabe lo que
+    // quiere, así que se le abre directamente.
+    if (response?.direct && products.length === 1) openMsStoreModal(products[0].product_id);
+  } catch (error) {
+    store.loading = false;
+    store.results = [];
+    store.lastQuery = query;
+    store.error = String(error);
+    renderContent();
+    setTransientStatus("Error al buscar en la Microsoft Store", "var(--red)", 6000);
+    void clientLog("warn", "msstore", `Búsqueda fallida: ${error}`);
+  }
+}
+
+/** Los datos de la ficha que merece la pena enseñar, cuando Microsoft los da. */
+function msStoreFactsHtml(details) {
+  const facts = [
+    ["Versión", details.version],
+    ["Tamaño", msStoreBytes(details.approximateSizeInBytes || details.maxInstallSizeInBytes)],
+    [
+      "Valoración",
+      Number(details.averageRating) > 0
+        ? `${Number(details.averageRating).toFixed(1)} / 5${
+            details.ratingCountFormatted ? ` · ${details.ratingCountFormatted}` : ""
+          }`
+        : "",
+    ],
+    [
+      "Actualizado",
+      msStoreDate(details.packageLastUpdateDateUtc || details.lastUpdateDateUtc),
+    ],
+    ["Categoría", details.subcategoryName || (details.categories || [])[0]],
+    [
+      "Idiomas",
+      Array.isArray(details.supportedLanguages) && details.supportedLanguages.length
+        ? String(details.supportedLanguages.length)
+        : "",
+    ],
+  ].filter(([, value]) => value);
+
+  if (!facts.length) return "";
+  return `
+    <dl class="ms-facts">
+      ${facts
+        .map(
+          ([label, value]) => `
+        <div class="ms-fact">
+          <dt>${escapeHtml(label)}</dt>
+          <dd>${escapeHtml(value)}</dd>
+        </div>`
+        )
+        .join("")}
+    </dl>`;
+}
+
+function msStoreShotsHtml(details) {
+  const sources = [details.screenshots, details.images, details.previews].find(
+    (list) => Array.isArray(list) && list.length,
+  );
+  const shots = (sources || [])
+    .map((image) => msStoreImageUrl(image?.url))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!shots.length) return "";
+  return `
+    <div class="ms-shots" aria-label="Capturas de la aplicación">
+      ${shots
+        .map(
+          (url) =>
+            `<img src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()" />`
+        )
+        .join("")}
+    </div>`;
+}
+
+async function openMsStoreModal(productId) {
+  const id = String(productId || "").toUpperCase();
+  const product = msStoreProductById(id);
+  if (!product) return;
+
+  const shape = msStoreAppShape(product);
+  const accent = pickAccent(shape, 0);
+  const avatarBg = avatarBackground(shape, accent);
+  const letter = (product.title || id || "M")[0].toUpperCase();
+  const kind = MSSTORE_KIND_LABELS[product.kind] || "";
+
+  openModal(`
+    <div class="confirm-dialog app-detail-modal ms-detail" data-ms-detail="${escapeHtml(id)}">
+      <div class="confirm-dialog-header">
+        <div class="card-avatar" style="background:${avatarBg}; width: 56px; height: 56px; border-radius: 16px; font-size: 22px; flex-shrink: 0; overflow: hidden;">
+          ${renderAvatar(shape, letter, true)}
+        </div>
+        <div>
+          <h2 class="confirm-dialog-title" style="font-size: 20px; font-weight: 700;">${escapeHtml(product.title || id)}</h2>
+          <small style="color: var(--text-medium); font-size: 13px; font-weight: 500;">
+            Por ${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis${kind ? `  ·  ${escapeHtml(kind)}` : ""}
+          </small>
+          <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
+        </div>
+      </div>
+      <p class="confirm-dialog-msg" style="margin-top: 14px; font-size: 14px; line-height: 1.6;">
+        ${escapeHtml(product.description || "")}
+      </p>
+      <div id="ms-detail-extra" class="ms-detail-extra">
+        <p class="ms-detail-loading">Consultando la ficha en la Microsoft Store…</p>
+      </div>
+      <div class="modal-foot" style="margin-top: 24px;">
+        <button type="button" class="btn ghost" id="ms-modal-close">Cerrar</button>
+        <button type="button" class="btn secondary" id="ms-modal-web">Ver en la web</button>
+        <button type="button" class="btn primary" id="ms-modal-install">Instalar</button>
+      </div>
+    </div>
+  `);
+
+  document.getElementById("ms-modal-close").onclick = closeModal;
+  document.getElementById("ms-modal-install").onclick = () => {
+    closeModal();
+    void installMsStoreProduct(id);
+  };
+  document.getElementById("ms-modal-web").onclick = () => {
+    invoke("open_url", { url: `https://apps.microsoft.com/detail/${id}` }).catch((error) => {
+      setStatus(`No se pudo abrir la ficha: ${error}`, "var(--red)");
+    });
+  };
+
+  let details = state.msstore.details[id];
+  if (!details) {
+    try {
+      details = await invoke("msstore_details", { productId: id });
+      state.msstore.details[id] = details;
+    } catch (error) {
+      void clientLog("warn", "msstore", `Ficha no disponible para ${id}: ${error}`);
+      details = null;
+    }
+  }
+
+  // El usuario puede haber cerrado la ficha —o abierto otra— mientras Microsoft
+  // contestaba.
+  const extra = document.getElementById("ms-detail-extra");
+  if (!extra || extra.closest("[data-ms-detail]")?.dataset.msDetail !== id) return;
+  if (!details) {
+    extra.innerHTML = "";
+    return;
+  }
+  const description = document.querySelector(".ms-detail .confirm-dialog-msg");
+  if (description && !description.textContent.trim() && details.description) {
+    description.textContent = details.description;
+  }
+  extra.innerHTML = `${msStoreFactsHtml(details)}${msStoreShotsHtml(details)}`;
+}
+
+async function installMsStoreProduct(productId) {
+  const id = String(productId || "").toUpperCase();
+  const product = msStoreProductById(id);
+  if (!product) return;
+  const store = state.msstore;
+  if (store.installing[id]) {
+    showAlertModal("Instalación en curso", `'${product.title}' ya se está instalando.`);
+    return;
+  }
+
+  const shape = msStoreAppShape(product);
+  showConfirmModal({
+    title: `Instalar ${product.title || id}`,
+    message:
+      `Se descargará desde la Microsoft Store por el canal ${msStoreRingLabel()}, ` +
+      `para ${msStoreArchPhrase()}, junto con las dependencias que necesite, ` +
+      `y se instalará en Windows. ¿Continuar?`,
+    app: shape,
+    confirmText: "Instalar",
+    confirmVariant: "primary",
+    onConfirm: async () => {
+      store.installing[id] = true;
+      state.finished.delete(msStoreTaskId(id));
+      renderContent();
+      state.operationAppId = msStoreTaskId(id);
+      showBackgroundOperationModal(
+        shape,
+        `Instalando ${product.title || id}`,
+        "Consultando la Microsoft Store…",
+        true,
+      );
+      const actions = document.getElementById("package-operation-actions");
+      if (actions) {
+        actions.innerHTML =
+          '<button type="button" class="btn ghost" id="operation-cancel">Cancelar</button>';
+        bindOperationCancel(msStoreTaskId(id), "Cancelando la instalación…");
+      }
+      try {
+        await invoke("msstore_install", {
+          productId: id,
+          name: product.title || id,
+          ring: store.ring,
+          arch: store.arch,
+        });
+      } catch (error) {
+        delete store.installing[id];
+        state.operationAppId = null;
+        closeModal();
+        renderContent();
+        setStatus(`Error: ${error}`, "var(--red)");
+        showAlertModal("Error de instalación", String(error));
+      }
+    },
+  });
+}
+
 /// Which list was on screen the last time it was drawn, so that redrawing the
 /// same one can put the scroll back where it was.
 let lastRenderedView = null;
@@ -913,6 +1468,13 @@ function renderContent() {
 }
 
 function renderContentNow() {
+  // La Microsoft Store no se dibuja a partir del catálogo: no hay lista que
+  // filtrar ni recuento de aplicaciones que dar.
+  if (state.section === MSSTORE_SECTION) {
+    renderMsStoreNow();
+    return;
+  }
+
   const apps = filteredApps();
   const searching = !!state.search.trim();
   const label = NAV.find((n) => n.id === state.section)?.label || "Inicio";
@@ -1065,6 +1627,11 @@ function bindShellDelegation() {
         void clientLog("info", "navigation", `Sección seleccionada: ${state.section}`);
         renderSidebar();
         renderContent();
+        // Los canales se piden al entrar y se dibujan cuando llegan: la
+        // sección ya está en pantalla mientras tanto.
+        if (nextSection === MSSTORE_SECTION) {
+          void ensureMsStoreOptions().then(renderContent);
+        }
       }
       return;
     }
@@ -1082,7 +1649,54 @@ function bindShellDelegation() {
     }
   });
 
+  content.addEventListener("submit", (event) => {
+    if (!event.target.closest("#ms-search-form")) return;
+    event.preventDefault();
+    void runMsStoreSearch();
+  });
+
+  content.addEventListener("input", (event) => {
+    if (event.target.id !== "ms-search") return;
+    // Sólo se anota: la lista no se filtra mientras se escribe porque no está
+    // aquí, y redibujarla robaría el cursor a cada tecla.
+    state.msstore.query = event.target.value;
+  });
+
   content.addEventListener("click", (event) => {
+    const ringButton = event.target.closest("[data-ms-ring]");
+    if (ringButton) {
+      const ring = ringButton.dataset.msRing;
+      if (state.msstore.ring !== ring) {
+        state.msstore.ring = ring;
+        void clientLog("info", "msstore", `Canal seleccionado: ${ring}`);
+        renderContent();
+      }
+      return;
+    }
+
+    const archButton = event.target.closest("[data-ms-arch]");
+    if (archButton) {
+      const arch = archButton.dataset.msArch;
+      if (state.msstore.arch !== arch) {
+        state.msstore.arch = arch;
+        void clientLog("info", "msstore", `Arquitectura seleccionada: ${arch}`);
+        renderContent();
+      }
+      return;
+    }
+
+    const msInstall = event.target.closest("[data-ms-install]");
+    if (msInstall) {
+      void installMsStoreProduct(msInstall.dataset.msInstall);
+      return;
+    }
+
+    const msCard = event.target.closest(".ms-card[data-ms-id]");
+    if (msCard) {
+      if (!event.target.closest("button")) void openMsStoreModal(msCard.dataset.msId);
+      return;
+    }
+
     const consoleButton = event.target.closest("[data-console-filter]");
     if (consoleButton) {
       const nextFilter = consoleButton.dataset.consoleFilter || "all";
@@ -1112,6 +1726,12 @@ function bindShellDelegation() {
 
   content.addEventListener("keydown", (event) => {
     if (!["Enter", " "].includes(event.key) || event.target.closest("button")) return;
+    const msCard = event.target.closest(".ms-card[data-ms-id]");
+    if (msCard) {
+      event.preventDefault();
+      void openMsStoreModal(msCard.dataset.msId);
+      return;
+    }
     const card = event.target.closest(".app-card[data-app-id]");
     if (!card) return;
     event.preventDefault();
@@ -2498,6 +3118,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     listen("downloads-changed", (event) => dispatchBackendEvent("downloads-changed", event)),
     listen("background-progress", (event) => dispatchBackendEvent("background-progress", event)),
     listen("install-finished", (event) => dispatchBackendEvent("install-finished", event)),
+    listen("msstore-install-finished", (event) =>
+      dispatchBackendEvent("msstore-install-finished", event)
+    ),
   ];
   let bootstrapPromise;
   try {
@@ -2561,6 +3184,13 @@ window.addEventListener("DOMContentLoaded", async () => {
   });
   searchInput.addEventListener("input", (e) => {
     state.search = e.target.value;
+    // La barra de arriba busca en el catálogo propio. Escribir en ella desde la
+    // Microsoft Store, que tiene su propio buscador, no puede quedarse sin
+    // efecto: se vuelve al catálogo, que es lo que se estaba pidiendo.
+    if (state.section === MSSTORE_SECTION && state.search.trim()) {
+      state.section = "home";
+      renderSidebar();
+    }
     clearTimeout(searchTimer);
     searchTimer = setTimeout(renderContent, 180);
   });
@@ -2593,6 +3223,37 @@ window.addEventListener("DOMContentLoaded", async () => {
     // it, instead of leaving a page that is about to change under the cursor.
     if (stage === "complete") hideShellBusy();
     else showShellBusy();
+  });
+
+  // Un producto de la Microsoft Store no está en el catálogo: no hay tarjeta
+  // que actualizar ni estado que reconciliar, sólo el diálogo que el usuario
+  // tiene delante y el aviso de que Windows ya lo tiene.
+  backendEventHandlers.set("msstore-install-finished", (ev) => {
+    const { ok, product_id: productId, name, cancelled = false, error } = ev.payload || {};
+    const id = String(productId || "").toUpperCase();
+    delete state.msstore.installing[id];
+    const shape = msStoreAppShape(msStoreProductById(id)) || {
+      id: msStoreTaskId(id),
+      name: name || id,
+    };
+    const ownsModal = state.operationAppId === msStoreTaskId(id);
+    if (ownsModal) state.operationAppId = null;
+
+    if (ok) {
+      setTransientStatus(`Instalado: ${shape.name}`, "var(--green)", 5000);
+      if (ownsModal) {
+        showOperationCompleted(shape, { canLaunch: false, isUpdate: false, changed: true });
+      }
+    } else {
+      if (ownsModal) closeModal();
+      if (cancelled) {
+        setTransientStatus(`Instalación cancelada: ${shape.name}`, "var(--text-light)", 5000);
+      } else {
+        setTransientStatus(`Error al instalar ${shape.name}`, "var(--red)", 5000);
+        showAlertModal("Error de instalación", String(error || "Error desconocido"));
+      }
+    }
+    if (state.section === MSSTORE_SECTION) renderContent();
   });
 
   backendEventHandlers.set("install-finished", async (ev) => {

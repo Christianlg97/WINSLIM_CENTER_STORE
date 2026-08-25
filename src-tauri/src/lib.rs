@@ -4,6 +4,8 @@ mod env_path;
 mod installer;
 mod logger;
 mod msix;
+mod msstore;
+mod msstore_soap;
 mod paths;
 mod process;
 mod residue;
@@ -1913,6 +1915,326 @@ fn cancel_all(app: AppHandle, state: State<'_, AppState>) {
     emit_dl(&app, &state);
 }
 
+// ---------------------------------------------------------------------------
+// Microsoft Store
+// ---------------------------------------------------------------------------
+//
+// Un producto de la Microsoft Store no está en el catálogo, así que no tiene
+// `id`, ni estado instalado, ni ficha que abrir. Lo que sí comparte con
+// cualquier otra instalación es la cola: se descarga y se instala como una
+// tarea más, con el mismo panel, la misma barra de progreso y los mismos
+// botones de pausar y cancelar. Para eso su tarea se llama `msstore:<producto>`,
+// un nombre que ninguna aplicación del catálogo puede tener.
+
+/// Lo que la interfaz necesita saber antes de enseñar la sección: qué canales
+/// hay, cuál viene marcado y para qué arquitectura es este equipo.
+#[tauri::command]
+fn msstore_options() -> Value {
+    serde_json::json!({
+        "rings": msstore::RINGS
+            .iter()
+            .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+            .collect::<Vec<Value>>(),
+        "default_ring": msstore::DEFAULT_RING,
+        "host_arch": msstore::host_arch(),
+    })
+}
+
+/// Busca en el catálogo de Microsoft.
+///
+/// Un identificador de producto o la dirección de su ficha no son una búsqueda:
+/// señalan una aplicación concreta, y se contesta con ella sola marcada como
+/// `direct` para que la interfaz abra su ficha en lugar de una lista de uno.
+#[tauri::command]
+async fn msstore_search(query: String) -> Result<Value, String> {
+    if let Some(product_id) = msstore::product_id_in_query(&query) {
+        logger::info(
+            "msstore",
+            format!("Producto pedido por identificador: {product_id}"),
+        );
+        let product = msstore::product_summary(&product_id).await?;
+        return Ok(serde_json::json!({ "direct": true, "products": [product] }));
+    }
+
+    logger::info("msstore", format!("Búsqueda en la tienda: {query}"));
+    let products = msstore::search(&query).await?;
+    logger::info(
+        "msstore",
+        format!("La tienda devolvió {} resultados gratuitos.", products.len()),
+    );
+    Ok(serde_json::json!({ "direct": false, "products": products }))
+}
+
+/// La ficha completa de un producto, tal y como la publica Microsoft.
+#[tauri::command]
+async fn msstore_details(product_id: String) -> Result<Value, String> {
+    msstore::details(&product_id).await
+}
+
+/// Descarga e instala un producto de la Microsoft Store.
+///
+/// Devuelve en cuanto la tarea está en la cola: el resto se sigue por los
+/// mismos eventos que cualquier otra instalación.
+#[tauri::command]
+async fn msstore_install(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    product_id: String,
+    name: Option<String>,
+    ring: Option<String>,
+    arch: Option<String>,
+) -> Result<String, String> {
+    let product_id = msstore::normalize_product_id(&product_id)?;
+    let ring = msstore::normalize_ring(ring.as_deref().unwrap_or(msstore::DEFAULT_RING)).to_string();
+    let arch = arch.unwrap_or_else(|| "auto".into());
+    let task = msstore::task_id(&product_id);
+    let name = name
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| product_id.clone());
+
+    let flags = {
+        let mut downloads = state.downloads.lock();
+        downloads
+            .begin(&task, &name, None)
+            .ok_or_else(|| format!("'{name}' ya está en la cola de descargas."))?
+    };
+    emit_dl(&app, &state);
+    logger::info(
+        "msstore",
+        format!(
+            "Instalación solicitada: producto={product_id}, canal={ring}, arquitectura={arch}"
+        ),
+    );
+
+    let app_handle = app.clone();
+    let task_for_job = task.clone();
+    let name_for_job = name.clone();
+    async_runtime::spawn(async move {
+        let app_state = app_handle.state::<AppState>();
+        let downloads = app_state.downloads.clone();
+        let started = std::time::Instant::now();
+        let outcome = run_msstore_install(
+            &app_handle,
+            &downloads,
+            &flags,
+            &task_for_job,
+            &product_id,
+            &ring,
+            &arch,
+        )
+        .await;
+
+        // Los paquetes ocupan cientos de megas y no sirven para nada una vez
+        // registrados: se van tanto si la instalación salió bien como si no.
+        let cleanup_task = task_for_job.clone();
+        if let Ok(Err(error)) =
+            async_runtime::spawn_blocking(move || installer::cleanup_package_download(&cleanup_task))
+                .await
+        {
+            logger::warn("msstore", format!("Limpieza de {task_for_job}: {error}"));
+        }
+
+        match outcome {
+            Ok(installed) => {
+                logger::info(
+                    "msstore",
+                    format!(
+                        "Instalación completada: producto={product_id}, paquetes={installed}, duración={} ms",
+                        started.elapsed().as_millis()
+                    ),
+                );
+                {
+                    let mut dl = downloads.lock();
+                    dl.update(
+                        &task_for_job,
+                        Some(TaskState::Done),
+                        Some(100),
+                        Some(format!("{name_for_job} instalado correctamente")),
+                        None,
+                    );
+                }
+                emit_dl(&app_handle, &app_state);
+                let _ = app_handle.emit(
+                    "msstore-install-finished",
+                    serde_json::json!({
+                        "ok": true,
+                        "product_id": product_id,
+                        "name": name_for_job,
+                        "packages": installed,
+                    }),
+                );
+            }
+            Err(error) => {
+                let cancelled = installer::is_install_cancelled(&error)
+                    || flags.cancel.load(Ordering::SeqCst);
+                // Lo que se recordaba de esta conversación puede ser justo lo
+                // que falló: una cookie caducada o unos enlaces firmados que ya
+                // no valen. Reintentar sobre lo mismo volvería a fallar igual.
+                msstore::forget_session();
+                if cancelled {
+                    logger::warn(
+                        "msstore",
+                        format!("Instalación cancelada: producto={product_id}"),
+                    );
+                } else {
+                    logger::error(
+                        "msstore",
+                        format!("Instalación fallida: producto={product_id}, error={error}"),
+                    );
+                }
+                {
+                    let mut dl = downloads.lock();
+                    if cancelled {
+                        dl.update(
+                            &task_for_job,
+                            Some(TaskState::Cancelled),
+                            Some(0),
+                            Some("Descarga cancelada".into()),
+                            None,
+                        );
+                    } else {
+                        let summary: String = error.chars().take(60).collect();
+                        dl.update(
+                            &task_for_job,
+                            Some(TaskState::Error),
+                            None,
+                            Some(format!("Error: {summary}")),
+                            Some(error.clone()),
+                        );
+                    }
+                }
+                emit_dl(&app_handle, &app_state);
+                let _ = app_handle.emit(
+                    "msstore-install-finished",
+                    serde_json::json!({
+                        "ok": false,
+                        "product_id": product_id,
+                        "name": name_for_job,
+                        "cancelled": cancelled,
+                        "error": error,
+                    }),
+                );
+            }
+        }
+    });
+
+    Ok(task)
+}
+
+/// Descarga cada paquete y los registra en Windows, por orden.
+///
+/// El progreso se reparte entre las dos mitades del trabajo: la descarga ocupa
+/// hasta el 70 % y la instalación el resto, para que la barra no se quede
+/// clavada en el 100 % mientras Windows todavía está registrando paquetes.
+async fn run_msstore_install(
+    app: &AppHandle,
+    downloads: &download::SharedDownloads,
+    flags: &Arc<download::DownloadFlags>,
+    task: &str,
+    product_id: &str,
+    ring: &str,
+    arch: &str,
+) -> Result<usize, String> {
+    let report = |state: Option<TaskState>, progress: Option<u32>, status: String| {
+        {
+            let mut dl = downloads.lock();
+            dl.update(task, state, progress, Some(status), None);
+        }
+        let app_state = app.state::<AppState>();
+        emit_dl(app, &app_state);
+    };
+    let cancelled = || flags.cancel.load(Ordering::SeqCst);
+    let give_up = || Err::<usize, String>(installer::CANCELLED_MARKER.to_string());
+
+    report(
+        Some(TaskState::Downloading),
+        Some(2),
+        "Consultando la Microsoft Store...".into(),
+    );
+    let packages = msstore::packages(product_id, ring, arch).await?;
+    if cancelled() {
+        return give_up();
+    }
+
+    let ordered = msstore::install_order(&packages);
+    let directory = msstore::download_dir(product_id, ring);
+    let total = ordered.len().max(1);
+
+    const DOWNLOAD_SHARE: u32 = 68;
+    const DOWNLOAD_START: u32 = 4;
+
+    for (index, package) in ordered.iter().enumerate() {
+        if cancelled() {
+            return give_up();
+        }
+        let path = msstore::package_path(&directory, package);
+        let base = DOWNLOAD_START + (DOWNLOAD_SHARE * index as u32) / total as u32;
+        let span = DOWNLOAD_SHARE / total as u32;
+        let label = package_label(package, index, total);
+
+        msstore::fetch_package(package, ring, &path, flags, |percent, status, pausable| {
+            {
+                let mut dl = downloads.lock();
+                dl.update_pausable(task, pausable);
+                dl.update(
+                    task,
+                    Some(TaskState::Downloading),
+                    Some(base + (span * percent.min(100)) / 100),
+                    Some(format!("{label} · {status}")),
+                    None,
+                );
+            }
+            let app_state = app.state::<AppState>();
+            emit_dl(app, &app_state);
+        })
+        .await?;
+    }
+
+    if cancelled() {
+        return give_up();
+    }
+
+    // A partir de aquí manda Windows: ni la pausa ni la cancelación pueden
+    // prometer nada sobre un paquete que ya se está registrando.
+    downloads.lock().update_pausable(task, false);
+
+    for (index, package) in ordered.iter().enumerate() {
+        let path = msstore::package_path(&directory, package);
+        let label = package_label(package, index, total);
+        report(
+            Some(TaskState::Installing),
+            Some(DOWNLOAD_START + DOWNLOAD_SHARE + ((28 * index as u32) / total as u32)),
+            format!("Instalando {label}..."),
+        );
+        let package = package.clone();
+        async_runtime::spawn_blocking(move || msstore::install_package(&package, &path))
+            .await
+            .map_err(|error| format!("La instalación no pudo completarse: {error}"))??;
+    }
+
+    Ok(ordered.len())
+}
+
+/// Cómo se nombra un paquete mientras se trabaja con él.
+///
+/// El nombre completo de un paquete es ilegible —`Contoso.App_2.0.0.0_x64__abc`—
+/// y de una lista de tres sólo importa por dónde va.
+fn package_label(package: &msstore::StorePackage, index: usize, total: usize) -> String {
+    let name = package
+        .file_name
+        .split('_')
+        .next()
+        .filter(|part| !part.is_empty())
+        .unwrap_or(&package.file_name)
+        .to_string();
+    if total > 1 {
+        format!("{name} ({}/{total})", index + 1)
+    } else {
+        name
+    }
+}
+
 fn completed_update_check_covers(
     completed_request: u64,
     request: u64,
@@ -3106,6 +3428,10 @@ pub fn run() {
             pause_all,
             resume_all,
             cancel_all,
+            msstore_options,
+            msstore_search,
+            msstore_details,
+            msstore_install,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

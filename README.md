@@ -52,6 +52,7 @@ Combina la seguridad y velocidad de **Rust** en el backend con la flexibilidad d
 - **Descargas Directas (`wget`)**: Descarga e instalación asistida de ejecutables (`.exe`) e instaladores MSI (`.msi`). Cuando el instalador viaja comprimido, `installer_in_archive` indica que el `.zip` es solo un envoltorio y se ejecuta el setup que contiene en lugar de tratarlo como portable.
 - **GitHub Release Sync**: Resolución dinámica de activos desde repositorios de código abierto de GitHub.
 - **Lanzadores y Enlaces Web**: Enlaces hacia instaladores web oficiales y tiendas secundarias.
+- **Microsoft Store Integrada**: Sección propia que busca en el catálogo oficial de Microsoft (`apps.microsoft.com`), resuelve el paquete real a través del servicio de entrega de Windows Update y lo instala con sus dependencias. Admite paquetes UWP/MSIX (`Add-AppxPackage`) e instaladores clásicos (`.exe`/`.msi`), con selección de canal (*Retail, Release Preview, Insider Slow, Insider Fast*) y de arquitectura, verificación de la huella SHA-256/SHA-1 publicada por Microsoft y solo productos gratuitos. Se puede buscar por nombre o pegando el enlace de la ficha.
 
 ### ⚡ Automatización y Ejecución Inteligente
 - **Auto-Launch Post-Instalación**: Al completar con éxito la instalación de una aplicación WinGet, WinSlimCenter inicia automáticamente el programa.

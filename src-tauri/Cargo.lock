@@ -433,13 +433,16 @@ dependencies = [
 name = "center-app"
 version = "2.1.4"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "futures-util",
  "parking_lot",
+ "quick-xml",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-opener",

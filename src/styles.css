@@ -2477,3 +2477,210 @@ textarea {
   font-family: var(--font-display);
   flex-shrink: 0;
 }
+
+/* ---------------------------------------------------------------------------
+   Microsoft Store
+
+   La sección trae lo único que no tenía: un buscador propio y dos filas de
+   filtros, porque su catálogo no es el de la tienda y no se puede filtrar en
+   local. Lo demás es lo que ya había — las tarjetas son `.app-card`, los
+   filtros son los mismos botones que los de los emuladores y la ficha es el
+   mismo diálogo que el de cualquier aplicación —, para que cambiar de sección
+   no sea cambiar de programa.
+   ------------------------------------------------------------------------ */
+
+.ms-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.ms-search-field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.ms-search-icon {
+  position: absolute;
+  left: 13px;
+  display: flex;
+  color: var(--text-light);
+  pointer-events: none;
+}
+
+.ms-search-input {
+  width: 100%;
+  height: 38px;
+  padding: 0 14px 0 36px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-input);
+  color: var(--text-dark);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  text-overflow: ellipsis;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.ms-search-input::placeholder {
+  color: var(--text-light);
+}
+
+.ms-search-input:focus {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--bg-input) 80%, #fff 4%);
+}
+
+.ms-toolbar .btn {
+  height: 38px;
+  flex-shrink: 0;
+}
+
+.ms-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 20px;
+  margin: 0 0 14px;
+}
+
+.ms-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.ms-filter-label {
+  color: var(--text-light);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* El emblema de la sección va dibujado a trazo, como el resto de los iconos de
+   la interfaz, sobre la misma placa oscura que lleva el logotipo del héroe. */
+.ms-hero-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 96px;
+  height: 96px;
+  flex-shrink: 0;
+  border-radius: 26px;
+  background: #25262b;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 16px 42px rgba(0, 0, 0, 0.34), inset 0 0 0 2px rgba(255, 255, 255, 0.035);
+  color: var(--accent);
+}
+
+.ms-hero-logo svg {
+  width: 50px;
+  height: 50px;
+}
+
+.ms-hero h2 {
+  font-size: clamp(24px, 2.4vw, 32px);
+  letter-spacing: -0.03em;
+}
+
+.ms-hero .project-slogan {
+  font-size: clamp(14px, 1.5vw, 18px);
+}
+
+/* Qué clase de paquete hay detrás del producto: no es lo mismo un paquete que
+   registra Windows que un instalador clásico que abre su asistente. */
+.ms-kind-tag {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
+}
+
+.ms-loading-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--font-display);
+  font-size: 15px;
+  color: var(--text-dark);
+}
+
+.ms-detail-extra:empty {
+  display: none;
+}
+
+.ms-detail-loading {
+  margin: 16px 0 0;
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+.ms-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 10px 18px;
+  margin: 16px 0 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+}
+
+.ms-fact dt {
+  color: var(--text-light);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.ms-fact dd {
+  margin: 3px 0 0;
+  color: var(--text-dark);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* Las capturas se salen del diálogo a propósito: caben las que caben y el
+   resto se alcanzan desplazando, en lugar de encoger todas hasta no verse. */
+.ms-shots {
+  display: flex;
+  gap: 8px;
+  margin-top: 14px;
+  padding-bottom: 6px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.ms-shots img {
+  height: 148px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+}
+
+@media (max-width: 760px) {
+  .ms-toolbar {
+    flex-wrap: wrap;
+  }
+
+  .ms-hero-logo {
+    width: 76px;
+    height: 76px;
+    border-radius: 22px;
+  }
+
+  .ms-hero-logo svg {
+    width: 40px;
+    height: 40px;
+  }
+}
