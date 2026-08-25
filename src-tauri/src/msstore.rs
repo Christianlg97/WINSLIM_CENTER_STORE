@@ -1767,6 +1767,16 @@ $encoded=[Convert]::ToBase64String($bytes); \
         return Ok(());
     }
     let detail = decode_powershell_error(&output.stderr);
+    if is_newer_appx_already_installed(&detail) {
+        crate::logger::info(
+            "msstore",
+            format!(
+                "Se omite {} porque Windows ya tiene instalada una versión superior.",
+                path.display()
+            ),
+        );
+        return Ok(());
+    }
     Err(if detail.is_empty() {
         format!(
             "Windows rechazó el paquete {} sin dar explicaciones.",
@@ -1775,6 +1785,13 @@ $encoded=[Convert]::ToBase64String($bytes); \
     } else {
         format!("Windows rechazó el paquete: {detail}")
     })
+}
+
+/// `Add-AppxPackage` devuelve 0x80073D06 cuando el paquete solicitado ya está
+/// cubierto por una versión más reciente. Esto es habitual en dependencias de
+/// Microsoft Store y no debe impedir que se instale el paquete principal.
+fn is_newer_appx_already_installed(detail: &str) -> bool {
+    detail.to_ascii_lowercase().contains("0x80073d06")
 }
 
 /// PowerShell 5 escribe su consola redirigida con la página de códigos del
@@ -2804,6 +2821,19 @@ mod tests {
             message
         );
         assert_eq!(decode_powershell_error(b"plain error\r\n"), "plain error");
+    }
+
+    #[test]
+    fn una_dependencia_appx_mas_antigua_no_aborta_la_instalacion() {
+        assert!(is_newer_appx_already_installed(
+            "Error de implementación con HRESULT: 0x80073D06. Ya está instalada una versión superior."
+        ));
+        assert!(is_newer_appx_already_installed(
+            "Deployment failed with HRESULT: 0x80073d06"
+        ));
+        assert!(!is_newer_appx_already_installed(
+            "Error de implementación con HRESULT: 0x80073CF9"
+        ));
     }
 
     #[test]
