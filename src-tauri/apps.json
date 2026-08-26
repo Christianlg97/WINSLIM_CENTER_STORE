@@ -1255,6 +1255,8 @@
     "source_type": "github_release",
     "github_repo": "seerge/g-helper",
     "asset_pattern": "GHelper.exe",
+    "portable": true,
+    "launch_executable": "GHelper.exe",
     "winget_id": "seerge.g-helper",
     "icon_url": "assets/g-helper.ico",
     "icon_background": "#0b5fa5",
