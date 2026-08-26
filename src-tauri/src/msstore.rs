@@ -73,6 +73,12 @@ pub const RINGS: [(&str, &str); 4] = [
 /// El canal estable que usa la Microsoft Store pública.
 pub const DEFAULT_RING: &str = "Retail";
 
+/// Estos componentes forman parte de la infraestructura de Microsoft Store.
+/// Aunque sus bundles se pueden resolver desde Windows Update, registrarlos
+/// directamente con Add-AppxPackage omite la adquisición y el despliegue que
+/// coordina la fuente oficial `msstore` de Windows Package Manager.
+const OFFICIAL_STORE_SYSTEM_PRODUCTS: [&str; 2] = ["9WZDNCRFJBMP", "9NBLGGH4LS1F"];
+
 pub fn normalize_ring(ring: &str) -> &'static str {
     match ring.trim().to_ascii_uppercase().as_str() {
         "RETAIL" => "Retail",
@@ -81,6 +87,15 @@ pub fn normalize_ring(ring: &str) -> &'static str {
         "WIF" | "INSIDERFAST" => "WIF",
         _ => DEFAULT_RING,
     }
+}
+
+/// La fuente `msstore` sólo publica el canal estable. Los anillos Insider
+/// conservan la ruta de descarga directa porque WinGet no permite elegirlos.
+pub fn uses_official_store_installer(product_id: &str, ring: &str) -> bool {
+    normalize_ring(ring) == DEFAULT_RING
+        && OFFICIAL_STORE_SYSTEM_PRODUCTS
+            .iter()
+            .any(|known| product_id.trim().eq_ignore_ascii_case(known))
 }
 
 pub fn ring_label(ring: &str) -> &'static str {
@@ -1729,6 +1744,104 @@ pub async fn fetch_package(
     Ok(())
 }
 
+/// Instala un componente del sistema mediante el agente oficial de Microsoft
+/// Store y comprueba después que AppX alcanzó realmente la versión solicitada.
+pub fn install_official_store_product(
+    product_id: &str,
+    packages: &[StorePackage],
+) -> Result<usize, String> {
+    let args = official_store_install_args(product_id);
+    let arg_refs = args.iter().map(String::as_str).collect::<Vec<_>>();
+    crate::logger::info(
+        "msstore",
+        format!(
+            "Instalando el componente {product_id} mediante la fuente oficial msstore de WinGet."
+        ),
+    );
+
+    let execution = crate::process::hidden_winget_output(&arg_refs)
+        .map_err(|error| format!("No se pudo iniciar Windows Package Manager: {error}"));
+    let winget_error = match execution {
+        Ok(output) if output.success() => None,
+        Ok(output) => Some(format_winget_failure(&output)),
+        Err(error) => Some(error),
+    };
+
+    match verify_requested_main_packages(packages) {
+        Ok(installed) => {
+            if let Some(error) = winget_error {
+                crate::logger::warn(
+                    "msstore",
+                    format!(
+                        "WinGet informó un error para {product_id}, pero Windows confirma la versión solicitada con estado Ok: {error}"
+                    ),
+                );
+            }
+            Ok(installed)
+        }
+        Err(verification_error) => Err(match winget_error {
+            Some(error) => format!("{error}\n{verification_error}"),
+            None => verification_error,
+        }),
+    }
+}
+
+fn official_store_install_args(product_id: &str) -> Vec<String> {
+    vec![
+        "install".into(),
+        "--id".into(),
+        product_id.trim().to_ascii_uppercase(),
+        "--source".into(),
+        "msstore".into(),
+        "--exact".into(),
+        "--silent".into(),
+        "--accept-package-agreements".into(),
+        "--accept-source-agreements".into(),
+        "--disable-interactivity".into(),
+        "--force".into(),
+    ]
+}
+
+fn format_winget_failure(output: &crate::process::CapturedOutput) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let detail = if !stderr.is_empty() { stderr } else { stdout };
+    let code = output
+        .code
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "desconocido".into());
+    if detail.is_empty() {
+        format!("Windows Package Manager terminó con el código {code}.")
+    } else {
+        format!("Windows Package Manager terminó con el código {code}: {detail}")
+    }
+}
+
+fn verify_requested_main_packages(packages: &[StorePackage]) -> Result<usize, String> {
+    let targets = packages
+        .iter()
+        .filter(|package| !package.is_dependency)
+        .collect::<Vec<_>>();
+    if targets.is_empty() {
+        return Err("Microsoft no devolvió un paquete principal que se pueda comprobar.".into());
+    }
+
+    let mut missing = Vec::new();
+    for package in &targets {
+        if installed_target_version(package).is_none() {
+            missing.push(package.file_name.clone());
+        }
+    }
+    if missing.is_empty() {
+        Ok(targets.len())
+    } else {
+        Err(format!(
+            "Windows no registró todavía la versión solicitada con estado Ok: {}.",
+            missing.join(", ")
+        ))
+    }
+}
+
 /// Instala un paquete ya descargado.
 ///
 /// Un paquete empaquetado lo registra Windows; un instalador clásico se ejecuta
@@ -1736,12 +1849,12 @@ pub async fn fetch_package(
 /// deja que enseñe su asistente, que es lo único que puede hacer.
 pub fn install_package(package: &StorePackage, path: &Path) -> Result<(), String> {
     match ProductKind::from_product_id(&package.product_id) {
-        Some(ProductKind::Uwp) => install_appx(path),
+        Some(ProductKind::Uwp) => install_appx(package, path),
         _ => install_win32(package, path),
     }
 }
 
-fn install_appx(path: &Path) -> Result<(), String> {
+fn install_appx(package: &StorePackage, path: &Path) -> Result<(), String> {
     let escaped = path.to_string_lossy().replace('\'', "''");
     let script = format!(
         "$ErrorActionPreference='Stop'; try {{ Add-AppxPackage -Path '{escaped}' \
@@ -1777,6 +1890,23 @@ $encoded=[Convert]::ToBase64String($bytes); \
         );
         return Ok(());
     }
+    // AppX puede terminar el registro del paquete principal y fallar después
+    // en una tarea auxiliar del despliegue. En ese caso PowerShell devuelve
+    // 0x80073CF9/0x80004005 aunque Get-AppxPackage ya muestra exactamente la
+    // versión solicitada con estado Ok. El resultado real de Windows manda:
+    // sólo convertimos el error en éxito cuando podemos demostrarlo.
+    if let Some(installed_version) = installed_target_version(package) {
+        crate::logger::warn(
+            "msstore",
+            format!(
+                "Windows informó un error al terminar {}, pero la versión {} ya está registrada con estado Ok; se da la instalación por completada. Error original: {}",
+                path.display(),
+                installed_version,
+                detail.lines().next().unwrap_or(&detail)
+            ),
+        );
+        return Ok(());
+    }
     Err(if detail.is_empty() {
         format!(
             "Windows rechazó el paquete {} sin dar explicaciones.",
@@ -1792,6 +1922,80 @@ $encoded=[Convert]::ToBase64String($bytes); \
 /// Microsoft Store y no debe impedir que se instale el paquete principal.
 fn is_newer_appx_already_installed(detail: &str) -> bool {
     detail.to_ascii_lowercase().contains("0x80073d06")
+}
+
+/// Confirma el resultado de un paquete principal después de que AppX haya
+/// devuelto un error. Los frameworks no se aceptan por esta vía: una aplicación
+/// sólo puede darse por instalada cuando su propio paquete alcanzó la versión
+/// pedida y Windows lo considera sano.
+fn installed_target_version(package: &StorePackage) -> Option<String> {
+    if package.is_dependency {
+        return None;
+    }
+    let name = package.file_name.split('_').next()?.trim();
+    let family = family_in_moniker(&package.file_name)?;
+    let requested = version_in_moniker(&package.file_name)?;
+    let bundle = is_bundle(package);
+    if name.is_empty() {
+        return None;
+    }
+
+    // El registro puede asentarse justo después de que termine el proceso que
+    // devolvió el error. Los reintentos sólo ocurren en ese camino excepcional.
+    for attempt in 0..3 {
+        if let Some(installed) = registered_package_version(name, &family, bundle) {
+            if version_reaches(&installed, &requested) {
+                return Some(installed);
+            }
+        }
+        if attempt < 2 {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+    None
+}
+
+fn version_reaches(installed: &str, requested: &str) -> bool {
+    installed.trim().eq_ignore_ascii_case(requested.trim())
+        || crate::detect::is_newer(installed, requested) == Some(true)
+}
+
+#[cfg(windows)]
+fn registered_package_version(name: &str, family: &str, bundle: bool) -> Option<String> {
+    let escaped = name.replace('\'', "''");
+    let escaped_family = family.replace('\'', "''");
+    let package_type = if bundle {
+        " -PackageTypeFilter Bundle"
+    } else {
+        ""
+    };
+    let script = format!(
+        "$package=Get-AppxPackage -Name '{escaped}'{package_type} | Where-Object {{ $_.PackageFamilyName -eq '{escaped_family}' -and $_.Status.ToString() -eq 'Ok' }} | Sort-Object Version -Descending | Select-Object -First 1; \
+if ($null -ne $package) {{ $package.Version.ToString() }}"
+    );
+    let output = crate::process::hidden_output(
+        "powershell.exe",
+        &[
+            "-NoLogo",
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            script.as_str(),
+        ],
+    )
+    .ok()?;
+    if !output.success() {
+        return None;
+    }
+    let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+#[cfg(not(windows))]
+fn registered_package_version(_name: &str, _family: &str, _bundle: bool) -> Option<String> {
+    None
 }
 
 /// PowerShell 5 escribe su consola redirigida con la página de códigos del
@@ -1888,6 +2092,11 @@ pub struct InstalledApp {
     /// El nombre con el que la llama el menú Inicio, cuando lo publica.
     pub display_name: String,
     pub version: String,
+    /// Versión de la identidad externa cuando la aplicación llegó dentro de
+    /// un bundle. No se enseña: sirve para comparar bundle con bundle en vez
+    /// de enfrentarla por error a la versión del paquete interno.
+    #[serde(skip_serializing)]
+    bundle_version: Option<String>,
     pub install_location: String,
     /// Windows se reserva algunos paquetes suyos y no deja quitarlos.
     pub can_uninstall: bool,
@@ -1905,6 +2114,8 @@ struct AppxPackageRow {
     full_name: String,
     #[serde(rename = "Version", default)]
     version: String,
+    #[serde(rename = "IsBundle", default)]
+    is_bundle: bool,
     #[serde(rename = "InstallLocation", default)]
     install_location: String,
     #[serde(rename = "NonRemovable", default)]
@@ -1954,9 +2165,9 @@ fn scan_installed_apps() -> Vec<InstalledApp> {
     const SCAN_TIMEOUT: Duration = Duration::from_secs(45);
     // `Version` es un objeto de .NET: sin convertirlo a texto, `ConvertTo-Json`
     // devuelve sus cuatro números por separado y aquí llegaría vacío.
-    let script = "Get-AppxPackage | Where-Object { $_.SignatureKind -eq 'Store' -and \
+    let script = "Get-AppxPackage -PackageTypeFilter Main,Bundle | Where-Object { $_.SignatureKind -eq 'Store' -and \
 -not $_.IsFramework -and -not $_.IsResourcePackage } | Select-Object Name,PackageFamilyName,\
-PackageFullName,@{n='Version';e={$_.Version.ToString()}},InstallLocation,NonRemovable | \
+PackageFullName,@{n='Version';e={$_.Version.ToString()}},IsBundle,InstallLocation,NonRemovable | \
 ConvertTo-Json -Compress";
     let output = match crate::process::hidden_output_timeout(
         "powershell.exe",
@@ -2003,12 +2214,31 @@ ConvertTo-Json -Compress";
     };
     let names = start_menu_names();
 
-    let apps: Vec<InstalledApp> = rows
+    let rows = rows
         .into_iter()
         .filter_map(|row| serde_json::from_value::<AppxPackageRow>(row).ok())
         .filter(|row| !row.family.trim().is_empty())
+        .collect::<Vec<_>>();
+    let mut bundle_versions = HashMap::<String, String>::new();
+    for row in rows.iter().filter(|row| row.is_bundle) {
+        let key = row.family.to_ascii_lowercase();
+        let replace = bundle_versions
+            .get(&key)
+            .and_then(|current| crate::detect::is_newer(&row.version, current))
+            .unwrap_or(true);
+        if replace {
+            bundle_versions.insert(key, row.version.clone());
+        }
+    }
+
+    let apps: Vec<InstalledApp> = rows
+        .into_iter()
+        .filter(|row| !row.is_bundle)
         .map(|row| {
             let start_menu = names.get(&row.family);
+            let bundle_version = bundle_versions
+                .get(&row.family.to_ascii_lowercase())
+                .cloned();
             InstalledApp {
                 display_name: start_menu
                     .map(|(name, _)| name.clone())
@@ -2018,6 +2248,7 @@ ConvertTo-Json -Compress";
                 full_name: row.full_name,
                 name: row.name,
                 version: row.version,
+                bundle_version,
                 install_location: row.install_location,
                 can_uninstall: !row.non_removable,
             }
@@ -2254,15 +2485,30 @@ pub async fn product_for_family(family: &str) -> Result<ProductBrief, String> {
     Ok(brief)
 }
 
-/// La versión que el canal elegido publica para esta familia, si publica alguna.
-pub async fn published_version(
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PublishedPackageVersion {
+    version: String,
+    is_bundle: bool,
+}
+
+fn is_bundle(package: &StorePackage) -> bool {
+    matches!(
+        package.file_type.trim().to_ascii_lowercase().as_str(),
+        "appxbundle" | "msixbundle"
+    )
+}
+
+/// La identidad que el canal elegido publica para esta familia. En un bundle,
+/// su versión externa puede ser deliberadamente distinta de la versión del
+/// paquete de arquitectura que Windows registra y enseña al usuario.
+async fn published_package_version(
     family: &str,
     product_id: &str,
     ring: &str,
     arch: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<PublishedPackageVersion>, String> {
     let packages = packages(product_id, ring, arch).await?;
-    let mut newest: Option<String> = None;
+    let mut newest: Option<PublishedPackageVersion> = None;
     for package in packages.iter().filter(|package| !package.is_dependency) {
         if family_in_moniker(&package.file_name).as_deref() != Some(family) {
             continue;
@@ -2270,15 +2516,32 @@ pub async fn published_version(
         let Some(version) = version_in_moniker(&package.file_name) else {
             continue;
         };
-        let replace = match newest.as_deref() {
+        let replace = match newest.as_ref() {
             None => true,
-            Some(current) => crate::detect::is_newer(&version, current).unwrap_or(false),
+            Some(current) => {
+                crate::detect::is_newer(&version, &current.version).unwrap_or(false)
+            }
         };
         if replace {
-            newest = Some(version);
+            newest = Some(PublishedPackageVersion {
+                version,
+                is_bundle: is_bundle(package),
+            });
         }
     }
     Ok(newest)
+}
+
+fn update_available(installed: &InstalledApp, published: &PublishedPackageVersion) -> bool {
+    let comparison_version = if published.is_bundle {
+        installed
+            .bundle_version
+            .as_deref()
+            .unwrap_or(&installed.version)
+    } else {
+        &installed.version
+    };
+    crate::detect::is_newer(&published.version, comparison_version).unwrap_or(false)
 }
 
 /// Lo que se sabe de una aplicación instalada tras preguntar por su producto.
@@ -2324,9 +2587,10 @@ pub async fn scan_updates(families: Vec<String>, ring: &str, arch: &str) -> Vec<
         let ring = ring.clone();
         let arch = arch.clone();
         async move {
-            let installed_version = installed
+            let installed_app = installed
                 .iter()
-                .find(|app| app.family.eq_ignore_ascii_case(&family))
+                .find(|app| app.family.eq_ignore_ascii_case(&family));
+            let installed_version = installed_app
                 .map(|app| app.version.clone())
                 .unwrap_or_default();
 
@@ -2353,15 +2617,14 @@ pub async fn scan_updates(families: Vec<String>, ring: &str, arch: &str) -> Vec<
             report.title = brief.title;
             report.icon_url = brief.icon_url;
 
-            match published_version(&family, &product_id, &ring, &arch).await {
-                Ok(latest) => {
-                    report.update_available = latest
-                        .as_deref()
-                        .zip(Some(installed_version.as_str()))
-                        .filter(|(_, installed)| !installed.is_empty())
-                        .and_then(|(latest, installed)| crate::detect::is_newer(latest, installed))
-                        .unwrap_or(false);
-                    report.latest_version = latest;
+            match published_package_version(&family, &product_id, &ring, &arch).await {
+                Ok(published) => {
+                    report.update_available = installed_app
+                        .zip(published.as_ref())
+                        .is_some_and(|(installed, published)| {
+                            update_available(installed, published)
+                        });
+                    report.latest_version = published.map(|published| published.version);
                 }
                 Err(error) => report.error = Some(error),
             }
@@ -2837,6 +3100,69 @@ mod tests {
     }
 
     #[test]
+    fn la_comprobacion_posterior_exige_la_version_pedida_o_una_superior() {
+        assert!(version_reaches("22607.1401.6.0", "22607.1401.6.0"));
+        assert!(version_reaches("22607.1401.7.0", "22607.1401.6.0"));
+        assert!(!version_reaches("11809.1001.7.0", "22607.1401.6.0"));
+    }
+
+    #[test]
+    fn un_bundle_se_compara_con_su_identidad_exterior_y_no_con_el_paquete_interno() {
+        let installed = InstalledApp {
+            family: "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe".into(),
+            full_name: "Microsoft.DesktopAppInstaller_1.29.290.0_x64__8wekyb3d8bbwe".into(),
+            name: "Microsoft.DesktopAppInstaller".into(),
+            display_name: "App Installer".into(),
+            version: "1.29.290.0".into(),
+            bundle_version: Some("2026.728.1707.0".into()),
+            install_location: String::new(),
+            can_uninstall: false,
+            launch_target: None,
+        };
+        let same_bundle = PublishedPackageVersion {
+            version: "2026.728.1707.0".into(),
+            is_bundle: true,
+        };
+        let newer_bundle = PublishedPackageVersion {
+            version: "2026.729.1.0".into(),
+            is_bundle: true,
+        };
+
+        assert!(!update_available(&installed, &same_bundle));
+        assert!(update_available(&installed, &newer_bundle));
+        assert_eq!(installed.version, "1.29.290.0");
+    }
+
+    #[test]
+    fn los_componentes_de_store_estables_usan_su_instalador_oficial() {
+        assert!(uses_official_store_installer("9wzdncrfjbmp", "Retail"));
+        assert!(uses_official_store_installer("9NBLGGH4LS1F", "retail"));
+        assert!(!uses_official_store_installer("9WZDNCRFJBMP", "RP"));
+        assert!(!uses_official_store_installer("9NBLGGH4NNS1", "Retail"));
+    }
+
+    #[test]
+    fn la_orden_oficial_es_exacta_silenciosa_y_no_interactiva() {
+        let expected = [
+            "install",
+            "--id",
+            "9WZDNCRFJBMP",
+            "--source",
+            "msstore",
+            "--exact",
+            "--silent",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
+            "--force",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+        assert_eq!(official_store_install_args(" 9wzdncrfjbmp "), expected);
+    }
+
+    #[test]
     fn de_la_ficha_win32_salen_los_instaladores_con_sus_modificadores() {
         let details = serde_json::json!({
             "installer": {
@@ -2911,6 +3237,7 @@ mod tests {
                 name: "Microsoft.WindowsTerminal".into(),
                 display_name: "Terminal".into(),
                 version: "1.22.0".into(),
+                bundle_version: None,
                 install_location: String::new(),
                 can_uninstall: true,
                 launch_target: None,
@@ -2921,6 +3248,7 @@ mod tests {
                 name: "Microsoft.SecHealthUI".into(),
                 display_name: "Seguridad de Windows".into(),
                 version: "1000.0".into(),
+                bundle_version: None,
                 install_location: String::new(),
                 can_uninstall: false,
                 launch_target: None,

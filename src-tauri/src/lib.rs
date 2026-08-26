@@ -2253,6 +2253,38 @@ async fn run_msstore_install(
         return give_up();
     }
 
+    // Estos dos componentes necesitan el flujo completo de adquisición y
+    // despliegue de Microsoft Store. Registrar únicamente el bundle deja el
+    // paquete principal fallando con 0x80073CF9 en algunos sistemas.
+    let mut official_install_error = None;
+    if msstore::uses_official_store_installer(product_id, ring) {
+        downloads.lock().update_pausable(task, false);
+        report(
+            Some(TaskState::Installing),
+            Some(72),
+            "Actualizando mediante el instalador oficial de Microsoft Store...".into(),
+        );
+        let id = product_id.to_string();
+        let targets = packages.clone();
+        let official_result = async_runtime::spawn_blocking(move || {
+            msstore::install_official_store_product(&id, &targets)
+        })
+        .await
+        .map_err(|error| format!("La instalación oficial no pudo completarse: {error}"))?;
+        match official_result {
+            Ok(installed) => return Ok(installed),
+            Err(error) => {
+                logger::warn(
+                    "msstore",
+                    format!(
+                        "La ruta oficial no completó {product_id}; se probará la descarga directa como respaldo: {error}"
+                    ),
+                );
+                official_install_error = Some(error);
+            }
+        }
+    }
+
     let ordered = msstore::install_order(&packages);
     let directory = msstore::download_dir(product_id, ring);
     let total = ordered.len().max(1);
@@ -2304,9 +2336,18 @@ async fn run_msstore_install(
             format!("Instalando {label}..."),
         );
         let package = package.clone();
-        async_runtime::spawn_blocking(move || msstore::install_package(&package, &path))
-            .await
-            .map_err(|error| format!("La instalación no pudo completarse: {error}"))??;
+        let direct_result =
+            async_runtime::spawn_blocking(move || msstore::install_package(&package, &path))
+                .await
+                .map_err(|error| format!("La instalación no pudo completarse: {error}"))?;
+        if let Err(error) = direct_result {
+            return Err(match official_install_error.as_deref() {
+                Some(official) => format!(
+                    "{error}\n\nEl instalador oficial de Microsoft Store tampoco pudo completar la actualización: {official}"
+                ),
+                None => error,
+            });
+        }
     }
 
     Ok(ordered.len())
