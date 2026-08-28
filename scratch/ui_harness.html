@@ -62,18 +62,65 @@
       async function catalog() {
         return fetch("/src-tauri/apps.json").then((response) => response.json());
       }
+      // ?installed-update=steam da por instalada esa aplicación del catálogo con
+      // una versión vieja, que es lo que hace falta para que aparezca en
+      // «Actualizaciones» y se pueda pulsar su botón.
+      function mockStatuses() {
+        const appId = msStoreTestParams.get("installed-update");
+        if (!appId) return {};
+        return {
+          [appId]: {
+            installed: true,
+            version: "1.0.0",
+            origin: "center",
+            install_path: "C:\\Apps\\" + appId + "\\app.exe",
+            install_location: "C:\\Apps\\" + appId,
+            update_available: true,
+            latest_version: "2.0.0",
+            pending_restart: false,
+            can_uninstall: true,
+            can_launch: true,
+          },
+        };
+      }
       window.__TAURI__ = {
         core: {
           invoke: async (command, args = {}) => {
             if (command === "get_bootstrap") {
-              return { catalog: await catalog(), app_version: "0.1.3", installed: {}, statuses: {}, settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
+              return { catalog: await catalog(), app_version: "0.1.3", installed: {}, statuses: mockStatuses(), settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
             }
             if (command === "reload_catalog") return catalog();
-            if (command === "refresh_statuses" || command === "check_updates") return {};
+            if (command === "refresh_statuses" || command === "check_updates") return mockStatuses();
             if (command === "get_tasks") return mockTasks;
             if (command === "get_templates") return [];
             if (command === "save_catalog") return "apps.test.json";
             if (command === "update_center_app") return "Actualización simulada correctamente";
+            // ?store-update=2.9.0 hace que el repositorio publique esa versión; sin
+            // el parámetro la tienda está al día, que es el caso corriente.
+            if (command === "check_store_update") {
+              await new Promise((resolve) => setTimeout(resolve, 500));
+              const published = msStoreTestParams.get("store-update");
+              return published ? { version: published, current: "0.1.3" } : null;
+            }
+            // ?running=2 hace que la aplicación que se va a actualizar esté
+            // abierta con ese número de procesos. ?running-packaged la declara
+            // empaquetada, que es lo que añade «Instalar igualmente».
+            if (command === "running_blocker" || command === "msstore_running_blocker") {
+              const processes = Number(msStoreTestParams.get("running") || 0);
+              if (!processes) return null;
+              const name =
+                command === "msstore_running_blocker"
+                  ? msStoreInstalled.find((app) => app.family === args.family)?.display_name ||
+                    args.family
+                  : args.appId;
+              return {
+                name,
+                processes,
+                packaged:
+                  command === "msstore_running_blocker" ||
+                  msStoreTestParams.has("running-packaged"),
+              };
+            }
             if (command === "install_app") {
               const appId = args.appEntry?.id;
               mockTasks = [{ app_id: appId, name: args.appEntry?.name || appId, progress: 100, state: "installing", status: "Instalador abierto", can_pause: false, can_resume: false, can_cancel: true }];

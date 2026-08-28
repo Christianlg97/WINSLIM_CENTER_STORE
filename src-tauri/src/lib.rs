@@ -20,7 +20,7 @@ use parking_lot::Mutex;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use store::{InstalledInfo, Settings};
@@ -494,11 +494,16 @@ async fn rebuild_statuses_async(
     .map_err(|error| format!("Falló la comprobación del sistema: {error}"))
 }
 
-/// A packaged application that is open, and therefore in the way.
+/// An installed application that is open, and therefore in the way.
 #[derive(Debug, Clone, Serialize)]
 pub struct RunningApp {
     pub name: String,
     pub processes: usize,
+    /// Windows can stage a packaged update and apply it whenever the user next
+    /// quits the application. Everything else has to be closed here and now,
+    /// because an installer cannot overwrite a file somebody holds open. The
+    /// interface offers "instalar igualmente" only where it means something.
+    pub packaged: bool,
 }
 
 /// How long an application is given to close its own windows before it is
@@ -506,46 +511,149 @@ pub struct RunningApp {
 /// enough that an update does not look stuck.
 const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(8);
 
+/// Folders too broad to sweep for processes.
+///
+/// Everything running out of a folder is taken to belong to the application
+/// installed there, which stops being true the moment the folder is one every
+/// program on the machine sits inside. An install location recorded as the
+/// Program Files root — and some installers do record exactly that — would
+/// otherwise put half of Windows on the list of things to close.
+fn is_specific_enough_to_sweep(folder: &Path) -> bool {
+    const CONTAINERS: [&str; 10] = [
+        "program files",
+        "program files (x86)",
+        "programdata",
+        "windows",
+        "users",
+        "appdata",
+        "local",
+        "locallow",
+        "roaming",
+        "desktop",
+    ];
+    let Some(name) = folder.file_name().and_then(|name| name.to_str()) else {
+        // No file name means a drive root, and nothing else.
+        return false;
+    };
+    if CONTAINERS.contains(&name.to_ascii_lowercase().as_str()) {
+        return false;
+    }
+    // A drive plus one folder is a real installation; a bare root is not.
+    folder.components().count() >= 2
+}
+
+/// Where an installed application's processes live, whether Windows packaged
+/// it or an installer copied it into a folder of its own.
+///
+/// The install path doubles as the launch target, so it can be an executable
+/// deep inside the tree; the install location is the folder Windows itself
+/// recorded and is preferred when there is one. Neither is trusted blindly: a
+/// location that covers half the disk is dropped rather than swept.
+fn running_folder_of(install_path: &str, install_location: Option<&str>) -> Option<PathBuf> {
+    if msix::is_packaged(install_path) {
+        return msix::folder_of(install_path);
+    }
+    let candidate = install_location
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| Some(install_path.trim().to_string()).filter(|value| !value.is_empty()))
+        .filter(|value| !value.starts_with("shell:"))
+        .map(PathBuf::from)?;
+    let folder = if candidate.is_dir() {
+        candidate
+    } else {
+        candidate.parent()?.to_path_buf()
+    };
+    if !folder.is_dir() || !is_specific_enough_to_sweep(&folder) {
+        return None;
+    }
+    // The store lives in a folder like any other program's. Offering to close
+    // the window the user is clicking in is never the right answer.
+    if folder == paths::exe_dir() {
+        return None;
+    }
+    Some(folder)
+}
+
 /// Whether this operation has to wait for the user to close something first.
 ///
-/// Only packaged applications are asked about. Windows will not swap or remove a
-/// package whose processes are still running: it stages the work and applies it
-/// whenever the last one exits, which is minutes or hours later and looks
-/// exactly like an update that did not happen. Every other kind of install
-/// either replaces files directly — where `stop_application_at` already clears
-/// the way — or runs a setup that asks for itself.
+/// Asked of every installed application, not only the packaged ones. Windows
+/// will not swap or remove a package whose processes are still running: it
+/// stages the work and applies it whenever the last one exits, which is minutes
+/// or hours later and looks exactly like an update that did not happen. An
+/// ordinary program fails differently but no better — its installer cannot
+/// overwrite the files the running copy holds open and rolls the whole thing
+/// back — so both deserve the same question before anything is downloaded.
 #[tauri::command]
-async fn running_blocker(
-    app: AppHandle,
-    app_id: String,
-) -> Result<Option<RunningApp>, String> {
+async fn running_blocker(app: AppHandle, app_id: String) -> Result<Option<RunningApp>, String> {
     let state = app.state::<AppState>();
-    let (install_path, name) = {
-        let statuses = state.statuses.lock();
-        let Some(status) = statuses.get(&app_id).filter(|status| status.installed) else {
-            return Ok(None);
-        };
-        (status.install_path.clone(), app_id.clone())
-    };
-    if !msix::is_packaged(&install_path) {
+    let Some(status) = state
+        .statuses
+        .lock()
+        .get(&app_id)
+        .filter(|status| status.installed)
+        .cloned()
+    else {
         return Ok(None);
-    }
+    };
     let name = state
         .catalog
         .lock()
         .iter()
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
         .and_then(|entry| entry.get("name").and_then(Value::as_str).map(str::to_string))
-        .unwrap_or(name);
-    let processes = async_runtime::spawn_blocking(move || {
-        msix::folder_of(&install_path)
-            .map(|folder| process::processes_running_at(&folder))
-            .unwrap_or(0)
+        .unwrap_or_else(|| app_id.clone());
+    let packaged = msix::is_packaged(&status.install_path);
+    let Some(folder) = running_folder_of(&status.install_path, status.install_location.as_deref())
+    else {
+        return Ok(None);
+    };
+    let processes = async_runtime::spawn_blocking(move || process::processes_running_at(&folder))
+        .await
+        .map_err(|error| format!("No se pudo comprobar si la aplicación está abierta: {error}"))?;
+    if processes > 0 {
+        logger::info(
+            "running-blocker",
+            format!("{name} está en ejecución: {processes} proceso(s), empaquetada={packaged}"),
+        );
+    }
+
+    Ok((processes > 0).then_some(RunningApp {
+        name,
+        processes,
+        packaged,
+    }))
+}
+
+/// The same question for an application that came from the Microsoft Store,
+/// which the catalog knows nothing about: it is addressed by package family
+/// and its folder is the one Windows registered for the package.
+#[tauri::command]
+async fn msstore_running_blocker(family: String) -> Result<Option<RunningApp>, String> {
+    let found = async_runtime::spawn_blocking(move || {
+        let app = msstore::installed_by_family(&family)?;
+        let folder = PathBuf::from(&app.install_location);
+        if !msix::is_package_folder(&folder) {
+            return None;
+        }
+        let name = if app.display_name.trim().is_empty() {
+            app.name.clone()
+        } else {
+            app.display_name.clone()
+        };
+        Some((name, process::processes_running_at(&folder)))
     })
     .await
     .map_err(|error| format!("No se pudo comprobar si la aplicación está abierta: {error}"))?;
 
-    Ok((processes > 0).then_some(RunningApp { name, processes }))
+    Ok(found.and_then(|(name, processes)| {
+        (processes > 0).then_some(RunningApp {
+            name,
+            processes,
+            packaged: true,
+        })
+    }))
 }
 
 /// Closes a packaged application so Windows will act on its package now rather
@@ -568,6 +676,33 @@ fn close_packaged_app(install_path: &str, name: &str) {
     let stopped = process::close_application_at(&folder, CLOSE_GRACE);
     if stopped.was_running() {
         logger::info("install", format!("{name} se cerró antes de la operación."));
+    }
+}
+
+/// Closes whatever an installed application is running, packaged or not.
+///
+/// Never done without being asked either: this is reached only when the user
+/// answered the dialog by choosing to close it. An ordinary program gets its
+/// window closed first and a few seconds to save, exactly as a packaged one
+/// does, because the cost of getting this wrong is the same in both cases.
+fn close_running_app(install_path: &str, install_location: Option<&str>, name: &str) {
+    if msix::is_packaged(install_path) {
+        close_packaged_app(install_path, name);
+        return;
+    }
+    let Some(folder) = running_folder_of(install_path, install_location) else {
+        logger::warn(
+            "install",
+            format!("No se cierra {name}: no se sabe desde qué carpeta se ejecuta."),
+        );
+        return;
+    };
+    let stopped = process::close_application_at(&folder, CLOSE_GRACE);
+    if stopped.was_running() {
+        logger::info(
+            "install",
+            format!("{name} se cerró antes de la operación ({}).", folder.display()),
+        );
     }
 }
 
@@ -1335,12 +1470,14 @@ async fn uninstall_app(
     // and the store spent six seconds probing before announcing that Windows
     // still had the application installed. Closing it first is what makes the
     // removal something the verification below can actually observe.
-    if close_running.unwrap_or(false) && msix::is_packaged(&st.install_path) {
+    if close_running.unwrap_or(false) {
         let identity = st.install_path.clone();
+        let location = st.install_location.clone();
         let closing_name = app_id.clone();
-        if let Err(error) =
-            async_runtime::spawn_blocking(move || close_packaged_app(&identity, &closing_name))
-                .await
+        if let Err(error) = async_runtime::spawn_blocking(move || {
+            close_running_app(&identity, location.as_deref(), &closing_name)
+        })
+        .await
         {
             logger::warn(
                 "uninstall",
@@ -2075,6 +2212,12 @@ async fn msstore_install(
     name: Option<String>,
     ring: Option<String>,
     arch: Option<String>,
+    // The family of the copy already installed, and the user's answer to
+    // "this application is open". Windows stages an update over a running
+    // package instead of applying it, so closing it first is what makes the
+    // update happen now rather than the next time they quit.
+    family: Option<String>,
+    close_running: Option<bool>,
 ) -> Result<String, String> {
     let product_id = msstore::normalize_product_id(&product_id)?;
     let ring = msstore::normalize_ring(ring.as_deref().unwrap_or(msstore::DEFAULT_RING)).to_string();
@@ -2102,10 +2245,50 @@ async fn msstore_install(
     let app_handle = app.clone();
     let task_for_job = task.clone();
     let name_for_job = name.clone();
+    let close_family = close_running.unwrap_or(false).then_some(family).flatten();
     async_runtime::spawn(async move {
         let app_state = app_handle.state::<AppState>();
         let downloads = app_state.downloads.clone();
         let started = std::time::Instant::now();
+
+        // Asked for in the dialog, and done before the download so the package
+        // Windows receives can be applied straight away.
+        if let Some(closing_family) = close_family {
+            {
+                let mut dl = downloads.lock();
+                dl.update(
+                    &task_for_job,
+                    Some(TaskState::Installing),
+                    Some(0),
+                    Some(format!("Cerrando {name_for_job}...")),
+                    None,
+                );
+            }
+            emit_dl(&app_handle, &app_state);
+            let closing_name = name_for_job.clone();
+            if let Err(error) = async_runtime::spawn_blocking(move || {
+                let Some(installed) = msstore::installed_by_family(&closing_family) else {
+                    return;
+                };
+                let folder = PathBuf::from(&installed.install_location);
+                if !msix::is_package_folder(&folder) {
+                    return;
+                }
+                if process::close_application_at(&folder, CLOSE_GRACE).was_running() {
+                    logger::info(
+                        "msstore",
+                        format!("{closing_name} se cerró antes de la actualización."),
+                    );
+                }
+            })
+            .await
+            {
+                logger::warn(
+                    "msstore",
+                    format!("No se pudo esperar el cierre de {name_for_job}: {error}"),
+                );
+            }
+        }
         let outcome = run_msstore_install(
             &app_handle,
             &downloads,
@@ -2945,6 +3128,7 @@ async fn install_app(
     // folder can be stopped before its installer tries to overwrite it.
     let mut installed_at = None;
     let mut installed_identity = String::new();
+    let mut installed_folder: Option<String> = None;
     let current_version = {
         let statuses = state.statuses.lock();
         if let Some(st) = statuses.get(&app_id) {
@@ -2964,6 +3148,7 @@ async fn install_app(
                     .or_else(|| Some(st.install_path.clone()))
                     .filter(|location| !location.trim().is_empty());
                 installed_identity = st.install_path.clone();
+                installed_folder = st.install_location.clone();
                 Some(st.version.clone())
             } else {
                 None
@@ -2999,9 +3184,11 @@ async fn install_app(
         // Before anything is downloaded. Windows decides whether it can apply a
         // package the moment WinGet hands it over, so closing the application
         // afterwards would be too late for this operation and would only help
-        // the next one.
-        if close_running.unwrap_or(false) && msix::is_packaged(&installed_identity) {
+        // the next one. An ordinary installer is no more forgiving: it cannot
+        // overwrite files the running copy holds open, and rolls back instead.
+        if close_running.unwrap_or(false) && !installed_identity.is_empty() {
             let identity = installed_identity.clone();
+            let location = installed_folder.clone();
             let closing_name = name_for_task.clone();
             {
                 let mut dl = downloads.lock();
@@ -3015,7 +3202,7 @@ async fn install_app(
             }
             emit_dl(&app_handle, &app_state);
             if let Err(error) = async_runtime::spawn_blocking(move || {
-                close_packaged_app(&identity, &closing_name)
+                close_running_app(&identity, location.as_deref(), &closing_name)
             })
             .await
             {
@@ -3556,6 +3743,7 @@ pub fn run() {
             open_url,
             uninstall_app,
             running_blocker,
+            msstore_running_blocker,
             launch_app,
             launch_app_elevated,
             install_app,
@@ -3690,5 +3878,31 @@ mod tests {
         assert_eq!(detect::is_newer("1.6.1", "1.6.0"), Some(true));
         assert_eq!(detect::is_newer("1.6.0", "1.6.0"), Some(false));
         assert_eq!(detect::is_newer("1.5.9", "1.6.0"), Some(false));
+    }
+
+    #[test]
+    fn a_folder_every_program_lives_in_is_never_swept_for_processes() {
+        // An install location recorded as one of these would put every running
+        // program on the list of things to close before an update.
+        assert!(!is_specific_enough_to_sweep(Path::new(r"C:\")));
+        assert!(!is_specific_enough_to_sweep(Path::new(r"C:\Program Files")));
+        assert!(!is_specific_enough_to_sweep(Path::new(r"C:\Program Files (x86)")));
+        assert!(!is_specific_enough_to_sweep(Path::new(r"C:\Windows")));
+        assert!(!is_specific_enough_to_sweep(Path::new(r"C:\Users\ana\AppData\Local")));
+
+        // An application's own folder is exactly what this is for.
+        assert!(is_specific_enough_to_sweep(Path::new(r"C:\Program Files\Ejemplo")));
+        assert!(is_specific_enough_to_sweep(Path::new(
+            r"C:\Users\ana\AppData\Local\Programs\Ejemplo"
+        )));
+    }
+
+    #[test]
+    fn a_launch_target_that_is_not_a_folder_gives_up_no_folder_of_its_own() {
+        // Neither of these exists on the machine running the test, so the check
+        // that the folder is real is what rejects them. What matters is that
+        // nothing invents a folder to sweep out of a Start Menu identifier.
+        assert!(running_folder_of(r"shell:AppsFolder\Sin.Paquete", None).is_none());
+        assert!(running_folder_of("", None).is_none());
     }
 }

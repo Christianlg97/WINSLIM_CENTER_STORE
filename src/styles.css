@@ -2743,6 +2743,35 @@ textarea {
   margin-left: auto;
 }
 
+/* Lo que la Microsoft Store contesta a la barra de búsqueda de arriba, colgado
+   de los resultados del catálogo. Se separa con una línea y un poco de aire
+   porque es otro catálogo: sin ese corte, sus tarjetas parecerían seleccionadas
+   a mano como las de encima. */
+.ms-inline-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.ms-inline-section .section-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ms-inline-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 2px 2px;
+  color: var(--text-light);
+  font-size: 12px;
+}
+
+.ms-inline-note.bad {
+  color: var(--red);
+}
+
 /* La identidad del paquete, que es lo que de verdad distingue a dos
    aplicaciones con el mismo nombre visible. */
 .ms-installed-card .card-desc {

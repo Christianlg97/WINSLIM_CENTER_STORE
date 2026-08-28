@@ -235,6 +235,18 @@ const state = {
     scanning: false,
     lastScan: null,
     busy: {},
+    // Lo que la Microsoft Store contesta a lo que se escribe en la barra de
+    // arriba, que es una pregunta distinta de la que hace su propia sección:
+    // se guardan aparte para que una no borre la otra al volver.
+    inline: {
+      // La consulta que describen los resultados guardados, y la última que
+      // se lanzó. Difieren mientras una respuesta está en el aire.
+      query: "",
+      requested: "",
+      results: [],
+      loading: false,
+      error: "",
+    },
   },
 };
 
@@ -1475,6 +1487,151 @@ function msStoreScanButtonHtml() {
     </button>`;
 }
 
+/// Lo que hay que escribir antes de ir a preguntar a Microsoft. Con una o dos
+/// letras el catálogo propio ya está filtrando y la tienda devolvería medio
+/// mundo, así que la consulta ni se lanza.
+const MSSTORE_INLINE_MIN_CHARS = 3;
+
+/// Cuántos resultados de la Microsoft Store caben en la subsección antes de
+/// que deje de ser un apunte y pase a tapar el catálogo, que es lo que se
+/// estaba buscando.
+const MSSTORE_INLINE_LIMIT = 8;
+
+/// Lo que se espera desde la última tecla. Más largo que el del catálogo, que
+/// filtra en memoria: aquí cada intento es un viaje a los servidores de
+/// Microsoft y escribir un nombre entero no puede costar seis.
+const MSSTORE_INLINE_DELAY = 550;
+
+let inlineMsStoreTimer = null;
+
+/// Dónde tiene sentido colgar los resultados de la Microsoft Store.
+///
+/// En su propia sección sobra, que ya tiene buscador. En «Mis aplicaciones» y
+/// en «Actualizaciones» también: ahí ya hay un bloque titulado Microsoft Store
+/// que habla de lo que el equipo tiene puesto, y un segundo con el mismo
+/// título ofreciendo cosas que instalar sólo confundiría.
+function inlineMsStoreFits() {
+  return !["installed", "updates", MSSTORE_SECTION].includes(state.section);
+}
+
+/// Decide si la barra de arriba tiene que ir a preguntar a la Microsoft Store.
+///
+/// Se llama a cada tecla. Vaciar la caja —o irse a la propia sección de la
+/// tienda, que tiene su buscador— borra el bloque: dejar los resultados de una
+/// búsqueda anterior debajo de otra lista los haría pasar por respuesta a algo
+/// que nadie ha preguntado.
+function scheduleInlineMsStoreSearch() {
+  const inline = state.msstore.inline;
+  const query = state.search.trim();
+  clearTimeout(inlineMsStoreTimer);
+  if (!inlineMsStoreFits() || query.length < MSSTORE_INLINE_MIN_CHARS) {
+    if (inline.query || inline.requested || inline.loading || inline.error) {
+      Object.assign(inline, {
+        query: "",
+        requested: "",
+        results: [],
+        loading: false,
+        error: "",
+      });
+      renderContent();
+    }
+    return;
+  }
+  // Ya contestada: volver sobre lo mismo tras borrar una letra y reescribirla
+  // no vale otro viaje.
+  if (inline.requested === query) return;
+  inlineMsStoreTimer = setTimeout(() => void runInlineMsStoreSearch(query), MSSTORE_INLINE_DELAY);
+}
+
+async function runInlineMsStoreSearch(query) {
+  const inline = state.msstore.inline;
+  inline.requested = query;
+  inline.loading = true;
+  inline.error = "";
+  renderContent();
+  void clientLog("info", "msstore", `Búsqueda desde la barra: ${query}`);
+  try {
+    const response = await invoke("msstore_search", { query });
+    // Mientras se preguntaba se ha seguido escribiendo: esta respuesta ya no
+    // es la de lo que hay en la caja, y pintarla sería mentir sobre qué se
+    // buscó.
+    if (inline.requested !== query) return;
+    inline.results = Array.isArray(response?.products) ? response.products : [];
+    inline.query = query;
+    inline.loading = false;
+    renderContent();
+    // Saber cuáles ya están puestas es lo que convierte «Instalar» en «Abrir»
+    // en esas tarjetas. Se pide una sola vez por sesión y no retiene la lista.
+    if (inline.results.length) void ensureMsStoreInstalled().then(() => renderContent());
+  } catch (error) {
+    if (inline.requested !== query) return;
+    inline.loading = false;
+    inline.results = [];
+    inline.query = query;
+    inline.error = String(error);
+    renderContent();
+    void clientLog("warn", "msstore", `Búsqueda desde la barra fallida: ${error}`);
+  }
+}
+
+/// La subsección que cuelga de los resultados del catálogo: lo que la
+/// Microsoft Store ofrece para lo mismo que se acaba de escribir.
+///
+/// Va debajo y con su propio encabezado a propósito. Son dos catálogos con
+/// reglas distintas —uno revisado a mano, el otro el de Microsoft entero— y
+/// mezclarlos haría pasar por seleccionado algo que no lo está.
+function msStoreInlineSectionHtml() {
+  const inline = state.msstore.inline;
+  const query = state.search.trim();
+  if (!inlineMsStoreFits()) return "";
+  if (query.length < MSSTORE_INLINE_MIN_CHARS) return "";
+
+  const head = (note) => `
+    <div class="section-head ms-section-head">
+      <h3>Microsoft Store</h3>
+      <span>${note}</span>
+      <button type="button" class="btn" data-ms-see-all="${escapeHtml(query)}"
+        title="Abrir la sección Microsoft Store con esta búsqueda">Ver en la Microsoft Store</button>
+    </div>`;
+
+  if (inline.loading && inline.requested === query) {
+    return `
+      <section class="section ms-inline-section">
+        ${head("Consultando el catálogo oficial…")}
+        <div class="ms-inline-note"><span class="pulse-dot"></span> Buscando «${escapeHtml(query)}» en la Microsoft Store…</div>
+      </section>`;
+  }
+  // Todavía no hay respuesta para esto: el bloque no aparece hasta que la haya.
+  if (inline.query !== query) return "";
+  if (inline.error) {
+    return `
+      <section class="section ms-inline-section">
+        ${head("No se pudo consultar")}
+        <div class="ms-inline-note bad">${escapeHtml(inline.error)}</div>
+      </section>`;
+  }
+  if (!inline.results.length) {
+    return `
+      <section class="section ms-inline-section">
+        ${head("Sin resultados")}
+        <div class="ms-inline-note">La Microsoft Store no publica nada gratuito que coincida con «${escapeHtml(query)}».</div>
+      </section>`;
+  }
+
+  const shown = inline.results.slice(0, MSSTORE_INLINE_LIMIT);
+  const rest = inline.results.length - shown.length;
+  return `
+    <section class="section ms-inline-section">
+      ${head(`${inline.results.length} ${inline.results.length === 1 ? "producto" : "productos"} · ${escapeHtml(msStoreRingLabel())}`)}
+      <div class="grid">${shown.map(msStoreCardHtml).join("")}</div>
+      ${
+        rest > 0
+          ? `<div class="ms-inline-note">Y ${rest} ${rest === 1 ? "resultado más" : "resultados más"} en la sección Microsoft Store.</div>`
+          : ""
+      }
+    </section>`;
+}
+
 function msStoreMatchesSearch(app, query) {
   if (!query) return true;
   return `${app.display_name} ${app.name} ${app.family}`.toLocaleLowerCase("es-ES").includes(query);
@@ -1908,59 +2065,90 @@ async function installMsStoreProduct(
   }
 
   const shape = msStoreAppShape(target);
+  const start = async ({ closeRunning = false } = {}) => {
+    store.installing[id] = isUpdate ? "update" : "install";
+    if (isUpdate && family) store.updateFamilyByProduct[id] = family;
+    else delete store.updateFamilyByProduct[id];
+    state.finished.delete(msStoreTaskId(id));
+    renderContent();
+    state.operationAppId = msStoreTaskId(id);
+    showBackgroundOperationModal(
+      shape,
+      `${isUpdate ? "Actualizando" : "Instalando"} ${name}`,
+      "Consultando la Microsoft Store…",
+      true,
+    );
+    const actions = document.getElementById("package-operation-actions");
+    if (actions) {
+      actions.innerHTML =
+        '<button type="button" class="btn ghost" id="operation-cancel">Cancelar</button>';
+      bindOperationCancel(msStoreTaskId(id), "Cancelando la instalación…");
+    }
+    try {
+      await invoke("msstore_install", {
+        productId: id,
+        name,
+        ring: store.ring,
+        arch: store.arch,
+        family,
+        closeRunning,
+      });
+    } catch (error) {
+      const newerPackage = isUpdate && isMsStoreNewerPackageError(error);
+      const report = family ? msStoreUpdateOf(family) : null;
+      const suppressed = newerPackage && suppressMsStoreUpdate(family, report);
+      delete store.installing[id];
+      delete store.updateFamilyByProduct[id];
+      state.operationAppId = null;
+      closeModal();
+      renderSidebar();
+      renderContent();
+      setStatus(`Error: ${error}`, "var(--red)");
+      showMsStoreInstallError(error, { name, newerPackage, suppressed });
+    }
+  };
+
+  // Lo mismo que se pregunta por una aplicación del catálogo: Windows aplaza
+  // la actualización de un paquete en uso y la aplica cuando el usuario cierra
+  // la aplicación, que es horas después y se parece mucho a no haber hecho nada.
+  if (isUpdate && family) {
+    const blocker = await msStoreBlockingRunningApp(family);
+    if (blocker) {
+      showRunningAppModal({
+        app: shape,
+        blocker,
+        isUpdate: true,
+        onClose: () => start({ closeRunning: true }),
+        onAnyway: () => start({ closeRunning: false }),
+      });
+      return;
+    }
+  }
+
   showConfirmModal({
     title: `${isUpdate ? "Actualizar" : "Instalar"} ${name}`,
     message: isUpdate
       ? `Se descargará la versión que publica el canal ${msStoreRingLabel()} ` +
-        `para ${msStoreArchPhrase()} y Windows sustituirá la instalada. ` +
-        `Si la aplicación está abierta se cerrará para poder aplicarla. ¿Continuar?`
+        `para ${msStoreArchPhrase()} y Windows sustituirá la instalada. ¿Continuar?`
       : `Se descargará desde la Microsoft Store por el canal ${msStoreRingLabel()}, ` +
         `para ${msStoreArchPhrase()}, junto con las dependencias que necesite, ` +
         `y se instalará en Windows. ¿Continuar?`,
     app: shape,
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
-    onConfirm: async () => {
-      store.installing[id] = isUpdate ? "update" : "install";
-      if (isUpdate && family) store.updateFamilyByProduct[id] = family;
-      else delete store.updateFamilyByProduct[id];
-      state.finished.delete(msStoreTaskId(id));
-      renderContent();
-      state.operationAppId = msStoreTaskId(id);
-      showBackgroundOperationModal(
-        shape,
-        `${isUpdate ? "Actualizando" : "Instalando"} ${name}`,
-        "Consultando la Microsoft Store…",
-        true,
-      );
-      const actions = document.getElementById("package-operation-actions");
-      if (actions) {
-        actions.innerHTML =
-          '<button type="button" class="btn ghost" id="operation-cancel">Cancelar</button>';
-        bindOperationCancel(msStoreTaskId(id), "Cancelando la instalación…");
-      }
-      try {
-        await invoke("msstore_install", {
-          productId: id,
-          name,
-          ring: store.ring,
-          arch: store.arch,
-        });
-      } catch (error) {
-        const newerPackage = isUpdate && isMsStoreNewerPackageError(error);
-        const report = family ? msStoreUpdateOf(family) : null;
-        const suppressed = newerPackage && suppressMsStoreUpdate(family, report);
-        delete store.installing[id];
-        delete store.updateFamilyByProduct[id];
-        state.operationAppId = null;
-        closeModal();
-        renderSidebar();
-        renderContent();
-        setStatus(`Error: ${error}`, "var(--red)");
-        showMsStoreInstallError(error, { name, newerPackage, suppressed });
-      }
-    },
+    onConfirm: () => start(),
   });
+}
+
+/// Si la aplicación de la tienda que se va a actualizar está abierta. Como su
+/// gemela del catálogo, nunca deja caer la operación por no poder preguntarlo.
+async function msStoreBlockingRunningApp(family) {
+  try {
+    return await invoke("msstore_running_blocker", { family });
+  } catch (error) {
+    void clientLog("warn", "running-blocker", String(error?.stack || error));
+    return null;
+  }
 }
 
 /// Actualiza una aplicación instalada, que es su producto reinstalado.
@@ -2136,6 +2324,11 @@ function renderContentNow() {
         : "";
   html += storeSection;
 
+  // Y por último, cuando se está buscando, lo que la Microsoft Store ofrece
+  // para lo mismo. Debajo del catálogo propio porque es un añadido a la
+  // búsqueda, no la búsqueda.
+  const inlineStoreSection = searching ? msStoreInlineSectionHtml() : "";
+
   if (!apps.length && !storeSection) {
     if (state.section === "updates") {
       const scanning = state.scanningUpdates;
@@ -2163,10 +2356,21 @@ function renderContentNow() {
             </div>
           </div>
         </div>`;
+    } else if (inlineStoreSection) {
+      // No decir «sin resultados» a secas teniendo justo debajo un bloque
+      // lleno de ellos: lo que no tiene nada es este catálogo, y eso es lo
+      // que se dice.
+      html += `
+        <div class="empty">
+          <h3>Nada en el catálogo de WinSlimCenter</h3>
+          <p>Ninguna de las aplicaciones seleccionadas coincide con «${escapeHtml(state.search.trim())}». Abajo, lo que ofrece la Microsoft Store.</p>
+        </div>`;
     } else {
       html += `<div class="empty"><h3>Sin resultados</h3><p>Prueba con otro buscador o sección.</p></div>`;
     }
   }
+
+  html += inlineStoreSection;
 
   const content = document.getElementById("content");
   // Replacing the markup sends the scroll back to the top. Redrawing the same
@@ -2229,6 +2433,7 @@ function bindShellDelegation() {
         state.section = nextSection;
         state.consoleFilter = "all";
         void clientLog("info", "navigation", `Sección seleccionada: ${state.section}`);
+        scheduleInlineMsStoreSearch();
         renderSidebar();
         renderContent();
         // Los canales se piden al entrar y se dibujan cuando llegan: la
@@ -2274,6 +2479,26 @@ function bindShellDelegation() {
   });
 
   content.addEventListener("click", (event) => {
+    const seeAll = event.target.closest("[data-ms-see-all]");
+    if (seeAll) {
+      state.msstore.query = seeAll.dataset.msSeeAll;
+      state.section = MSSTORE_SECTION;
+      // La barra de arriba se vacía al entrar: dentro de la sección manda su
+      // propio buscador, y dejar texto arriba haría que la siguiente tecla
+      // devolviera al catálogo a mitad de consulta.
+      state.search = "";
+      const bar = document.getElementById("search");
+      if (bar) bar.value = "";
+      scheduleInlineMsStoreSearch();
+      void clientLog("info", "msstore", `Búsqueda llevada a la sección: ${state.msstore.query}`);
+      renderSidebar();
+      renderContent();
+      void Promise.all([ensureMsStoreOptions(), ensureMsStoreInstalled()]).then(() =>
+        runMsStoreSearch(),
+      );
+      return;
+    }
+
     const ringButton = event.target.closest("[data-ms-ring]");
     if (ringButton) {
       const ring = ringButton.dataset.msRing;
@@ -2480,19 +2705,6 @@ async function installApp(id, isUpdate = false) {
   }
 
   const title = isUpdate ? `Actualizar ${app.name}` : `Instalar ${app.name}`;
-  // A packaged application that is open cannot be swapped by Windows, so the
-  // choice is put here instead of being discovered after the download.
-  const blocker = isUpdate || st.installed ? await blockingRunningApp(id) : null;
-  const message = blocker
-    ? `${blocker.name} está abierto. Windows no aplicará la actualización mientras la aplicación esté en uso: puedes cerrarla ahora y terminar de una vez, o instalarla igualmente y aplicarla la próxima vez que la cierres.`
-    : isUpdate
-      ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
-      : `¿Deseas instalar '${app.name}' en tu equipo?`;
-  const confirmText = blocker
-    ? `Cerrar ${blocker.name} y actualizar`
-    : isUpdate
-      ? "Actualizar"
-      : "Instalar";
 
   // An application published in several builds asks which one on the way in.
   // An update never asks: it reinstalls the build already chosen, because
@@ -2503,47 +2715,114 @@ async function installApp(id, isUpdate = false) {
       ? { ...app.variants, selected: remembered || app.variants.default }
       : null;
 
+  // Everything the two dialogs below end up doing. Which one asked, and what
+  // the user answered, only decides what arrives here.
+  const start = async ({ variant = null, closeRunning = false } = {}) => {
+    state.busy[id] = isUpdate ? "updating" : "installing";
+    updateVisibleAppActions(new Set([id]));
+    state.finished.delete(id);
+    renderDlPanel();
+    showPackageOperationModal(app, isUpdate);
+    try {
+      await invoke("install_app", {
+        appEntry: app,
+        forceUpdate: !!isUpdate || !!st.update_available,
+        variant: variant || remembered || app.variants?.default || null,
+        closeRunning,
+      });
+    } catch (e) {
+      delete state.busy[id];
+      state.operationAppId = null;
+      closeModal();
+      const text = String(e);
+      // A rejection can mean the backend already knows this app is installed
+      // or already has a task queued. Pull its cheap committed snapshot so
+      // status and task controls agree without a global Windows/WinGet scan.
+      try {
+        await reconcileRuntimeFromBootstrap();
+      } catch (snapshotError) {
+        void clientLog("warn", "install-rejected-state", String(snapshotError?.stack || snapshotError));
+      }
+      updateVisibleAppStatuses(new Set([id]));
+      setStatus(`Error: ${text}`, "var(--red)");
+
+      showAlertModal("Error de instalación", text);
+    }
+  };
+
+  // An application that is open is asked about before anything is downloaded:
+  // Windows will not swap a package in use, and an ordinary installer cannot
+  // overwrite files the running copy holds open. Discovering that afterwards
+  // meant spending the download to report a success that never happened.
+  const blocker = isUpdate || st.installed ? await blockingRunningApp(id) : null;
+  if (blocker) {
+    showRunningAppModal({
+      app,
+      blocker,
+      isUpdate,
+      onClose: () => start({ closeRunning: true }),
+      onAnyway: blocker.packaged ? () => start({ closeRunning: false }) : null,
+    });
+    return;
+  }
+
   showConfirmModal({
     title,
-    message,
+    message: isUpdate
+      ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
+      : `¿Deseas instalar '${app.name}' en tu equipo?`,
     app,
-    confirmText,
+    confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     choices,
-    secondary: blocker ? "Actualizar igualmente" : null,
-    onConfirm: async (picked, choice) => {
-      const variant = picked || remembered || app.variants?.default || null;
-      const closeRunning = !!blocker && choice !== "secondary";
-      state.busy[id] = isUpdate ? "updating" : "installing";
-      updateVisibleAppActions(new Set([id]));
-      state.finished.delete(id);
-      renderDlPanel();
-      showPackageOperationModal(app, isUpdate);
-      try {
-        await invoke("install_app", {
-          appEntry: app,
-          forceUpdate: !!isUpdate || !!st.update_available,
-          variant,
-          closeRunning,
-        });
-      } catch (e) {
-        delete state.busy[id];
-        state.operationAppId = null;
-        closeModal();
-        const text = String(e);
-        // A rejection can mean the backend already knows this app is installed
-        // or already has a task queued. Pull its cheap committed snapshot so
-        // status and task controls agree without a global Windows/WinGet scan.
-        try {
-          await reconcileRuntimeFromBootstrap();
-        } catch (snapshotError) {
-          void clientLog("warn", "install-rejected-state", String(snapshotError?.stack || snapshotError));
-        }
-        updateVisibleAppStatuses(new Set([id]));
-        setStatus(`Error: ${text}`, "var(--red)");
+    onConfirm: async (picked) => start({ variant: picked }),
+  });
+}
 
-        showAlertModal("Error de instalación", text);
+/**
+ * The application is open and the operation cannot go ahead over it.
+ *
+ * Two answers, and no hidden third: close it now — which means killing what it
+ * has running, said plainly because it costs the user whatever was on screen —
+ * or leave it for later. A packaged application gets one more, because Windows
+ * really can hold the update and apply it on the next quit; for everything else
+ * that button would only promise an installer that is going to fail.
+ */
+function showRunningAppModal({ app, blocker, isUpdate, onClose, onAnyway = null }) {
+  const verb = isUpdate ? "actualización" : "instalación";
+  const count =
+    blocker.processes > 1
+      ? ` Ahora mismo tiene ${blocker.processes} procesos en marcha.`
+      : "";
+  showConfirmModal({
+    title: `${blocker.name} está en ejecución`,
+    message:
+      `No se puede aplicar la ${verb} mientras ${blocker.name} esté abierta.${count}` +
+      ` Cierra la aplicación —guarda antes lo que tengas sin guardar— y continúa,` +
+      ` o deja la ${verb} para más tarde.` +
+      (onAnyway
+        ? ` También puedes instalarla igualmente: Windows la guardará y la aplicará` +
+          ` la próxima vez que cierres la aplicación.`
+        : ""),
+    app,
+    confirmText: `Cerrar ${blocker.name} y ${isUpdate ? "actualizar" : "instalar"}`,
+    confirmVariant: "primary",
+    secondary: onAnyway ? "Instalar igualmente" : null,
+    cancelText: "Más tarde",
+    onCancel: () => {
+      setTransientStatus(
+        `${blocker.name} sigue abierta: la ${verb} queda pendiente.`,
+        "var(--text-medium)",
+        6000,
+      );
+    },
+    onConfirm: async (_picked, choice) => {
+      if (choice === "secondary" && onAnyway) {
+        await onAnyway();
+        return;
       }
+      setStatus(`Cerrando ${blocker.name}…`, "var(--accent)");
+      await onClose();
     },
   });
 }
@@ -2569,7 +2848,10 @@ async function uninstallApp(id) {
   showConfirmModal({
     title: `Desinstalar ${app.name}`,
     message: uninstallBlocker
-      ? `${uninstallBlocker.name} está abierto. Windows no completará la desinstalación mientras la aplicación siga en uso, así que se cerrará antes de quitarla.`
+      ? `${uninstallBlocker.name} está en ejecución y se cerrará antes de quitarla: ` +
+        (uninstallBlocker.packaged
+          ? "mientras siga en uso, Windows deja la retirada del paquete pendiente y no llega a completarse."
+          : "mientras siga abierta no se pueden borrar sus archivos y la desinstalación falla a medias.")
       : `¿Estás seguro de que deseas desinstalar '${app.name}' de tu equipo?`,
     app,
     confirmText: uninstallBlocker ? `Cerrar ${uninstallBlocker.name} y desinstalar` : "Desinstalar",
@@ -2800,7 +3082,7 @@ function openModal(html, wide = false, locked = false) {
   modal.classList.toggle("wide", wide);
   // Cleared here rather than on close, so the treatment can never leak from the
   // modal that asked for it into the next one.
-  modal.classList.remove("modal-hero");
+  modal.classList.remove("modal-hero", "modal-about");
   modal.innerHTML = html;
   const heading = modal.querySelector("h2");
   if (heading) {
@@ -3024,7 +3306,7 @@ function renderChoices(choices) {
     </fieldset>`;
 }
 
-function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, secondary = null, onConfirm }) {
+function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, secondary = null, cancelText = "Cancelar", onCancel = null, onConfirm }) {
   const avatar = app ? renderAvatar(app, app.name?.[0] || "?", true) : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
@@ -3053,14 +3335,17 @@ function showConfirmModal({ title, message, app, confirmText = "Confirmar", conf
       <p class="confirm-dialog-msg">${escapeHtml(message)}</p>
       ${renderChoices(choices)}
       <div class="modal-foot" style="margin-top: 20px;">
-        <button type="button" class="btn ghost" id="modal-btn-cancel">Cancelar</button>
+        <button type="button" class="btn ghost" id="modal-btn-cancel">${escapeHtml(cancelText)}</button>
         ${secondary ? `<button type="button" class="btn ghost" id="modal-btn-secondary">${escapeHtml(secondary)}</button>` : ""}
         <button type="button" class="btn ${confirmVariant}" id="modal-btn-confirm">${escapeHtml(confirmText)}</button>
       </div>
     </div>
   `);
 
-  document.getElementById("modal-btn-cancel").onclick = closeModal;
+  document.getElementById("modal-btn-cancel").onclick = () => {
+    closeModal();
+    onCancel?.();
+  };
   const answer = async (choice) => {
     const picked = document.querySelector('input[name="modal-choice"]:checked')?.value;
     closeModal();
@@ -3650,16 +3935,26 @@ function showAboutModal() {
     const label = check.textContent;
     check.disabled = true;
     check.textContent = "Buscando…";
-    note.className = "about-note hidden";
+    note.textContent = "Consultando las versiones publicadas en GitHub…";
+    note.className = "about-note";
+    void clientLog("info", "self-update", "Comprobación manual pedida desde Acerca de.");
+    setStatus("Comprobando si hay una versión nueva de la tienda…", "var(--accent)");
     try {
-      const update = await invoke("check_store_update");
+      // The very same call the store makes on its own when it starts, so a
+      // release that shows the update dialog there shows it here too.
+      const update = await runStoreUpdateCheck();
       if (update) {
-        closeModal();
-        showStoreUpdateModal(update);
+        // The About dialog is gone by now: the update one took its place.
+        setTransientStatus(
+          `WinSlimCenter v${update.version} está publicada`,
+          "var(--green)",
+          8000,
+        );
         return;
       }
       note.textContent = `Ya tienes la versión más reciente${state.appVersion ? ` (v${state.appVersion})` : ""}.`;
       note.className = "about-note ok";
+      setTransientStatus("WinSlimCenter está al día", "var(--green)", 5000);
     } catch (error) {
       // Asked for on purpose, so the answer cannot be a silent shrug the way it
       // is when the check runs by itself at start-up — and it says what actually
@@ -3667,10 +3962,15 @@ function showAboutModal() {
       // network problem that was never there.
       note.textContent = String(error) || "No se pudo consultar GitHub.";
       note.className = "about-note bad";
-      clientLog("warn", "self-update", `Comprobación manual fallida: ${error}`);
+      void clientLog("warn", "self-update", `Comprobación manual fallida: ${error?.stack || error}`);
+      setTransientStatus("No se pudo comprobar si hay una versión nueva", "var(--red)", 8000);
     } finally {
-      check.disabled = false;
-      check.textContent = label;
+      // The dialog may have been replaced by the update one while this ran, in
+      // which case there is no button left to put back.
+      if (check.isConnected) {
+        check.disabled = false;
+        check.textContent = label;
+      }
     }
   };
 }
@@ -3722,19 +4022,28 @@ function showStoreUpdateModal(update) {
   };
 }
 
-// Asks the repository whether it publishes something newer than this build.
+// Asks the repository whether it publishes something newer than this build, and
+// offers it when it does.
 //
+// The single place that decides what a published release means. Start-up and
+// the "Buscar actualizaciones" button in the About dialog both come through
+// here, so the two can never answer the same question differently.
+async function runStoreUpdateCheck() {
+  const update = await invoke("check_store_update");
+  if (!update) return null;
+  void clientLog("info", "self-update", `Versión publicada: ${update.version}, instalada: ${update.current}`);
+  showStoreUpdateModal(update);
+  return update;
+}
+
 // Runs once, after the start-up scan has released the screen, and stays silent
 // about its own failures: not reaching GitHub is not something the user has to
 // act on, and it must never get in the way of a store that already works.
 async function checkStoreUpdate() {
   try {
-    const update = await invoke("check_store_update");
-    if (!update) return;
-    clientLog("info", "self-update", `Versión publicada: ${update.version}, instalada: ${update.current}`);
-    showStoreUpdateModal(update);
+    await runStoreUpdateCheck();
   } catch (error) {
-    clientLog("warn", "self-update", `No se pudo comprobar la versión publicada: ${error}`);
+    void clientLog("warn", "self-update", `No se pudo comprobar la versión publicada: ${error}`);
   }
 }
 
@@ -3817,6 +4126,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // seconds would otherwise leave the catalog filtered by a name nobody has.
     searchInput.value = "";
     state.search = "";
+    scheduleInlineMsStoreSearch();
     renderContent();
     await clientLog("info", "command", `Comando ${typed} ejecutado desde la barra de búsqueda.`);
     if (command.pending) setStatus(command.pending, "var(--accent)");
@@ -3838,6 +4148,9 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     clearTimeout(searchTimer);
     searchTimer = setTimeout(renderContent, 180);
+    // La Microsoft Store se pregunta aparte y más despacio: cada intento es un
+    // viaje a sus servidores, no un filtro sobre lo que ya está en memoria.
+    scheduleInlineMsStoreSearch();
   });
   document.getElementById("btn-about").addEventListener("click", showAboutModal);
   // Called without arguments on purpose: the click event must not leak into the

@@ -1412,9 +1412,20 @@ pub async fn github_release_text(repo: &str) -> Result<String, String> {
 }
 
 /// The public Atom feed of a repository's releases, newest entry first.
+///
+/// GitHub serves the feed through a CDN that will hand back a copy minutes old,
+/// and a release published a moment ago is exactly the one this gets asked
+/// about. The request therefore declines every cache on the way: the header for
+/// the well-behaved ones, and a parameter nobody has seen before for the rest.
 async fn github_releases_feed(client: &reqwest::Client, repo: &str) -> Result<String, String> {
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis())
+        .unwrap_or_default();
     let response = client
-        .get(format!("https://github.com/{repo}/releases.atom"))
+        .get(format!("https://github.com/{repo}/releases.atom?_={nonce}"))
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .header(reqwest::header::PRAGMA, "no-cache")
         .timeout(HTTP_METADATA_TIMEOUT)
         .send()
         .await

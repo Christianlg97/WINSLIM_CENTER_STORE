@@ -1449,6 +1449,24 @@
     "accent_color": "#4d6bfe"
   },
   {
+    "id": "qwen",
+    "name": "Qwen",
+    "description": "Aplicación oficial de Qwen para Windows: pregunta sobre archivos, capturas y cualquier cosa que tengas en pantalla, sin pasar por el navegador.",
+    "version": "latest",
+    "author": "Alibaba Cloud",
+    "category": "Asistentes de IA",
+    "section": "IA",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Alibaba.Qwen",
+    "winget_source": "winget",
+    "icon_url": "assets/catalog/qwen.svg",
+    "accent_color": "#6950ef",
+    "detect_names": [
+      "Qwen"
+    ]
+  },
+  {
     "id": "resource_hacker",
     "name": "Resource Hacker",
     "description": "Compilador y descompilador de recursos para editar ejecutables de Windows 32/64 bits (.exe y .dll).",
