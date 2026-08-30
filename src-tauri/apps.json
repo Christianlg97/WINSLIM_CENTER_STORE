@@ -1757,6 +1757,25 @@
     "featured": false
   },
   {
+    "id": "process_hacker_2",
+    "name": "Process Hacker 2",
+    "description": "Versión clásica y discontinuada (2016) del monitor avanzado de procesos, anterior al relevo por System Informer. Para quien prefiere la interfaz original.",
+    "version": "2.39",
+    "author": "Wen Jia Liu (wj32)",
+    "category": "Sistema",
+    "section": "Utilidades",
+    "source_type": "wget",
+    "download_url": "https://downloads.sourceforge.net/project/processhacker/processhacker2/processhacker-2.39-setup.exe",
+    "download_filename": "processhacker-2.39-setup.exe",
+    "icon_url": "assets/catalog/process_hacker_2.png",
+    "accent_color": "#15803d",
+    "detect_names": [
+      "Process Hacker 2",
+      "Process Hacker"
+    ],
+    "featured": false
+  },
+  {
     "id": "iobit_unlocker",
     "name": "IObit Unlocker",
     "description": "Libera archivos y carpetas bloqueados por otro programa para poder borrarlos, moverlos o renombrarlos.",
