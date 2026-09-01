@@ -3439,15 +3439,15 @@
     "source_type": "winget",
     "winget_id": "TechPowerUp.NVCleanstall",
     "winget_source": "winget",
-    "icon_url": "assets/catalog/nvcleanstall.png",
-    "accent_color": "#bc1113",
+    "icon_url": "assets/catalog/nvcleanstall.ico",
+    "accent_color": "#76b900",
     "launch_executable": "NVCleanstall.exe",
     "detect_names": [
       "NVCleanstall"
     ],
     "featured": false,
     "icon_background": "#ffffff",
-    "icon_padding": 0
+    "icon_padding": 5
   },
   {
     "id": "nvidia_profile_inspector",
