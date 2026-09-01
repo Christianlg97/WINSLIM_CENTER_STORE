@@ -3776,12 +3776,20 @@ function updateBulkUpdateModal() {
     } else if (bulk.cancelling) {
       lead.textContent = "Cancelando lo que queda…";
     } else {
-      const active = bulk.items.filter(
-        (item) => !isBulkItemFinal(item) && item.state !== "pending",
+      // El backend sirve cuatro descargas a la vez y el resto espera turno.
+      // Contarlas todas como «en marcha» diría que hay diecinueve moviéndose
+      // cuando sólo se mueven cuatro; separarlas explica por qué las demás
+      // llevan un rato quietas en cero.
+      const moving = bulk.items.filter((item) =>
+        ["downloading", "installing", "cancelling", "paused"].includes(item.state),
+      ).length;
+      const waiting = bulk.items.filter((item) =>
+        ["pending", "queued"].includes(item.state),
       ).length;
       lead.textContent =
         `${settled.length} de ${total} ${total === 1 ? "completada" : "completadas"}` +
-        (active ? ` · ${active} en marcha` : "");
+        (moving ? ` · ${moving} en marcha` : "") +
+        (waiting ? ` · ${waiting} esperando turno` : "");
     }
   }
 

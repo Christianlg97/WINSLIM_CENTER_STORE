@@ -2289,16 +2289,36 @@ async fn msstore_install(
                 );
             }
         }
-        let outcome = run_msstore_install(
-            &app_handle,
-            &downloads,
-            &flags,
-            &task_for_job,
-            &product_id,
-            &ring,
-            &arch,
-        )
-        .await;
+        // La misma cola de cuatro descargas que respeta el catálogo. Sin ella,
+        // «Actualizar todo» soltaba una descarga por aplicación y todas a la
+        // vez —veinte en 85 ms la primera vez que se probó—, cada una de
+        // cientos de megas: suficiente para agotar la línea y para que el otro
+        // extremo empiece a rechazar peticiones. Mientras espera turno la tarea
+        // se queda en «En cola», que es como la dejó `begin`.
+        //
+        // El permiso se conserva también durante el registro en Windows. El
+        // catálogo lo suelta antes porque su instalador puede tardar minutos
+        // con el usuario delante; aquí registrar un paquete es cuestión de
+        // segundos y no compensa complicar la función para adelantarlo.
+        let outcome = match acquire_download_slot(&flags).await {
+            Ok(_download_permit) => {
+                run_msstore_install(
+                    &app_handle,
+                    &downloads,
+                    &flags,
+                    &task_for_job,
+                    &product_id,
+                    &ring,
+                    &arch,
+                )
+                .await
+            }
+            // Sólo se sale de la cola por cancelación. Abajo se reconoce por la
+            // bandera `flags.cancel` —que es justamente lo que hizo salir de
+            // ella—, no por el texto del error, y se cuenta como cancelada en
+            // lugar de como fallo.
+            Err(cancelled) => Err(cancelled),
+        };
 
         // Los paquetes ocupan cientos de megas y no sirven para nada una vez
         // registrados: se van tanto si la instalación salió bien como si no.
