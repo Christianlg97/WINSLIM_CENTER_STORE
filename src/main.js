@@ -695,8 +695,8 @@ function scanUpdatesButtonHtml({ hero = false } = {}) {
   return `
     <button type="button" class="${cls}" id="btn-scan-updates"
       ${scanning ? 'disabled aria-busy="true"' : ""}
-      title="Comparar tus aplicaciones instaladas con el repositorio de WinGet">
-      ${icon}<span>${scanning ? "Consultando WinGet…" : "Buscar actualizaciones"}</span>
+      title="Comparar tus aplicaciones instaladas con WinGet y con la Microsoft Store">
+      ${icon}<span>${scanning ? "Buscando actualizaciones…" : "Buscar actualizaciones"}</span>
     </button>`;
 }
 
@@ -727,13 +727,15 @@ function updateAllButtonHtml() {
 }
 
 function lastScanLabel() {
-  if (state.scanningUpdates) return "Consultando WinGet...";
+  if (state.scanningUpdates) return "Consultando WinGet y la Microsoft Store...";
   if (!state.lastUpdateScan) return "Todas las apps vigentes";
   const time = state.lastUpdateScan.toLocaleTimeString("es-ES", {
     hour: "2-digit",
     minute: "2-digit",
   });
-  return `Última comprobación con WinGet · ${time}`;
+  // Sin nombrar sólo a WinGet: la comprobación pregunta a los dos sitios, y
+  // decir uno hacía pensar que el otro se quedaba sin mirar.
+  return `Última comprobación · ${time}`;
 }
 
 /**
@@ -1070,9 +1072,22 @@ function msStoreAppShape(product) {
   };
 }
 
+/**
+ * El producto, esté en la lista que esté.
+ *
+ * La sección Microsoft Store y el bloque que cuelga de la barra de arriba
+ * guardan sus resultados por separado, y las tarjetas que dibujan son las
+ * mismas. Mirar sólo en la primera dejaba el botón «Instalar» de la segunda sin
+ * hacer nada: no había producto que instalar, y no había forma de saberlo.
+ */
 function msStoreProductById(productId) {
   const id = String(productId || "").toUpperCase();
-  return state.msstore.results.find((product) => product.product_id === id) || null;
+  const lists = [state.msstore.results, state.msstore.inline.results];
+  for (const list of lists) {
+    const found = (list || []).find((product) => product.product_id === id);
+    if (found) return found;
+  }
+  return null;
 }
 
 function msStoreInstalledByFamily(family) {
@@ -1193,6 +1208,9 @@ async function ensureMsStoreInstalled({ force = false } = {}) {
   return store.installed;
 }
 
+/** La comprobación de la tienda que está en marcha, para poder esperarla. */
+let msStoreScanInFlight = null;
+
 /**
  * Pregunta al canal elegido qué versión publica de cada aplicación.
  *
@@ -1201,9 +1219,39 @@ async function ensureMsStoreInstalled({ force = false } = {}) {
  * acumula: una comprobación de dos aplicaciones no borra lo que se sabía de
  * las demás.
  */
-async function scanMsStoreUpdates({ families = null, quiet = false } = {}) {
+async function scanMsStoreUpdates(options = {}) {
+  // Se encadena en vez de descartarse. Pulsar «Buscar actualizaciones» mientras
+  // el arranque todavía está preguntando a la tienda dejaba esa mitad sin
+  // hacer, y el botón terminaba contestando «no hay nada» por lo que aún no
+  // había mirado nadie.
   const store = state.msstore;
-  if (store.scanning) return;
+  const previous = msStoreScanInFlight;
+  const scan = (async () => {
+    if (previous) await previous;
+    return runMsStoreUpdatesScan(options);
+  })();
+  msStoreScanInFlight = scan;
+  // La marca de ocupado la lleva el encadenado y no cada consulta: si la
+  // pusiera cada una, entre la que acaba y la que espera se apagaría, y el
+  // botón parpadearía disponible sin estarlo.
+  store.scanning = true;
+  if (!options.quiet) renderContent();
+  try {
+    await scan;
+  } finally {
+    if (msStoreScanInFlight === scan) {
+      msStoreScanInFlight = null;
+      store.scanning = false;
+    }
+    renderSidebar();
+    renderContent();
+  }
+}
+
+/// Una consulta al canal, sin más. Del ocupado y del redibujado se encarga
+/// quien la encadena.
+async function runMsStoreUpdatesScan({ families = null } = {}) {
+  const store = state.msstore;
   await ensureMsStoreOptions();
   if (!families) {
     await ensureMsStoreInstalled();
@@ -1211,8 +1259,6 @@ async function scanMsStoreUpdates({ families = null, quiet = false } = {}) {
   }
   if (!families.length) return;
 
-  store.scanning = true;
-  if (!quiet) renderContent();
   try {
     const reports =
       (await invoke("msstore_check_updates", {
@@ -1229,10 +1275,6 @@ async function scanMsStoreUpdates({ families = null, quiet = false } = {}) {
     store.lastScan = new Date();
   } catch (error) {
     void clientLog("warn", "msstore-updates", String(error?.stack || error));
-  } finally {
-    store.scanning = false;
-    renderSidebar();
-    renderContent();
   }
 }
 
@@ -2219,8 +2261,17 @@ async function installMsStoreProduct(
 ) {
   const id = String(productId || "").toUpperCase();
   const store = state.msstore;
-  const target = product || msStoreProductById(id);
-  if (!target) return;
+  // Si la tarjeta que se pulsó no está en ninguna lista se pide la ficha, como
+  // hace el modal. Quedarse callado aquí es lo que hacía que pulsar «Instalar»
+  // pareciera que el botón no existía.
+  const target = product || (await msStoreResolveProduct(id));
+  if (!target) {
+    showAlertModal(
+      "Producto no disponible",
+      `La Microsoft Store no devolvió la ficha de ${id}, así que no se puede instalar.`,
+    );
+    return;
+  }
   const name = target.title || id;
   if (store.installing[id]) {
     showAlertModal("Instalación en curso", `'${name}' ya se está instalando.`);
@@ -2516,8 +2567,8 @@ function renderContentNow() {
               ${scanUpdatesButtonHtml({ hero: true })}
               <p class="empty-updates-hint">${
                 scanning
-                  ? "Comparando las versiones instaladas con el repositorio de WinGet."
-                  : "Consulta WinGet en busca de versiones nuevas de tus aplicaciones instaladas."
+                  ? "Comparando las versiones instaladas con WinGet y con la Microsoft Store."
+                  : "Consulta WinGet y la Microsoft Store en busca de versiones nuevas de tus aplicaciones instaladas."
               }</p>
               <div class="empty-updates-status">
                 <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}

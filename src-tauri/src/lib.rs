@@ -11,6 +11,7 @@ mod process;
 mod residue;
 mod start_menu;
 mod store;
+mod techpowerup;
 mod webapp;
 
 use detect::AppStatus;
@@ -897,6 +898,9 @@ async fn save_catalog(
             "github_release" | "github_repo" => Some("github_repo"),
             "winget" => Some("winget_id"),
             "web" | "webapp" => Some("web_url"),
+            // TechPowerUp no publica un enlace fijo: se resuelve por su ficha,
+            // y de ella solo hace falta saber el nombre.
+            "techpowerup" => Some("techpowerup_slug"),
             // Un componente no se descarga: llega dentro de otra aplicación y
             // solo hace falta saber dónde queda su ejecutable.
             "component" => Some("known_launch_paths"),

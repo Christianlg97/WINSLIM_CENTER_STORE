@@ -1369,7 +1369,7 @@ fn latest_of_each(candidates: HashMap<String, UwpCandidate>) -> Vec<StorePackage
                 latest.insert(key, candidate);
             }
             Some(existing) => {
-                if is_newer(candidate.modified.as_deref(), existing.modified.as_deref()) {
+                if is_newer(&candidate, existing) {
                     latest.insert(key, candidate);
                 }
             }
@@ -1383,15 +1383,33 @@ fn latest_of_each(candidates: HashMap<String, UwpCandidate>) -> Vec<StorePackage
     packages
 }
 
-/// Compara dos marcas de publicación. Vienen en ISO-8601 y con el mismo
-/// formato, así que el orden alfabético es el cronológico; comparar el texto
-/// evita traer un analizador de fechas para una decisión de desempate.
-fn is_newer(candidate: Option<&str>, existing: Option<&str>) -> bool {
-    match (candidate, existing) {
-        (Some(candidate), Some(existing)) => candidate > existing,
+/// Cuál de dos publicaciones del mismo paquete es la que hay que instalar.
+///
+/// Manda la marca de publicación: viene en ISO-8601 y con el mismo formato, así
+/// que el orden alfabético es el cronológico y comparar el texto evita traer un
+/// analizador de fechas para una decisión de desempate.
+fn is_newer(candidate: &UwpCandidate, existing: &UwpCandidate) -> bool {
+    match (candidate.modified.as_deref(), existing.modified.as_deref()) {
+        (Some(candidate), Some(existing)) if candidate != existing => candidate > existing,
         (Some(_), None) => true,
-        _ => false,
+        (None, Some(_)) => false,
+        // El mismo archivo republicado: la marca no cambia porque el archivo no
+        // ha cambiado, pero sí la revisión, y sólo la alta sigue teniendo
+        // archivos publicados. Sin este desempate ganaba la que primero saliera
+        // del mapa —un orden que cambia en cada consulta—, y de vez en cuando
+        // tocaba pedir el enlace de una identidad que ya no tenía ninguno.
+        _ => revision_of(candidate) > revision_of(existing),
     }
+}
+
+/// El número de revisión de una publicación, o cero si no lo dice.
+fn revision_of(candidate: &UwpCandidate) -> u64 {
+    candidate
+        .package
+        .revision_number
+        .as_deref()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .unwrap_or(0)
 }
 
 async fn uwp_packages(product_id: &str, ring: &str) -> Result<Vec<StorePackage>, String> {
@@ -1620,7 +1638,33 @@ pub async fn download_url(package: &StorePackage, ring: &str) -> Result<String, 
     // el SHA-1 histórico con el que el servicio identifica cuál de los enlaces
     // devueltos pertenece a este paquete. Usar aquí el SHA-256 hace que no case
     // ninguno y puede acabar descargando otro archivo de la misma respuesta.
-    parse_download_url(&response, package.file_digest.as_deref())
+    let link = parse_download_url(&response, package.file_digest.as_deref());
+    if link.is_err() {
+        // Qué llegó de verdad: sin esto, la próxima vez que ocurra sólo consta
+        // la huella que se pedía y no hay con qué compararla.
+        crate::logger::debug(
+            "msstore",
+            format!(
+                "El servicio devolvió para {} las huellas [{}]",
+                package.file_name,
+                digests_in(&response).join(", ")
+            ),
+        );
+    }
+    link
+}
+
+/// Las huellas que el servicio sí publicó en una respuesta.
+fn digests_in(xml_text: &str) -> Vec<String> {
+    let Ok(document) = xml::parse(xml_text) else {
+        return Vec::new();
+    };
+    let mut locations = Vec::new();
+    document.find_all("FileLocation", &mut locations);
+    locations
+        .iter()
+        .filter_map(|location| location.text_of("FileDigest"))
+        .collect()
 }
 
 /// La dirección de descarga dentro de la respuesta.
@@ -1660,6 +1704,66 @@ pub fn parse_download_url(xml_text: &str, file_digest: Option<&str>) -> Result<S
         .map(|node| node.inner_text().trim().to_string())
         .filter(|url| !url.is_empty())
         .ok_or_else(|| "El servicio de entrega no devolvió un enlace de descarga.".into())
+}
+
+/// Vuelve a preguntar por los paquetes del producto sin usar lo recordado.
+///
+/// Devuelve el que ocupa el sitio de este —el del mismo nombre completo—, que
+/// es el único que cabe en la ruta que la descarga ya tiene reservada.
+async fn refreshed_package(package: &StorePackage, ring: &str) -> Option<StorePackage> {
+    if ProductKind::from_product_id(&package.product_id) != Some(ProductKind::Uwp) {
+        return None;
+    }
+    let ring = normalize_ring(ring);
+    let key = packages_key(&package.product_id, ring);
+    PACKAGES_CACHE
+        .lock()
+        .get_or_insert_with(HashMap::new)
+        .remove(&key);
+    let resolved = uwp_packages(&package.product_id, ring).await.ok()?;
+    remember_packages(&key, &resolved);
+    resolved
+        .into_iter()
+        .find(|candidate| candidate.file_name == package.file_name)
+}
+
+/// El enlace de descarga de un paquete, rehaciendo su identidad si la que se
+/// guardaba ya no vale.
+///
+/// La lista de paquetes se recuerda cinco minutos y la comprobación de
+/// actualizaciones la deja escrita antes de que nadie pulse nada. En ese hueco
+/// Microsoft puede republicar el producto, y entonces la identidad guardada se
+/// queda sin archivos publicados: el servicio contesta, pero con los de otra, y
+/// entre ellos no está la huella que se pide. Volver a listar y reintentar una
+/// vez es lo que hasta ahora había que hacer a mano, cerrando el aviso y
+/// pulsando otra vez.
+///
+/// Devuelve también el paquete con el que se consiguió el enlace cuando no es
+/// el de partida: su huella, y no la caducada, es la que hay que comprobar
+/// sobre lo descargado.
+async fn download_link(
+    package: &StorePackage,
+    ring: &str,
+) -> Result<(String, Option<StorePackage>), String> {
+    let stale = match download_url(package, ring).await {
+        Ok(url) => return Ok((url, None)),
+        Err(error) => error,
+    };
+    let Some(fresh) = refreshed_package(package, ring).await else {
+        return Err(stale);
+    };
+    // Si el reintento también falla, lo que se cuenta es el primer error: el
+    // segundo describe una identidad que el usuario nunca llegó a pedir.
+    let url = download_url(&fresh, ring).await.map_err(|_| stale)?;
+    crate::logger::warn(
+        "msstore",
+        format!(
+            "La identidad guardada de {} ya no tenía archivos publicados; se reintentó con la que publica ahora el canal {}.",
+            package.file_name,
+            ring_label(normalize_ring(ring))
+        ),
+    );
+    Ok((url, Some(fresh)))
 }
 
 // ---------------------------------------------------------------------------
@@ -1716,7 +1820,10 @@ pub async fn fetch_package(
         let _ = std::fs::remove_file(destination);
     }
 
-    let url = download_url(package, ring).await?;
+    let (url, refreshed) = download_link(package, ring).await?;
+    // A partir de aquí manda el paquete que dio el enlace: comprobar lo
+    // descargado contra la huella de la identidad caducada lo tiraría entero.
+    let package = refreshed.as_ref().unwrap_or(package);
     download::download_url(&url, destination, flags, on_progress).await?;
 
     if package.has_digest() {
@@ -2815,6 +2922,32 @@ mod tests {
         // de 32 bits suelto, no.
         assert_eq!(kept, vec!["x64", "neutral", "x86-dep"]);
         assert_eq!(filter_by_arch(all, "all").len(), 5);
+    }
+
+    #[test]
+    fn entre_dos_publicaciones_del_mismo_archivo_gana_la_revision_alta() {
+        let publicacion = |id: &str, revision: &str| UwpCandidate {
+            package: StorePackage {
+                update_id: Some(id.into()),
+                revision_number: Some(revision.into()),
+                ..package("x64", false)
+            },
+            identity_name: Some("OpenAI.Codex".into()),
+            // El archivo es el mismo en las dos, así que su marca de
+            // publicación tampoco las distingue: sólo la revisión dice cuál
+            // sigue teniendo archivos que descargar.
+            modified: Some("2026-08-31T10:00:00Z".into()),
+        };
+        let publicadas: HashMap<String, UwpCandidate> = [
+            ("superseded".to_string(), publicacion("superseded", "1")),
+            ("viva".to_string(), publicacion("viva", "7")),
+        ]
+        .into_iter()
+        .collect();
+
+        let elegidas = latest_of_each(publicadas);
+        assert_eq!(elegidas.len(), 1);
+        assert_eq!(elegidas[0].update_id.as_deref(), Some("viva"));
     }
 
     #[test]

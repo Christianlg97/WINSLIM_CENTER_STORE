@@ -1804,6 +1804,10 @@ where
     );
 
     let mut resolved_version: Option<String> = None;
+    // Casi todos los orígenes resuelven una dirección y se descarga de ella.
+    // TechPowerUp resuelve una lista de espejos que se prueban por orden, así
+    // que su plan viaja aparte hasta la descarga.
+    let mut techpowerup_plan: Option<crate::techpowerup::Plan> = None;
 
     let url = match source_type {
         "direct" | "wget" => app
@@ -1877,6 +1881,35 @@ where
         "winget" => winget_fallback_url
             .take()
             .ok_or("No se pudo resolver el enlace directo de fallback")?,
+        "techpowerup" => {
+            let slug = app
+                .get("techpowerup_slug")
+                .and_then(|v| v.as_str())
+                .ok_or("Falta techpowerup_slug")?;
+            on_progress(
+                5,
+                "Consultando los servidores de TechPowerUp...".into(),
+                false,
+            );
+            let plan = crate::techpowerup::plan(slug).await?;
+            crate::logger::info(
+                "installer",
+                format!(
+                    "TechPowerUp publica {} para {app_id}, servido desde {} servidor(es)",
+                    plan.file_name,
+                    plan.mirrors.len()
+                ),
+            );
+            if let Some(version) = plan.version.clone() {
+                resolved_version = Some(version);
+            }
+            // La dirección de verdad se pide espejo a espejo, ya en la
+            // descarga, porque va firmada y caduca en minutos. Lo que queda
+            // aquí es de dónde salió, para el registro.
+            let page = plan.page_url.clone();
+            techpowerup_plan = Some(plan);
+            page
+        }
         other => return Err(format!("Tipo de origen desconocido: {other}")),
     };
 
@@ -1889,6 +1922,13 @@ where
         .and_then(|v| v.as_str())
         .filter(|s| !s.trim().is_empty())
         .map(|s| s.to_string())
+        // La ficha de TechPowerUp dice cómo se llama el archivo; la dirección
+        // de la ficha, no.
+        .or_else(|| {
+            techpowerup_plan
+                .as_ref()
+                .map(|plan| plan.file_name.clone())
+        })
         .or_else(|| file_name_from_url(&url))
         .unwrap_or_else(|| format!("{app_id}.bin"));
 
@@ -1901,7 +1941,9 @@ where
         ),
     );
 
-    if source_type == "winget" {
+    if let Some(plan) = techpowerup_plan.as_ref() {
+        download_from_techpowerup(plan, &dest_file, flags, &mut on_progress).await?;
+    } else if source_type == "winget" {
         download::download_with_curl(&url, &dest_file, flags, |p, s, pausable| {
             // Which downloader is doing the work is the store's business, not
             // something to label the user's progress bar with.
@@ -2107,6 +2149,97 @@ where
 /// register a program that was never going to be registered, and told the user
 /// they had cancelled an installation that had in fact just succeeded — while
 /// the launcher it had started was still on screen.
+/// Descarga probando los espejos de TechPowerUp en el orden en que los ofrece.
+///
+/// Un espejo puede estar caído, cortar a mitad o entregar el archivo a medias
+/// sin decirlo. Cuando eso pasa quedan los demás, así que se pasa al siguiente
+/// en lugar de dar la instalación por fallada; sólo cuando se acaban todos se
+/// cuenta el último error, que es lo único que ya no tiene remedio.
+async fn download_from_techpowerup(
+    plan: &crate::techpowerup::Plan,
+    dest: &Path,
+    flags: &DownloadFlags,
+    on_progress: &mut impl FnMut(u32, String, bool),
+) -> Result<(), String> {
+    let total = plan.mirrors.len();
+    let mut last_error = String::from("no llegó a intentarse ninguno");
+
+    for (index, mirror) in plan.mirrors.iter().enumerate() {
+        if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CANCELLED_MARKER.into());
+        }
+        on_progress(
+            5,
+            format!("Conectando con {} ({} de {total})...", mirror.name, index + 1),
+            false,
+        );
+
+        let attempt = match crate::techpowerup::mirror_url(plan, mirror).await {
+            Ok(url) => {
+                crate::logger::info(
+                    "installer",
+                    format!(
+                        "TechPowerUp entrega {} desde {}: {}",
+                        plan.file_name,
+                        mirror.name,
+                        crate::logger::safe_url(&url)
+                    ),
+                );
+                download::download_url(&url, dest, flags, |percent, status, pausable| {
+                    on_progress(percent, status, pausable)
+                })
+                .await
+                .map(|_| ())
+                .and_then(|()| verify_techpowerup_digest(plan, dest))
+            }
+            Err(error) => Err(error),
+        };
+
+        match attempt {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                // Cancelar no es que el espejo fallara: seguir probando sería
+                // desobedecer al usuario trece veces seguidas.
+                if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err(CANCELLED_MARKER.into());
+                }
+                crate::logger::warn(
+                    "installer",
+                    format!("{} no sirvió {}: {error}", mirror.name, plan.file_name),
+                );
+                let _ = tokio::fs::remove_file(dest).await;
+                last_error = error;
+            }
+        }
+    }
+
+    Err(format!(
+        "Ninguno de los {total} servidores de TechPowerUp entregó {}. El último dijo: {last_error}",
+        plan.file_name
+    ))
+}
+
+/// Comprueba lo descargado contra la huella que publica la ficha.
+///
+/// Un espejo que corta a mitad devuelve un archivo perfectamente legible y más
+/// corto; sin esto se instalaría como si estuviera entero.
+fn verify_techpowerup_digest(
+    plan: &crate::techpowerup::Plan,
+    dest: &Path,
+) -> Result<(), String> {
+    let Some(expected) = plan.sha256.as_deref() else {
+        return Ok(());
+    };
+    match crate::msstore::verify_digest(dest, expected, "SHA256") {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(format!(
+            "lo entregado no coincide con la huella que TechPowerUp publica para {}",
+            plan.file_name
+        )),
+        Err(error) => Err(error),
+    }
+}
+
 fn is_portable_payload(app: &Value) -> bool {
     app.get("portable")
         .and_then(Value::as_bool)
