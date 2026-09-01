@@ -1867,6 +1867,13 @@ function msStoreFactsHtml(details) {
     </dl>`;
 }
 
+/**
+ * Las capturas de la ficha, en la tira que se desplaza a lo ancho.
+ *
+ * A la altura que caben aquí no se lee lo que enseñan, así que cada una es un
+ * botón que las abre a tamaño completo. Botón y no imagen suelta: así se llega
+ * con el tabulador y se abre con Enter sin inventar nada, y el foco se ve.
+ */
 function msStoreShotsHtml(details) {
   const sources = [details.screenshots, details.images, details.previews].find(
     (list) => Array.isArray(list) && list.length,
@@ -1877,14 +1884,121 @@ function msStoreShotsHtml(details) {
     .slice(0, 8);
   if (!shots.length) return "";
   return `
-    <div class="ms-shots" aria-label="Capturas de la aplicación">
+    <div class="ms-shots" aria-label="Capturas de la aplicación" data-shots="${escapeHtml(
+      JSON.stringify(shots),
+    )}">
       ${shots
         .map(
-          (url) =>
-            `<img src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()" />`
+          (url, index) => `
+        <button type="button" class="ms-shot" data-shot-index="${index}"
+          aria-label="Ampliar la captura ${index + 1} de ${shots.length}">
+          <img src="${escapeHtml(url)}" alt="" loading="lazy" decoding="async"
+            onerror="this.closest('.ms-shot')?.remove()" />
+        </button>`
         )
         .join("")}
     </div>`;
+}
+
+/// La captura que se está mirando ampliada, y la tira a la que pertenece.
+/// `null` cuando el visor no está abierto.
+let shotViewer = null;
+
+/**
+ * Abre una captura a tamaño completo por encima de la ficha.
+ *
+ * Capa propia, no `openModal`: el diálogo del producto tiene que seguir donde
+ * estaba —con su ficha ya pedida y su desplazamiento— para volver a él al
+ * cerrar el visor. Reutilizar el único hueco de modal lo habría borrado.
+ */
+function openShotViewer(shots, index) {
+  if (!Array.isArray(shots) || !shots.length) return;
+  closeShotViewer();
+  const overlay = document.createElement("div");
+  overlay.className = "shot-viewer";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-label", "Captura ampliada");
+  overlay.innerHTML = `
+    <button type="button" class="shot-viewer-close" data-shot-close aria-label="Cerrar la captura">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        stroke-width="2.4" stroke-linecap="round" aria-hidden="true">
+        <path d="M6 6l12 12M18 6L6 18" />
+      </svg>
+    </button>
+    ${
+      shots.length > 1
+        ? `<button type="button" class="shot-viewer-nav prev" data-shot-step="-1" aria-label="Captura anterior">
+             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+               <path d="M15 5l-7 7 7 7" />
+             </svg>
+           </button>
+           <button type="button" class="shot-viewer-nav next" data-shot-step="1" aria-label="Captura siguiente">
+             <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+               <path d="M9 5l7 7-7 7" />
+             </svg>
+           </button>`
+        : ""
+    }
+    <figure class="shot-viewer-stage">
+      <img class="shot-viewer-image" alt="" decoding="async" />
+    </figure>
+    ${shots.length > 1 ? '<div class="shot-viewer-count" aria-live="polite"></div>' : ""}
+  `;
+  document.body.appendChild(overlay);
+  shotViewer = {
+    shots,
+    index: Math.max(0, Math.min(shots.length - 1, Number(index) || 0)),
+    overlay,
+    returnFocus: document.activeElement,
+  };
+
+  // Pinchar el fondo cierra; pinchar la imagen o un control, no.
+  overlay.addEventListener("click", (event) => {
+    if (event.target.closest("[data-shot-close]")) {
+      closeShotViewer();
+      return;
+    }
+    const step = event.target.closest("[data-shot-step]");
+    if (step) {
+      stepShotViewer(Number(step.dataset.shotStep));
+      return;
+    }
+    if (!event.target.closest(".shot-viewer-stage")) closeShotViewer();
+  });
+
+  renderShotViewer();
+  overlay.querySelector(".shot-viewer-close")?.focus();
+}
+
+function renderShotViewer() {
+  if (!shotViewer) return;
+  const { shots, index, overlay } = shotViewer;
+  const image = overlay.querySelector(".shot-viewer-image");
+  if (image) {
+    image.src = shots[index];
+    image.alt = `Captura ${index + 1} de ${shots.length}`;
+  }
+  const count = overlay.querySelector(".shot-viewer-count");
+  if (count) count.textContent = `${index + 1} / ${shots.length}`;
+}
+
+/// Pasa a la captura siguiente o anterior, dando la vuelta por los extremos.
+function stepShotViewer(delta) {
+  if (!shotViewer || shotViewer.shots.length < 2) return;
+  const total = shotViewer.shots.length;
+  shotViewer.index = (shotViewer.index + delta + total) % total;
+  renderShotViewer();
+}
+
+function closeShotViewer() {
+  if (!shotViewer) return;
+  const { overlay, returnFocus } = shotViewer;
+  shotViewer = null;
+  overlay.remove();
+  if (returnFocus instanceof HTMLElement && document.contains(returnFocus)) returnFocus.focus();
 }
 
 /**
@@ -2035,6 +2149,23 @@ async function openMsStoreModal(productId) {
     description.textContent = details.description;
   }
   extra.innerHTML = `${msStoreFactsHtml(details)}${msStoreShotsHtml(details)}`;
+
+  // La tira de capturas se acaba de crear, así que su escucha se pone aquí y
+  // no en la delegación general: aquella vive en la lista de la tienda, y esto
+  // es del diálogo, que se va entero cuando se cierra.
+  const strip = extra.querySelector(".ms-shots");
+  if (strip) {
+    let shots = [];
+    try {
+      shots = JSON.parse(strip.dataset.shots || "[]");
+    } catch {
+      shots = [];
+    }
+    strip.addEventListener("click", (event) => {
+      const shot = event.target.closest("[data-shot-index]");
+      if (shot) openShotViewer(shots, Number(shot.dataset.shotIndex));
+    });
+  }
 }
 
 /**
@@ -3120,6 +3251,10 @@ let modalReturnFocus = null;
 let modalLocked = false;
 
 function closeModal() {
+  // El visor de capturas se apoya en la ficha que hay debajo. Si esa ficha se
+  // va —la cierra el usuario, o la sustituye un aviso del backend—, el visor no
+  // puede quedarse flotando sobre una pantalla que ya no es la suya.
+  closeShotViewer();
   document.getElementById("modal-backdrop").classList.add("hidden");
   document.getElementById("modal").innerHTML = "";
   modalLocked = false;
@@ -3136,6 +3271,8 @@ function closeModal() {
 }
 
 function openModal(html, wide = false, locked = false) {
+  // Por lo mismo: lo que ampliaba el visor pertenecía al diálogo anterior.
+  closeShotViewer();
   const backdrop = document.getElementById("modal-backdrop");
   const modal = document.getElementById("modal");
   if (backdrop.classList.contains("hidden")) modalReturnFocus = document.activeElement;
@@ -3160,6 +3297,19 @@ function openModal(html, wide = false, locked = false) {
 }
 
 document.addEventListener("keydown", (event) => {
+  // El visor de capturas se abre por encima del diálogo del producto. Mientras
+  // esté, la tecla de escape es suya: cerrarlo devuelve a la ficha, no la
+  // cierra también. Y las flechas pasan de una captura a otra.
+  if (shotViewer) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeShotViewer();
+    } else if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+      event.preventDefault();
+      stepShotViewer(event.key === "ArrowRight" ? 1 : -1);
+    }
+    return;
+  }
   if (event.key === "Escape" && !modalLocked && !document.getElementById("modal-backdrop").classList.contains("hidden")) {
     event.preventDefault();
     closeModal();

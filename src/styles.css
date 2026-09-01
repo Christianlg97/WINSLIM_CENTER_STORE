@@ -996,6 +996,16 @@ textarea {
   align-items: center;
 }
 
+/* La columna de texto es un elemento flexible, y uno de esos no encoge por
+   debajo de su contenido mínimo mientras conserve el `min-width: auto` que trae
+   de serie. Con una insignia de versión que no parte —«v22603.1401.19.0 →
+   v22607.1401.7.0»— ese mínimo era la cadena entera, así que la columna crecía
+   y se salía de la tarjeta. Poniéndolo a cero, el `max-width: 100%` de lo que
+   hay dentro vuelve a mandar. */
+.card-top > div:not(.card-avatar) {
+  min-width: 0;
+}
+
 .card-avatar {
   width: 48px;
   height: 48px;
@@ -1274,16 +1284,20 @@ textarea {
   max-width: 100%;
   margin-top: 5px;
   padding: 3px 7px;
-  overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border) 62%);
   border-radius: 7px;
   background: color-mix(in srgb, var(--accent) 9%, var(--bg-card) 91%);
   color: var(--text-medium);
   font-size: 9px;
   font-weight: 700;
-  line-height: 1.2;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.35;
+  /* Parte en dos líneas antes que recortar. Lo que sobra de una insignia
+     estrecha es siempre el final —«→ v22607.1401.7.0»—, que es justo la versión
+     a la que se va a actualizar: la mitad por la que se lee la insignia. Los
+     números de la Microsoft Store son largos de verdad, así que se permite
+     partir también dentro de uno antes de dejar que se salga. */
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .update-version-badge.modal-version {
@@ -3077,12 +3091,171 @@ textarea {
   scrollbar-width: thin;
 }
 
-.ms-shots img {
-  height: 148px;
+/* La miniatura es un botón, así que hay que quitarle lo que el navegador le
+   pone de suyo y dejar sólo la imagen. El cursor de lupa es lo que dice que
+   esto se puede abrir: sin él, una tira de capturas no parece pulsable. */
+.ms-shot {
   flex: 0 0 auto;
+  padding: 0;
   border: 1px solid var(--border);
   border-radius: 12px;
+  overflow: hidden;
   background: var(--bg-card);
+  cursor: zoom-in;
+  line-height: 0;
+  transition: transform 200ms var(--ease-out), border-color 200ms var(--ease-out);
+}
+
+.ms-shot:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border) 45%);
+}
+
+.ms-shot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ms-shots img {
+  display: block;
+  height: 148px;
+  width: auto;
+}
+
+/* --------------------------------------------------------------------------
+   Visor de capturas
+
+   Capa propia por encima del diálogo del producto (`z-index: 50`) y por debajo
+   de la pantalla de sincronización (`9999`), que cubre la aplicación entera y
+   tiene que seguir cubriéndola. La ficha se queda intacta detrás.
+   -------------------------------------------------------------------------- */
+/* El relleno de abajo deja sitio al contador, que va posicionado sobre él: así
+   la imagen nunca queda por debajo. */
+.shot-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  padding: 40px 72px 68px;
+  background: rgba(0, 0, 0, 0.86);
+  backdrop-filter: blur(6px);
+  animation: fadeUp 0.18s ease;
+  cursor: zoom-out;
+}
+
+/* El escenario se estira hasta ocupar la casilla entera —que es el hueco fijo
+   menos su relleno, y por tanto una medida concreta— en lugar de encogerse
+   alrededor de la imagen. Centrándolo con `place-items` la casilla se ajustaba
+   al contenido, la imagen pedía el 100 % de un padre que dependía de ella, y el
+   círculo se resolvía dejándola en nada. Con la casilla ya medida, el centrado
+   lo hace el flex de dentro y los porcentajes vuelven a significar algo. */
+.shot-viewer-stage {
+  margin: 0;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+}
+
+.shot-viewer-image {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: auto;
+  height: auto;
+  object-fit: contain;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  background: var(--bg-card);
+}
+
+.shot-viewer-close,
+.shot-viewer-nav {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: rgba(20, 20, 20, 0.82);
+  color: var(--text-dark);
+  cursor: pointer;
+  transition: background 180ms var(--ease-out), border-color 180ms var(--ease-out),
+    transform 180ms var(--ease-out);
+}
+
+.shot-viewer-close:hover,
+.shot-viewer-nav:hover {
+  background: rgba(40, 40, 40, 0.95);
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border) 50%);
+}
+
+.shot-viewer-close:focus-visible,
+.shot-viewer-nav:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.shot-viewer-close {
+  top: 20px;
+  right: 20px;
+  width: 38px;
+  height: 38px;
+}
+
+.shot-viewer-nav {
+  top: 50%;
+  width: 46px;
+  height: 46px;
+  transform: translateY(-50%);
+}
+
+.shot-viewer-nav:hover {
+  transform: translateY(-50%) scale(1.06);
+}
+
+.shot-viewer-nav.prev { left: 16px; }
+.shot-viewer-nav.next { right: 16px; }
+
+.shot-viewer-count {
+  position: absolute;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: rgba(20, 20, 20, 0.82);
+  color: var(--text-medium);
+  font-size: 12px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+/* En una ventana estrecha las flechas laterales se comerían la imagen, así que
+   bajan a los lados del contador y el hueco recupera ese ancho. */
+@media (max-width: 620px) {
+  .shot-viewer {
+    padding: 40px 16px 76px;
+  }
+
+  .shot-viewer-nav {
+    top: auto;
+    bottom: 18px;
+    width: 40px;
+    height: 40px;
+    transform: none;
+  }
+
+  .shot-viewer-nav:hover {
+    transform: scale(1.06);
+  }
+
+  .shot-viewer-nav.prev { left: calc(50% - 84px); }
+  .shot-viewer-nav.next { right: calc(50% - 84px); }
 }
 
 @media (max-width: 760px) {
