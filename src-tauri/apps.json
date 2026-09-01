@@ -3429,6 +3429,50 @@
     "featured": false
   },
   {
+    "id": "nvcleanstall",
+    "name": "NVCleanstall",
+    "description": "Arma tu propio paquete de controladores GeForce: elige qué componentes se instalan y deja fuera telemetría y extras que no usas.",
+    "version": "latest",
+    "author": "TechPowerUp",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "winget",
+    "winget_id": "TechPowerUp.NVCleanstall",
+    "winget_source": "winget",
+    "icon_url": "assets/catalog/nvcleanstall.png",
+    "accent_color": "#bc1113",
+    "launch_executable": "NVCleanstall.exe",
+    "detect_names": [
+      "NVCleanstall"
+    ],
+    "featured": false,
+    "icon_background": "#ffffff",
+    "icon_padding": 0
+  },
+  {
+    "id": "nvidia_profile_inspector",
+    "name": "NVIDIA Profile Inspector",
+    "description": "Editor de los perfiles del controlador NVIDIA: ajusta por juego antialiasing, sincronización, latencia y las opciones que el panel oficial no muestra.",
+    "version": "latest",
+    "author": "Orbmu2k",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "Orbmu2k/nvidiaProfileInspector",
+    "asset_pattern": "nvidiaProfileInspector.zip",
+    "winget_id": "Orbmu2k.nvidiaProfileInspector",
+    "icon_url": "assets/catalog/nvidia_profile_inspector.ico",
+    "icon_background": "#ffffff",
+    "icon_padding": 5,
+    "accent_color": "#76b900",
+    "launch_executable": "nvidiaProfileInspector.exe",
+    "detect_names": [
+      "NVIDIA Profile Inspector",
+      "nvidiaProfileInspector"
+    ],
+    "featured": false
+  },
+  {
     "id": "malwarebytes",
     "name": "Malwarebytes",
     "description": "Protección y análisis contra malware, ransomware, programas no deseados y amenazas web.",

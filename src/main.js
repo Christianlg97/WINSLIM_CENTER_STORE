@@ -211,6 +211,12 @@ const state = {
   projectSlogan: chooseProjectSlogan(),
   scanningUpdates: false,
   lastUpdateScan: null,
+  // «Actualizar todo», mientras dura. Cada fila se sigue por el mismo
+  // identificador con el que el backend nombra su tarea —el id del catálogo, o
+  // `msstore:PRODUCTO`—, así que los eventos de progreso y de fin caen en su
+  // sitio sin traducir nada. `null` cuando no hay ninguna en marcha ni resumen
+  // sin leer.
+  bulkUpdate: null,
   // La Microsoft Store vive aparte del catálogo: su búsqueda, sus filtros y
   // sus resultados no sobreviven a un reinicio y no tienen por qué.
   msstore: {
@@ -691,6 +697,32 @@ function scanUpdatesButtonHtml({ hero = false } = {}) {
       ${scanning ? 'disabled aria-busy="true"' : ""}
       title="Comparar tus aplicaciones instaladas con el repositorio de WinGet">
       ${icon}<span>${scanning ? "Consultando WinGet…" : "Buscar actualizaciones"}</span>
+    </button>`;
+}
+
+/**
+ * El botón que lanza todas las actualizaciones pendientes de una vez.
+ *
+ * Mientras hay una tanda en marcha no se desactiva: se convierte en la manera
+ * de volver a su diálogo, que es lo que quiere quien lo pulsa entonces. Cuando
+ * no queda nada que pedir —todo en marcha ya— desaparece en lugar de quedarse
+ * apagado prometiendo algo que no haría.
+ */
+function updateAllButtonHtml() {
+  const running = isBulkUpdateRunning();
+  const pending = running ? 0 : pendingUpdateItems().length;
+  if (!running && !pending) return "";
+  return `
+    <button type="button" class="btn primary updates-toolbar-all" id="btn-update-all"
+      ${running ? 'aria-busy="true"' : ""}
+      title="Actualiza a la vez todo lo que tiene versión nueva: primero el catálogo de WinSlimCenter y después la Microsoft Store">
+      <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+        stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 3v11" />
+        <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+        <path d="M4 20h16" />
+      </svg>
+      <span>${running ? "Actualizando todo…" : `Actualizar todo (${pending})`}</span>
     </button>`;
 }
 
@@ -2111,19 +2143,9 @@ async function installMsStoreProduct(
   // Lo mismo que se pregunta por una aplicación del catálogo: Windows aplaza
   // la actualización de un paquete en uso y la aplica cuando el usuario cierra
   // la aplicación, que es horas después y se parece mucho a no haber hecho nada.
-  if (isUpdate && family) {
-    const blocker = await msStoreBlockingRunningApp(family);
-    if (blocker) {
-      showRunningAppModal({
-        app: shape,
-        blocker,
-        isUpdate: true,
-        onClose: () => start({ closeRunning: true }),
-        onAnyway: () => start({ closeRunning: false }),
-      });
-      return;
-    }
-  }
+  // Y como allí, la pregunta viaja en paralelo al diálogo en vez de retrasarlo.
+  const blockerProbe =
+    isUpdate && family ? msStoreBlockingRunningApp(family) : Promise.resolve(null);
 
   showConfirmModal({
     title: `${isUpdate ? "Actualizar" : "Instalar"} ${name}`,
@@ -2136,7 +2158,20 @@ async function installMsStoreProduct(
     app: shape,
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
-    onConfirm: () => start(),
+    onConfirm: async () => {
+      const blocker = await blockerProbe;
+      if (blocker) {
+        showRunningAppModal({
+          app: shape,
+          blocker,
+          isUpdate: true,
+          onClose: () => start({ closeRunning: true }),
+          onAnyway: () => start({ closeRunning: false }),
+        });
+        return;
+      }
+      await start();
+    },
   });
 }
 
@@ -2271,7 +2306,10 @@ function renderContentNow() {
     html += `
       <div class="updates-toolbar">
         <span class="updates-toolbar-note">${escapeHtml(lastScanLabel())}</span>
-        ${scanUpdatesButtonHtml()}
+        <div class="updates-toolbar-actions">
+          ${updateAllButtonHtml()}
+          ${scanUpdatesButtonHtml()}
+        </div>
       </div>`;
   }
 
@@ -2569,6 +2607,10 @@ function bindShellDelegation() {
       void scanForUpdates();
       return;
     }
+    if (event.target.closest("#btn-update-all")) {
+      void updateEverything();
+      return;
+    }
 
     const action = event.target.closest("[data-install], [data-update], [data-uninstall], [data-launch]");
     if (action) {
@@ -2754,17 +2796,14 @@ async function installApp(id, isUpdate = false) {
   // Windows will not swap a package in use, and an ordinary installer cannot
   // overwrite files the running copy holds open. Discovering that afterwards
   // meant spending the download to report a success that never happened.
-  const blocker = isUpdate || st.installed ? await blockingRunningApp(id) : null;
-  if (blocker) {
-    showRunningAppModal({
-      app,
-      blocker,
-      isUpdate,
-      onClose: () => start({ closeRunning: true }),
-      onAnyway: blocker.packaged ? () => start({ closeRunning: false }) : null,
-    });
-    return;
-  }
+  //
+  // Preguntárselo a Windows cuesta arrancar un PowerShell y pasa del segundo,
+  // y esperando esa respuesta antes de dibujar nada el botón se quedaba mudo
+  // el rato justo para parecer que no había hecho caso. La pregunta se lanza
+  // aquí y el diálogo sale ya: la respuesta no hace falta hasta que el usuario
+  // conteste que sí, y para entonces lleva rato resuelta.
+  const blockerProbe =
+    isUpdate || st.installed ? blockingRunningApp(id) : Promise.resolve(null);
 
   showConfirmModal({
     title,
@@ -2775,7 +2814,20 @@ async function installApp(id, isUpdate = false) {
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     choices,
-    onConfirm: async (picked) => start({ variant: picked }),
+    onConfirm: async (picked) => {
+      const blocker = await blockerProbe;
+      if (blocker) {
+        showRunningAppModal({
+          app,
+          blocker,
+          isUpdate,
+          onClose: () => start({ variant: picked, closeRunning: true }),
+          onAnyway: blocker.packaged ? () => start({ variant: picked }) : null,
+        });
+        return;
+      }
+      await start({ variant: picked });
+    },
   });
 }
 
@@ -3027,6 +3079,7 @@ async function invokeDownloadAction(cmd, args = {}) {
     updateVisibleAppActions(new Set([...previousIds, ...derived.taskByAppId.keys()]));
     renderDlPanel();
     updatePackageOperation(state.tasks);
+    updateBulkOperation(state.tasks);
   } catch (e) {
     console.error("Download action error:", e);
   }
@@ -3072,6 +3125,14 @@ function closeModal() {
   modalLocked = false;
   if (modalReturnFocus instanceof HTMLElement) modalReturnFocus.focus();
   modalReturnFocus = null;
+  // El resumen de «Actualizar todo» sólo vive en su diálogo: cerrarlo —por el
+  // botón, por la tecla de escape o pinchando fuera— lo da por leído y devuelve
+  // el botón de la barra a su estado normal. Mientras la tanda esté en marcha
+  // el diálogo está bloqueado y por aquí no se pasa.
+  if (state.bulkUpdate?.finished) {
+    state.bulkUpdate = null;
+    renderContent();
+  }
 }
 
 function openModal(html, wide = false, locked = false) {
@@ -3277,6 +3338,493 @@ function updatePackageOperation(tasks) {
       ? "Solicitando la cancelación de la instalación..."
       : "Cancelando la descarga...",
   );
+}
+
+// ---------------------------------------------------------------------------
+// Actualizar todo
+//
+// Una sola orden por cada aplicación pendiente, todas lanzadas seguidas y sin
+// esperarse entre ellas: el backend ya reparte cuatro descargas a la vez y
+// serializa la instalación, así que lo que hay que decidir aquí es el orden en
+// que entran en esa cola. Primero el catálogo de la tienda y después la
+// Microsoft Store, que es lo propio antes que lo de fuera.
+//
+// El diálogo no es el de una sola aplicación repetido: aquella tiene una frase
+// y una barra porque no hay nada más que contar, y aquí lo que importa es
+// cuántas van, cuáles siguen en marcha y cuál se ha torcido. Una fila por
+// aplicación, con su propio estado y su propia barra, y arriba el total.
+// ---------------------------------------------------------------------------
+
+/// Los estados de los que ya no se sale: la fila no vuelve a moverse.
+const BULK_FINAL_STATES = new Set(["done", "current", "error", "cancelled"]);
+
+const BULK_STATE_LABELS = {
+  pending: "En espera",
+  queued: "En cola",
+  downloading: "Descargando",
+  paused: "Pausado",
+  installing: "Instalando",
+  cancelling: "Cancelando",
+  done: "Actualizada",
+  current: "Ya al día",
+  error: "Error",
+  cancelled: "Cancelada",
+};
+
+function isBulkItemFinal(item) {
+  return BULK_FINAL_STATES.has(item?.state);
+}
+
+function isBulkUpdateRunning() {
+  return !!state.bulkUpdate && !state.bulkUpdate.finished;
+}
+
+/**
+ * Todo lo que tiene versión nueva, en el orden en que se va a pedir.
+ *
+ * Lo que ya está en marcha por su cuenta queda fuera: el backend rechazaría la
+ * segunda orden por tener la tarea abierta, y contarla aquí sería prometer un
+ * trabajo que no se va a hacer.
+ */
+function pendingUpdateItems() {
+  const busyKey = (key) => !!state.busy[key] || derived.taskByAppId.has(key);
+  const items = [];
+  for (const app of state.catalog) {
+    const status = appStatus(app.id);
+    if (!status.update_available || busyKey(app.id)) continue;
+    items.push({
+      key: app.id,
+      kind: "catalog",
+      appId: app.id,
+      app,
+      name: app.name,
+      from: status.version || "",
+      to: status.latest_version || "",
+    });
+  }
+  for (const installed of msStoreUpdatesList()) {
+    const report = msStoreUpdateOf(installed.family);
+    const productId = String(report?.product_id || "").toUpperCase();
+    if (!productId) continue;
+    const key = msStoreTaskId(productId);
+    if (state.msstore.installing[productId] || busyKey(key)) continue;
+    const shape = msStoreInstalledShape(installed);
+    items.push({
+      key,
+      kind: "msstore",
+      productId,
+      family: installed.family,
+      app: shape,
+      name: shape.name,
+      from: installed.version || "",
+      to: report.latest_version || "",
+    });
+  }
+  return items;
+}
+
+/**
+ * El botón «Actualizar todo».
+ *
+ * Con una tanda en marcha vuelve a abrir su diálogo en lugar de empezar otra:
+ * lo que se quiere ver entonces es cómo va la que hay.
+ */
+async function updateEverything() {
+  if (isBulkUpdateRunning()) {
+    showBulkUpdateModal();
+    return;
+  }
+  const items = pendingUpdateItems();
+  if (!items.length) {
+    showAlertModal(
+      "Nada que actualizar",
+      "No queda ninguna aplicación con versión nueva pendiente de instalar.",
+    );
+    return;
+  }
+
+  const fromStore = items.filter((item) => item.kind === "catalog").length;
+  const fromMsStore = items.length - fromStore;
+  const origins = [
+    fromStore ? `${fromStore} del catálogo de WinSlimCenter` : "",
+    fromMsStore ? `${fromMsStore} de la Microsoft Store` : "",
+  ].filter(Boolean);
+
+  showConfirmModal({
+    title: `Actualizar ${items.length} ${items.length === 1 ? "aplicación" : "aplicaciones"}`,
+    message:
+      `Se actualizarán a la vez ${origins.join(" y ")}. Se empieza por el catálogo de ` +
+      `WinSlimCenter y después va la Microsoft Store; las descargas corren en paralelo y ` +
+      `las instalaciones se aplican una detrás de otra.\n\n` +
+      `Las aplicaciones que estén abiertas se cerrarán para poder aplicar su actualización: ` +
+      `guarda antes lo que tengas sin guardar.`,
+    confirmText: "Actualizar todo",
+    confirmVariant: "primary",
+    onConfirm: () => startBulkUpdate(items),
+  });
+}
+
+/**
+ * Registra la tanda, abre su diálogo y va soltando las órdenes.
+ *
+ * Cada `invoke` vuelve en cuanto el backend ha apuntado la tarea, así que
+ * esperarlas en fila no serializa el trabajo: sólo fija el orden en que entran
+ * en la cola de descargas, que es justo lo que se quiere.
+ */
+async function startBulkUpdate(items) {
+  const bulk = {
+    items: items.map((item) => ({
+      ...item,
+      state: "pending",
+      progress: 0,
+      status: "En espera de su turno…",
+      dispatched: false,
+    })),
+    byKey: new Map(),
+    startedAt: new Date(),
+    cancelling: false,
+    finished: false,
+  };
+  for (const item of bulk.items) bulk.byKey.set(item.key, item);
+  state.bulkUpdate = bulk;
+  // El diálogo de una sola aplicación cede el sitio: aquí manda éste.
+  state.operationAppId = null;
+  // El velo de recarga se levanta y se baja con cada instalación que acaba. Con
+  // diez en marcha sería un parpadeo constante sobre una lista que además nadie
+  // está mirando, porque delante está este diálogo contándolo.
+  suppressShellBusy = true;
+  hideShellBusy();
+  showBulkUpdateModal();
+  renderContent();
+  clientLog("info", "bulk-update", {
+    total: bulk.items.length,
+    catalog: bulk.items.filter((item) => item.kind === "catalog").length,
+    msstore: bulk.items.filter((item) => item.kind === "msstore").length,
+  });
+
+  for (const item of bulk.items) {
+    if (bulk.cancelling) {
+      finishBulkItem(item.key, "cancelled", "Cancelada antes de empezar");
+      continue;
+    }
+    try {
+      if (item.kind === "catalog") {
+        state.busy[item.appId] = "updating";
+        state.finished.delete(item.appId);
+        await invoke("install_app", {
+          appEntry: item.app,
+          forceUpdate: true,
+          // La edición elegida en su día se respeta: actualizar es reinstalar
+          // la misma, nunca cambiar de programa por el camino.
+          variant: state.settings?.variants?.[item.appId] || item.app.variants?.default || null,
+          closeRunning: true,
+        });
+      } else {
+        state.msstore.installing[item.productId] = "update";
+        state.msstore.updateFamilyByProduct[item.productId] = item.family;
+        state.finished.delete(item.key);
+        await invoke("msstore_install", {
+          productId: item.productId,
+          name: item.name,
+          ring: state.msstore.ring,
+          arch: state.msstore.arch,
+          family: item.family,
+          closeRunning: true,
+        });
+      }
+      item.dispatched = true;
+      if (item.state === "pending") {
+        item.state = "queued";
+        item.status = "En cola";
+      }
+    } catch (error) {
+      // El backend rechazó la orden —ya instalada, ya en cola—: eso es el final
+      // de esta fila, no de la tanda.
+      if (item.kind === "catalog") delete state.busy[item.appId];
+      else {
+        delete state.msstore.installing[item.productId];
+        delete state.msstore.updateFamilyByProduct[item.productId];
+      }
+      finishBulkItem(item.key, "error", String(error));
+      void clientLog("warn", "bulk-update", `${item.name}: ${error}`);
+    }
+    updateBulkUpdateModal();
+  }
+  updateVisibleAppActions(new Set(bulk.items.map((item) => item.key)));
+  settleBulkUpdate();
+}
+
+/// Da una fila por terminada. Lo que llegue después de esto no la mueve.
+function finishBulkItem(key, outcome, status) {
+  const item = state.bulkUpdate?.byKey.get(key);
+  if (!item || isBulkItemFinal(item)) return;
+  item.state = outcome;
+  item.progress = outcome === "error" || outcome === "cancelled" ? item.progress : 100;
+  item.status = status || BULK_STATE_LABELS[outcome] || "";
+  updateBulkUpdateModal();
+}
+
+/// Cuando ya no queda ninguna fila viva, cierra la tanda y pone al día lo que
+/// se sabe del equipo: una sola vez, en vez de una por aplicación.
+function settleBulkUpdate() {
+  const bulk = state.bulkUpdate;
+  if (!bulk || bulk.finished) return;
+  if (!bulk.items.every(isBulkItemFinal)) return;
+  bulk.finished = true;
+  // Ya no hay nada en marcha: la tecla de escape vuelve a servir.
+  modalLocked = false;
+  suppressShellBusy = false;
+  updateBulkUpdateModal();
+
+  const done = bulk.items.filter((item) => item.state === "done").length;
+  const failed = bulk.items.filter((item) => item.state === "error").length;
+  setTransientStatus(
+    failed
+      ? `Actualización múltiple terminada · ${done} al día, ${failed} con error`
+      : `${done} ${done === 1 ? "aplicación actualizada" : "aplicaciones actualizadas"}`,
+    failed ? "var(--red)" : "var(--green)",
+    7000,
+  );
+
+  void (async () => {
+    try {
+      await ensureMsStoreInstalled({ force: true });
+      await reconcileRuntimeFromBootstrap();
+      replaceStatuses((await invoke("check_updates")) || state.statuses);
+      state.lastUpdateScan = new Date();
+    } catch (error) {
+      void clientLog("warn", "bulk-update-refresh", String(error?.stack || error));
+    } finally {
+      renderSidebar();
+      renderContent();
+    }
+    void scanMsStoreUpdates({ quiet: true });
+  })();
+}
+
+/// Cancela lo que quede vivo. Lo que aún no se ha pedido se descarta aquí
+/// mismo; de lo demás se encarga el backend, que es quien tiene la descarga.
+async function cancelBulkUpdate() {
+  const bulk = state.bulkUpdate;
+  if (!bulk || bulk.finished || bulk.cancelling) return;
+  bulk.cancelling = true;
+  updateBulkUpdateModal();
+  for (const item of bulk.items) {
+    if (isBulkItemFinal(item)) continue;
+    if (!item.dispatched) {
+      finishBulkItem(item.key, "cancelled", "Cancelada antes de empezar");
+      continue;
+    }
+    await invokeDownloadAction("cancel_download", { appId: item.key });
+  }
+  settleBulkUpdate();
+}
+
+/**
+ * El diálogo de la tanda.
+ *
+ * Se dibuja una vez con lo que no cambia —icono, nombre, versiones— y a partir
+ * de ahí sólo se reescriben el estado, la barra y la línea de cada fila. Una
+ * lista de diez que se rehiciera entera en cada evento de progreso perdería el
+ * desplazamiento cada pocas décimas.
+ */
+function showBulkUpdateModal() {
+  const bulk = state.bulkUpdate;
+  if (!bulk) return;
+  const groups = [
+    ["Catálogo de WinSlimCenter", bulk.items.filter((item) => item.kind === "catalog")],
+    ["Microsoft Store", bulk.items.filter((item) => item.kind === "msstore")],
+  ].filter(([, items]) => items.length);
+
+  openModal(`
+    <div class="bulk-operation">
+      <div class="bulk-operation-brand">
+        <div class="bulk-operation-mark" aria-hidden="true">
+          <img src="assets/winslim-center-logo.png" width="904" height="904" alt="" />
+        </div>
+        <div class="bulk-operation-heading">
+          <small>WinSlimCenter</small>
+          <!-- Sin id propio: openModal le pone el suyo al primer h2 para
+               nombrar el diálogo, y se lo pisaría. -->
+          <h2 data-role="title">Actualizando ${bulk.items.length} ${
+            bulk.items.length === 1 ? "aplicación" : "aplicaciones"
+          }</h2>
+        </div>
+        <span class="bulk-operation-tally" id="bulk-operation-tally"></span>
+      </div>
+      <div class="bulk-operation-overall">
+        <div class="bulk-operation-track" id="bulk-operation-progress"
+             role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <span class="bulk-operation-fill" id="bulk-operation-progress-fill"></span>
+        </div>
+        <p class="bulk-operation-lead" id="bulk-operation-lead"></p>
+      </div>
+      <div class="bulk-operation-list">
+        ${groups
+          .map(
+            ([title, items]) => `
+          <div class="bulk-group">
+            <span class="bulk-group-title">${escapeHtml(title)}</span>
+            <span class="bulk-group-count">${items.length}</span>
+          </div>
+          ${items.map(bulkRowHtml).join("")}`,
+          )
+          .join("")}
+      </div>
+      <div class="bulk-operation-actions" id="bulk-operation-actions"></div>
+    </div>
+  `, true, !bulk.finished);
+  updateBulkUpdateModal();
+}
+
+function bulkRowHtml(item, index) {
+  const accent = pickAccent(item.app, index);
+  const avatarBg = avatarBackground(item.app, accent);
+  const letter = (item.name || "?")[0].toUpperCase();
+  const from = String(item.from || "").replace(/^v(?=\d)/i, "");
+  const to = String(item.to || "").replace(/^v(?=\d)/i, "");
+  const versions =
+    from && to
+      ? `<span class="bulk-row-versions">v${escapeHtml(from)} → v${escapeHtml(to)}</span>`
+      : "";
+  return `
+    <article class="bulk-row" data-bulk-key="${escapeHtml(item.key)}" style="--card-accent:${accent}">
+      <div class="card-avatar bulk-row-avatar" style="background:${avatarBg}">
+        ${renderAvatar(item.app, letter)}
+      </div>
+      <div class="bulk-row-body">
+        <div class="bulk-row-head">
+          <strong>${escapeHtml(item.name)}</strong>
+          ${versions}
+          <span class="bulk-row-state" data-role="state">${escapeHtml(BULK_STATE_LABELS.pending)}</span>
+        </div>
+        <div class="bulk-row-track"><span class="bulk-row-fill" data-role="fill"></span></div>
+        <small class="bulk-row-status" data-role="status">${escapeHtml(item.status)}</small>
+      </div>
+    </article>`;
+}
+
+function updateBulkUpdateModal() {
+  const bulk = state.bulkUpdate;
+  if (!bulk) return;
+  const list = document.querySelector(".bulk-operation");
+  if (!list) return;
+
+  for (const item of bulk.items) {
+    const row = list.querySelector(`.bulk-row[data-bulk-key="${CSS.escape(item.key)}"]`);
+    if (!row) continue;
+    const nextState = item.state;
+    if (row.dataset.state !== nextState) {
+      row.dataset.state = nextState;
+      const state_ = row.querySelector('[data-role="state"]');
+      if (state_) state_.textContent = BULK_STATE_LABELS[nextState] || nextState;
+    }
+    const value = Math.max(0, Math.min(100, Math.round(Number(item.progress) || 0)));
+    if (row.dataset.progress !== String(value)) {
+      row.dataset.progress = String(value);
+      const fill = row.querySelector('[data-role="fill"]');
+      if (fill) fill.style.width = `${value}%`;
+    }
+    const status = row.querySelector('[data-role="status"]');
+    if (status && status.textContent !== item.status) status.textContent = item.status;
+  }
+
+  const total = bulk.items.length;
+  const settled = bulk.items.filter(isBulkItemFinal);
+  const done = bulk.items.filter((item) => item.state === "done" || item.state === "current").length;
+  const failed = bulk.items.filter((item) => item.state === "error").length;
+  const cancelled = bulk.items.filter((item) => item.state === "cancelled").length;
+  const overall = Math.round(
+    bulk.items.reduce(
+      (sum, item) => sum + (isBulkItemFinal(item) ? 100 : Math.min(100, Number(item.progress) || 0)),
+      0,
+    ) / Math.max(1, total),
+  );
+
+  const progress = document.getElementById("bulk-operation-progress");
+  if (progress && progress.getAttribute("aria-valuenow") !== String(overall)) {
+    progress.setAttribute("aria-valuenow", String(overall));
+    const fill = document.getElementById("bulk-operation-progress-fill");
+    if (fill) fill.style.width = `${overall}%`;
+  }
+  // La barra llena significa «ya no queda nada por decidir», no «ha salido
+  // bien»: una tanda cancelada entera la deja igual de llena que una que se
+  // instaló. Al terminar, el color dice cuál de las dos fue.
+  list.dataset.outcome = bulk.finished ? (failed || cancelled ? "issues" : "ok") : "running";
+  const tally = document.getElementById("bulk-operation-tally");
+  if (tally) tally.textContent = `${settled.length} / ${total}`;
+
+  const title = list.querySelector('h2[data-role="title"]');
+  if (title) {
+    title.textContent = bulk.finished
+      ? failed || cancelled
+        ? "Actualización múltiple terminada"
+        : "Todo actualizado"
+      : `Actualizando ${total} ${total === 1 ? "aplicación" : "aplicaciones"}`;
+  }
+
+  const lead = document.getElementById("bulk-operation-lead");
+  if (lead) {
+    if (bulk.finished) {
+      lead.textContent = [
+        `${done} al día`,
+        failed ? `${failed} con error` : "",
+        cancelled ? `${cancelled} ${cancelled === 1 ? "cancelada" : "canceladas"}` : "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+    } else if (bulk.cancelling) {
+      lead.textContent = "Cancelando lo que queda…";
+    } else {
+      const active = bulk.items.filter(
+        (item) => !isBulkItemFinal(item) && item.state !== "pending",
+      ).length;
+      lead.textContent =
+        `${settled.length} de ${total} ${total === 1 ? "completada" : "completadas"}` +
+        (active ? ` · ${active} en marcha` : "");
+    }
+  }
+
+  const actions = document.getElementById("bulk-operation-actions");
+  if (!actions) return;
+  const signature = `${bulk.finished}|${bulk.cancelling}`;
+  if (actions.dataset.signature === signature) return;
+  actions.dataset.signature = signature;
+  actions.innerHTML = bulk.finished
+    ? '<button type="button" class="btn primary" id="bulk-operation-close">Cerrar</button>'
+    : `<button type="button" class="btn ghost" id="bulk-operation-cancel"${
+        bulk.cancelling ? " disabled" : ""
+      }>${bulk.cancelling ? "Cancelando…" : "Cancelar todo"}</button>`;
+  actions.querySelector("#bulk-operation-close")?.addEventListener("click", closeModal);
+  actions.querySelector("#bulk-operation-cancel")?.addEventListener("click", () =>
+    void cancelBulkUpdate(),
+  );
+  actions.querySelector("button")?.focus();
+}
+
+/// Lo que las tareas del backend dicen de cada fila, en cada latido.
+///
+/// Los estados finales los fija el evento de fin, que sabe cosas que la tarea
+/// no cuenta —si la versión cambió, si Windows dejó el paquete a la espera—:
+/// de aquí sólo salen el progreso y la línea de estado.
+function updateBulkOperation(tasks) {
+  const bulk = state.bulkUpdate;
+  if (!bulk || bulk.finished) return;
+  let changed = false;
+  for (const task of tasks) {
+    const item = bulk.byKey.get(task.app_id);
+    if (!item || isBulkItemFinal(item)) continue;
+    const progress = Math.max(0, Math.min(100, Number(task.progress) || 0));
+    const status = task.status || BULK_STATE_LABELS[item.state] || "";
+    const next = ACTIVE_TASK_STATES.has(task.state) ? task.state : item.state;
+    if (item.progress !== progress || item.status !== status || item.state !== next) {
+      item.progress = progress;
+      item.status = status;
+      item.state = next;
+      changed = true;
+    }
+  }
+  if (changed) updateBulkUpdateModal();
 }
 
 /**
@@ -3817,6 +4365,7 @@ async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSe
   updateVisibleAppActions(new Set([...previousTaskIds, ...state.tasks.map((task) => task.app_id)]));
   renderDlPanel();
   updatePackageOperation(state.tasks);
+  updateBulkOperation(state.tasks);
   return { data, changes };
 }
 
@@ -4167,6 +4716,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
     renderDlPanel();
     updatePackageOperation(state.tasks);
+    updateBulkOperation(state.tasks);
   });
 
   backendEventHandlers.set("background-progress", (ev) => {
@@ -4200,6 +4750,31 @@ window.addEventListener("DOMContentLoaded", async () => {
       null;
     delete state.msstore.installing[id];
     delete state.msstore.updateFamilyByProduct[id];
+    // Igual que en el catálogo: dentro de una tanda esto es una fila, no un
+    // diálogo. La versión que se sabía de la familia sí deja de valer ahora
+    // mismo; volver a preguntar por ella espera al final, con todas.
+    const bulkKey = msStoreTaskId(id);
+    if (state.bulkUpdate?.byKey.has(bulkKey)) {
+      const newerPackage = !ok && isMsStoreNewerPackageError(error);
+      const suppressed =
+        newerPackage && suppressMsStoreUpdate(attemptedFamily, msStoreUpdateOf(attemptedFamily));
+      if (ok && attemptedFamily) delete state.msstore.updates[attemptedFamily];
+      finishBulkItem(
+        bulkKey,
+        ok ? "done" : cancelled ? "cancelled" : suppressed ? "current" : "error",
+        ok
+          ? "Actualizada correctamente"
+          : cancelled
+            ? "Cancelada"
+            : suppressed
+              ? "Windows ya tiene una versión superior"
+              : String(error || "Error desconocido"),
+      );
+      // Sin redibujar la rejilla: está detrás de un diálogo bloqueado y quien
+      // cierra la tanda ya la rehace una vez, con todo lo que haya cambiado.
+      settleBulkUpdate();
+      return;
+    }
     let launchFamily = null;
     if (ok) {
       // Windows acaba de registrar o sustituir el paquete: lo que se sabía de
@@ -4285,6 +4860,26 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Clearing the optimistic busy flag is itself a visible state change even
     // when installation changed no version and the later WinGet check fails.
     updateVisibleAppActions(new Set([app_id]));
+    // Una aplicación de la tanda no tiene diálogo propio ni avisos propios: lo
+    // que le pasó se cuenta en su fila, y el recuento de lo instalado se pone
+    // al día una sola vez cuando terminan todas, no una vez por cada una.
+    if (state.bulkUpdate?.byKey.has(app_id)) {
+      finishBulkItem(
+        app_id,
+        ok ? (changed || pending_restart ? "done" : "current") : cancelled ? "cancelled" : "error",
+        ok
+          ? pending_restart
+            ? "Descargada e instalada · ciérrala y vuelve a abrirla para aplicarla"
+            : changed
+              ? "Actualizada correctamente"
+              : "Ya estaba en su última versión"
+          : cancelled
+            ? "Cancelada"
+            : String(error || "Error desconocido"),
+      );
+      settleBulkUpdate();
+      return;
+    }
     // A finished installation keeps its dialog, which turns into the completion
     // state below; everything else is replaced by the message that explains it.
     const ownsModal = state.operationAppId === app_id;

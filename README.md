@@ -56,6 +56,7 @@ Combina la seguridad y velocidad de **Rust** en el backend con la flexibilidad d
 - **Ciclo Completo para las Apps de Tienda**: Los resultados de búsqueda detectan lo que el equipo ya tiene puesto y ofrecen **Abrir**, **Actualizar** o **Desinstalar** en lugar de instalar. *Mis aplicaciones* incluye la subsección **Desde la Microsoft Store** con todos los paquetes firmados por la tienda, y *Actualizaciones* suma las suyas a las de WinGet en una sola cifra: la versión publicada por el canal se compara con la registrada en Windows.
 
 ### ⚡ Automatización y Ejecución Inteligente
+- **Actualizar Todo en Paralelo**: Un único botón en *Actualizaciones* lanza a la vez todo lo que tiene versión nueva —primero el catálogo de WinSlimCenter y después la Microsoft Store—, con un diálogo que sigue cada aplicación por separado: su estado, su barra y su línea de progreso, más el total y el recuento de la tanda. Las aplicaciones abiertas se cierran antes para que Windows aplique el paquete en el momento y no la próxima vez que se salga de ellas.
 - **Auto-Launch Post-Instalación**: Al completar con éxito la instalación de una aplicación WinGet, WinSlimCenter inicia automáticamente el programa.
 - **Desinstalación Nativa Ultrarrápida**: Escaneo del registro de Windows (`HKLM`/`HKCU` `Uninstall`) y desinstalación directa sin diálogos redundantes.
 - **Caché en Memoria Thread-Safe**: Verificación de paquetes WinGet optimizada mediante caché temporal de 3 segundos para evitar bloqueos del proceso.

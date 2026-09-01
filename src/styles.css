@@ -576,12 +576,38 @@ textarea {
   color: var(--text-medium);
 }
 
-.btn.updates-toolbar-scan {
+/* Los dos controles de la barra viajan juntos por la derecha: uno pide y el
+   otro pregunta, y separados por el `space-between` del contenedor la nota de
+   la izquierda quedaba entre medias. */
+.updates-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.btn.updates-toolbar-scan,
+.btn.updates-toolbar-all {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   height: 34px;
   padding: 0 16px;
+}
+
+/* Mientras la tanda corre el botón sigue sirviendo —vuelve a su diálogo— así
+   que no se apaga: sólo deja de latir como una llamada a la acción. */
+.btn.updates-toolbar-all[aria-busy="true"] {
+  filter: saturate(0.7);
+}
+
+.btn.updates-toolbar-all[aria-busy="true"] .btn-svg-icon {
+  animation: bulk-arrow-dip 1.4s ease-in-out infinite;
+}
+
+@keyframes bulk-arrow-dip {
+  0%, 100% { transform: translateY(-1px); opacity: 0.55; }
+  50% { transform: translateY(1px); opacity: 1; }
 }
 
 /* Same gesture as the top bar's Refrescar, so it answers the pointer the same
@@ -2132,6 +2158,351 @@ textarea {
 @keyframes package-operation-dot {
   0%, 60%, 100% { opacity: 0.32; transform: translateY(0) scale(0.86); }
   30% { opacity: 1; transform: translateY(-8px) scale(1); }
+}
+
+/* ---------------------------------------------------------------------------
+   Actualizar todo
+
+   El diálogo de una sola aplicación se centra porque no tiene más que una cosa
+   que decir. Aquí hay una lista, así que todo se alinea a la izquierda y lee
+   como la rejilla de tarjetas de la que sale: mismo avatar, mismo redondeo,
+   misma tipografía. Lo único centrado arriba es el total, que es lo que se
+   mira de reojo mientras esto trabaja.
+   --------------------------------------------------------------------------- */
+.bulk-operation {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 4px 2px 2px;
+}
+
+.bulk-operation-brand {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+}
+
+.bulk-operation-mark {
+  position: relative;
+  flex-shrink: 0;
+  width: 46px;
+  height: 46px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border) 74%);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card) 90%);
+}
+
+.bulk-operation-mark img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+}
+
+.bulk-operation-heading {
+  min-width: 0;
+  flex: 1;
+}
+
+.bulk-operation-heading small {
+  color: var(--text-light);
+  font-size: 11px;
+}
+
+.bulk-operation-heading h2 {
+  margin: 3px 0 0;
+  font-family: var(--font-display);
+  font-size: 18px;
+  overflow-wrap: anywhere;
+}
+
+/* Cuántas van del total, en cifras y en su propio recuadro: es el dato que se
+   consulta sin leer nada más. */
+.bulk-operation-tally {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  border: 1px solid color-mix(in srgb, var(--accent) 32%, var(--border) 68%);
+  border-radius: 20px;
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.bulk-operation-overall {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+/* La misma barra del diálogo de una aplicación, un punto más gruesa: aquí
+   resume diez y merece leerse desde más lejos. */
+.bulk-operation-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.bulk-operation-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
+  transition: width 260ms ease-out;
+}
+
+/* Terminada del todo y sin incidencias: el mismo verde de las filas y de las
+   tarjetas. Con algo torcido —un error, una cancelación— la barra se apaga a
+   gris en vez de celebrar una tanda que no salió entera. */
+.bulk-operation[data-outcome="ok"] .bulk-operation-fill {
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.45);
+}
+
+.bulk-operation[data-outcome="issues"] .bulk-operation-fill {
+  background: var(--text-light);
+  box-shadow: none;
+}
+
+.bulk-operation-lead {
+  margin: 0;
+  color: var(--text-medium);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.bulk-operation-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(46vh, 380px);
+  overflow-y: auto;
+  padding-right: 4px;
+  margin-right: -4px;
+}
+
+.bulk-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  color: var(--text-light);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.bulk-group:first-child {
+  margin-top: 0;
+}
+
+/* La línea que separa el título del grupo del resto del ancho, para que dos
+   bloques seguidos se distingan sin meter otro borde. */
+.bulk-group::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.bulk-group-count {
+  order: 1;
+  padding: 1px 7px;
+  border-radius: 20px;
+  background: var(--bg-badge);
+  color: var(--text-medium);
+  font-size: 10px;
+  letter-spacing: 0;
+}
+
+.bulk-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-card);
+  transition: border-color 200ms var(--ease-out), background 200ms var(--ease-out);
+}
+
+.bulk-row-avatar {
+  flex-shrink: 0;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  overflow: hidden;
+  font-size: 15px;
+}
+
+.bulk-row-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.bulk-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bulk-row-head strong {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bulk-row-versions {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, var(--border) 70%);
+  border-radius: 6px;
+  color: var(--text-light);
+  font-size: 9.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* El estado de la fila, empujado al extremo: leídos en columna, los nueve
+   estados posibles se comparan de un vistazo. */
+.bulk-row-state {
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: var(--bg-badge);
+  color: var(--text-light);
+  font-size: 10px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.bulk-row-track {
+  position: relative;
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.bulk-row-fill {
+  display: block;
+  width: 0;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  transition: width 220ms ease-out;
+}
+
+.bulk-row-status {
+  overflow: hidden;
+  color: var(--text-light);
+  font-size: 11px;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Lo que está pasando ahora mismo se despega del resto: es lo único de la
+   lista que va a cambiar en los próximos segundos. */
+.bulk-row[data-state="downloading"],
+.bulk-row[data-state="installing"],
+.bulk-row[data-state="cancelling"] {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border) 60%);
+  background: color-mix(in srgb, var(--accent) 7%, var(--bg-card) 93%);
+}
+
+.bulk-row[data-state="downloading"] .bulk-row-state,
+.bulk-row[data-state="installing"] .bulk-row-state {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  color: var(--text-dark);
+}
+
+/* Terminada. El mismo verde con el que las tarjetas dicen «Ya instalado», para
+   que la tienda hable con una sola voz sobre lo que ya está en el equipo. */
+.bulk-row[data-state="done"],
+.bulk-row[data-state="current"] {
+  border-color: rgba(34, 197, 94, 0.3);
+}
+
+.bulk-row[data-state="done"] .bulk-row-state,
+.bulk-row[data-state="current"] .bulk-row-state {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.12);
+  color: #4ade80;
+}
+
+.bulk-row[data-state="done"] .bulk-row-fill,
+.bulk-row[data-state="current"] .bulk-row-fill {
+  background: #22c55e;
+}
+
+.bulk-row[data-state="error"] {
+  border-color: rgba(248, 113, 113, 0.32);
+}
+
+.bulk-row[data-state="error"] .bulk-row-state {
+  border-color: rgba(248, 113, 113, 0.38);
+  background: rgba(248, 113, 113, 0.12);
+  color: #f87171;
+}
+
+/* El texto del error es la única línea de la lista que puede no caber en una:
+   se le dejan dos antes de cortar, porque ahí es donde está la explicación. */
+.bulk-row[data-state="error"] .bulk-row-status {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--text-medium);
+  white-space: normal;
+}
+
+.bulk-row[data-state="error"] .bulk-row-fill,
+.bulk-row[data-state="cancelled"] .bulk-row-fill {
+  background: var(--text-light);
+}
+
+.bulk-row[data-state="pending"] {
+  opacity: 0.72;
+}
+
+.bulk-operation-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  min-height: 36px;
+}
+
+@media (max-width: 640px) {
+  .bulk-operation-tally {
+    display: none;
+  }
+
+  .bulk-row-versions {
+    display: none;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
