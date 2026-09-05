@@ -3476,6 +3476,31 @@
     "featured": false
   },
   {
+    "id": "dlss5_swapper",
+    "name": "DLSS 5 Swapper",
+    "description": "Instala, cambia y restaura las versiones de DLSS 5 en tus juegos y emuladores: detecta las partidas instaladas, admite DirectX 9 a 12, Vulkan y OpenGL, y deja volver atrás cuando una versión no sienta bien.",
+    "version": "latest",
+    "author": "rakanki911",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "rakanki911/DLSS5-Swapper",
+    "asset_pattern": "DLSS5-Swapper-*-portable.exe",
+    "download_url": "https://github.com/rakanki911/DLSS5-Swapper/releases/download/v2.2.1/DLSS5-Swapper-2.2.1-portable.exe",
+    "portable": true,
+    "download_filename": "DLSS5-Swapper.exe",
+    "launch_executable": "DLSS5-Swapper.exe",
+    "start_menu_shortcut": true,
+    "icon_url": "assets/catalog/dlss5_swapper.png",
+    "accent_color": "#76b900",
+    "detect_names": [
+      "DLSS 5 Swapper",
+      "DLSS5-Swapper"
+    ],
+    "web_url": "https://github.com/rakanki911/DLSS5-Swapper",
+    "featured": false
+  },
+  {
     "id": "malwarebytes",
     "name": "Malwarebytes",
     "description": "Protección y análisis contra malware, ransomware, programas no deseados y amenazas web.",

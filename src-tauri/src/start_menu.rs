@@ -221,6 +221,48 @@ pub fn republish(folder: &str, name: &str, target: &Path) {
     announce(publish(folder, name, target));
 }
 
+/// Retira el acceso directo que dejó [`publish`], y con él la carpeta que se
+/// creó para alojarlo.
+///
+/// Lo que la tienda escribe en el menú Inicio lo quita la tienda: el barrido de
+/// residuos también da con él —resuelve cada `.lnk` y compara su destino con la
+/// carpeta borrada—, pero eso es una búsqueda que puede no encontrarlo, y aquí
+/// se sabe exactamente qué archivo es.
+pub fn withdraw(folder: &str, name: &str) {
+    let Some(programs) = programs_dir() else {
+        return;
+    };
+    withdraw_from(&programs, folder, name);
+}
+
+/// The body of [`withdraw`], with the Start Menu handed in so it can be
+/// exercised without touching the one the user is looking at.
+fn withdraw_from(programs: &Path, folder: &str, name: &str) {
+    let shortcut = programs.join(folder).join(format!("{name}.lnk"));
+    match std::fs::remove_file(&shortcut) {
+        Ok(()) => crate::logger::info(
+            "start-menu",
+            format!("Acceso directo retirado: {}", shortcut.display()),
+        ),
+        // Que no esté es el estado buscado, no un problema: la desinstalación
+        // pasa por aquí tanto si el acceso llegó a escribirse como si no.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(error) => {
+            crate::logger::warn(
+                "start-menu",
+                format!("No se pudo retirar {}: {error}", shortcut.display()),
+            );
+            return;
+        }
+    }
+    // La carpeta se creó para este acceso y vacía sólo estorba en la lista de
+    // programas. `remove_dir` falla si alguien dejó algo dentro, que es
+    // justamente cuando no hay que borrarla.
+    if let Some(directory) = shortcut.parent() {
+        let _ = std::fs::remove_dir(directory);
+    }
+}
+
 /// A missing Start Menu entry is a cosmetic loss: it must never turn a start-up
 /// or a finished installation into a failure the user has to deal with.
 fn announce(outcome: Result<PathBuf, String>) {
@@ -282,6 +324,35 @@ mod tests {
             .unwrap()
             .count();
         assert_eq!(entries, 1);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn withdrawing_takes_the_shortcut_and_the_folder_it_needed() {
+        let root =
+            std::env::temp_dir().join(format!("winslimcenter-startmenu-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let programs = root.join("Programs");
+        std::fs::create_dir_all(&programs).unwrap();
+        let target = root.join("Portable.exe");
+        std::fs::copy(r"C:\Windows\System32\cmd.exe", &target).unwrap();
+        publish_into(&programs, "Portable", "Portable", &target).unwrap();
+
+        withdraw_from(&programs, "Portable", "Portable");
+
+        // Nothing of the entry survives, and the Start Menu itself stays.
+        assert!(!programs.join("Portable").exists());
+        assert!(programs.is_dir());
+        // Withdrawing what is not there is the same state, not a failure.
+        withdraw_from(&programs, "Portable", "Portable");
+
+        // A folder somebody else is using keeps whatever else lives in it.
+        publish_into(&programs, "Portable", "Portable", &target).unwrap();
+        std::fs::write(programs.join("Portable").join("Leeme.txt"), b"hola").unwrap();
+        withdraw_from(&programs, "Portable", "Portable");
+        assert!(!programs.join("Portable").join("Portable.lnk").exists());
+        assert!(programs.join("Portable").join("Leeme.txt").is_file());
 
         let _ = std::fs::remove_dir_all(&root);
     }

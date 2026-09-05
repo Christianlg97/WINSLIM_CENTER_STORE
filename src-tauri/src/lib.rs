@@ -32,8 +32,10 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// not a loose shortcut, because that is the shape Open-Shell lists.
 const CENTER_START_MENU_FOLDER: &str = "WinSlimCenter";
 
-/// The one catalog application the store also publishes in the Start Menu: it
-/// ships the terminal, so it is the only one it is entitled to advertise.
+/// The catalog application the store publishes in the Start Menu by right: it
+/// ships the terminal, so it is the one it is entitled to advertise without
+/// being asked. The rest only get an entry when their card asks for one, which
+/// is what `start_menu_shortcut` is for.
 const TERMINAL_APP_ID: &str = "winslim_terminal";
 
 const VISIBLE_CATALOG_SECTIONS: [&str; 9] = [
@@ -1378,6 +1380,30 @@ async fn run_uninstall_cleanup(entry: Value, target: PathBuf) -> Result<Vec<Stri
         .collect())
 }
 
+/// El nombre con el que la tienda publica una ficha en el menú Inicio, cuando la
+/// ficha lo pide con `start_menu_shortcut`.
+///
+/// Un programa portable no trae instalador, y por tanto no deja acceso directo
+/// en ninguna parte: su ejecutable se queda suelto en la carpeta que administra
+/// la tienda, donde no lo encuentra ni el menú Inicio ni quien lo busque por su
+/// nombre. Las fichas que lo declaran piden el acceso que su descarga no trae; el
+/// resto no se toca, porque su propio instalador ya decidió qué publicar.
+fn published_shortcut_name(entry: &Value) -> Option<String> {
+    if !entry
+        .get("start_menu_shortcut")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 /// Clears what the application left behind, confirms with Windows that it is
 /// really gone and drops its downloaded package.
 ///
@@ -1404,6 +1430,14 @@ async fn finish_uninstall(
     let files_removed = !target.exists();
     let mut warnings = Vec::new();
     if files_removed {
+        // El acceso directo que la tienda escribió por una ficha portable se va
+        // con el ejecutable al que apuntaba, y antes de preguntar por él: el
+        // menú Inicio es una de las fuentes de las que Windows contesta
+        // «instalada», así que uno que sobreviva desmentiría la desinstalación
+        // que acaba de ocurrir.
+        if let Some(name) = published_shortcut_name(&entry) {
+            start_menu::withdraw(&name, &name);
+        }
         warnings = run_uninstall_cleanup(entry.clone(), target.clone()).await?;
     }
     confirm_uninstalled(app, state, app_id, app_name, &attempted).await?;
@@ -3474,9 +3508,24 @@ async fn install_app(
                 // The terminal the store ships gets the same Start Menu folder
                 // the store gives itself, so Open-Shell indexes it and finds it
                 // by name. Republished on every install because an update can
-                // leave the executable somewhere new. No other application is
-                // advertised this way: their own installers own that decision.
-                if app_id_for_task == TERMINAL_APP_ID {
+                // leave the executable somewhere new. Beside it go the catalog
+                // entries that ask for it with `start_menu_shortcut`: a portable
+                // program brings no installer to publish one, and without this
+                // it sits on the disk with no way to open it other than the
+                // store itself. Nothing else is advertised this way: their own
+                // installers own that decision.
+                let start_menu_name = if app_id_for_task == TERMINAL_APP_ID {
+                    Some(
+                        app_entry_for_task
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .unwrap_or(TERMINAL_APP_ID)
+                            .to_string(),
+                    )
+                } else {
+                    published_shortcut_name(&app_entry_for_task)
+                };
+                if let Some(name) = start_menu_name {
                     let published = app_state
                         .installed
                         .lock()
@@ -3485,11 +3534,6 @@ async fn install_app(
                         .map(PathBuf::from);
                     match published {
                         Some(executable) => {
-                            let name = app_entry_for_task
-                                .get("name")
-                                .and_then(|value| value.as_str())
-                                .unwrap_or(TERMINAL_APP_ID)
-                                .to_string();
                             std::thread::spawn(move || {
                                 start_menu::republish(&name, &name, &executable);
                             });
@@ -3842,6 +3886,30 @@ mod tests {
         preserve_update_metadata(&previous, &mut rebuilt);
         assert!(!rebuilt["demo"].update_available);
         assert_eq!(rebuilt["demo"].latest_version, None);
+    }
+
+    #[test]
+    fn only_the_cards_that_ask_for_it_are_advertised_in_the_start_menu() {
+        let portable = serde_json::json!({
+            "id": "dlss5_swapper",
+            "name": "DLSS 5 Swapper",
+            "portable": true,
+            "start_menu_shortcut": true,
+        });
+        assert_eq!(
+            published_shortcut_name(&portable).as_deref(),
+            Some("DLSS 5 Swapper")
+        );
+
+        // Being portable is not the request: what publishes an entry is the
+        // card asking for one, so an ordinary installer keeps deciding for
+        // itself what ends up in the Start Menu.
+        let silent = serde_json::json!({ "id": "ghelper", "name": "GHelper", "portable": true });
+        assert_eq!(published_shortcut_name(&silent), None);
+
+        // Asking with nothing to call it leaves nothing to publish.
+        let nameless = serde_json::json!({ "id": "x", "name": "   ", "start_menu_shortcut": true });
+        assert_eq!(published_shortcut_name(&nameless), None);
     }
 
     #[test]
