@@ -384,6 +384,54 @@ pub type SharedDownloads = Arc<Mutex<DownloadManager>>;
 mod tests {
     use super::*;
 
+    /// La forma de la página de descargas de Cheat Engine: el instalador de
+    /// Windows va en un enlace de una CDN cuyo nombre cambia en cada carga, y
+    /// alrededor hay enlaces a otras plataformas, a la publicidad y a las
+    /// traducciones.
+    const CHEAT_ENGINE_PAGE: &str = concat!(
+        r#"<script async src="//pagead2.googlesyndication.com/pagead/js/adsbygoogle.js"></script>"#,
+        r#"<a href="https://www.patreon.com/cheatengine">Check it out</a>"#,
+        r#"<a class="download_link" href="https://d3gpt2g9zwv61d.cloudfront.net/CvFxuBB0Z.exe">"#,
+        r#"<img src="download.gif">Download Cheat Engine 7.7</a>"#,
+        r#"<a href="https://cheatengine.org/download/CheatEngineLinux771.zip">Linux</a>"#,
+        r#"<a href="https://cheatengine.org/download/mac/CheatEngine77.zip">Mac</a>"#,
+    );
+
+    fn first_link(pattern: &str) -> Option<String> {
+        let matcher = WildMatch::new(&pattern.to_ascii_lowercase());
+        links_in(CHEAT_ENGINE_PAGE)
+            .into_iter()
+            .find(|link| matcher.matches(&link.to_ascii_lowercase()))
+    }
+
+    #[test]
+    fn the_windows_installer_is_picked_out_of_the_whole_page() {
+        assert_eq!(
+            first_link("https://*cloudfront.net/*.exe").as_deref(),
+            Some("https://d3gpt2g9zwv61d.cloudfront.net/CvFxuBB0Z.exe")
+        );
+    }
+
+    #[test]
+    fn a_pattern_that_matches_nothing_finds_nothing() {
+        assert_eq!(first_link("https://example.invalid/*.exe"), None);
+    }
+
+    /// Los enlaces relativos de la página —`download.gif`, `downloads.php`— no
+    /// son direcciones y no pueden colarse como la descarga.
+    #[test]
+    fn relative_references_are_not_links() {
+        assert!(links_in(CHEAT_ENGINE_PAGE)
+            .iter()
+            .all(|link| link.starts_with("http")));
+    }
+
+    #[test]
+    fn single_quoted_attributes_are_read_too() {
+        let html = "<a href='https://example.com/setup.exe'>x</a>";
+        assert_eq!(links_in(html), vec!["https://example.com/setup.exe"]);
+    }
+
     #[test]
     fn completed_tasks_enter_cleanup_window() {
         let mut manager = DownloadManager::new();
@@ -1527,4 +1575,59 @@ pub async fn github_latest_release_asset(
 
 pub fn github_repo_archive(repo: &str, branch: &str) -> String {
     format!("https://github.com/{repo}/archive/refs/heads/{branch}.zip")
+}
+
+/// Las direcciones que una página publica en sus enlaces, en el orden en que
+/// aparecen.
+///
+/// Se leen a mano y no con un analizador de HTML porque lo que se busca es una
+/// dirección completa dentro de un atributo, y para eso sobra con recorrer las
+/// comillas: cualquier `href` o `src` es un valor entrecomillado, y una
+/// dirección absoluta empieza por `http`.
+fn links_in(html: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    for quote in ['"', '\''] {
+        for chunk in html.split(quote).skip(1).step_by(2) {
+            let value = chunk.trim();
+            if value.starts_with("http://") || value.starts_with("https://") {
+                links.push(value.to_string());
+            }
+        }
+    }
+    links
+}
+
+/// La descarga que una página anuncia ahora mismo.
+///
+/// Hay sitios que no publican una dirección fija: la de Cheat Engine sirve el
+/// instalador desde una CDN con un nombre distinto en cada carga de la página.
+/// Fijar uno en el catálogo funciona hasta que deja de funcionar, y sin aviso;
+/// leer la página en el momento de descargar da siempre el que la web está
+/// ofreciendo, que es exactamente lo que obtendría quien lo hiciera a mano.
+///
+/// `pattern` acota qué enlace de la página es la descarga —el resto son avisos
+/// legales, otras plataformas y publicidad— y se compara sin distinguir
+/// mayúsculas.
+pub async fn link_on_page(page_url: &str, pattern: &str) -> Result<String, String> {
+    let client = http_client()?;
+    let response = client
+        .get(page_url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .timeout(HTTP_METADATA_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| format!("no se pudo abrir {page_url}: {error}"))?;
+    if !response.status().is_success() {
+        return Err(format!("{page_url} respondió {}", response.status()));
+    }
+    let body = response
+        .text()
+        .await
+        .map_err(|error| format!("{page_url} llegó ilegible: {error}"))?;
+
+    let matcher = WildMatch::new(&pattern.to_ascii_lowercase());
+    links_in(&body)
+        .into_iter()
+        .find(|link| matcher.matches(&link.to_ascii_lowercase()))
+        .ok_or_else(|| format!("{page_url} ya no publica ningún enlace como «{pattern}»"))
 }

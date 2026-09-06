@@ -1177,6 +1177,122 @@ pub fn parse_winget_upgrades(output: &str) -> Vec<WingetUpgrade> {
     upgrades
 }
 
+/// One package as reported by `winget search`.
+///
+/// There is no source field on purpose. The search asks `--source winget`, so
+/// every row comes from the same place; and the column that would say so is not
+/// even printed when the output is redirected, which is exactly how the store
+/// runs WinGet — reading it gave "Moniker: 7zip", the Match column shifted one
+/// place over.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct WingetPackage {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+}
+
+/// Parses the table `winget search` prints into rows.
+///
+/// The header is not always the same: WinGet adds a "Match" column only when
+/// something matched by tag or moniker, drops it otherwise, and drops the
+/// "Source" column altogether once its output is not a console. Only the first
+/// three columns — name, identifier, version — are in every shape, so only
+/// those are read, which also keeps the parser independent of the console
+/// language the same way `parse_winget_upgrades` does.
+pub fn parse_winget_search(output: &str) -> Vec<WingetPackage> {
+    let lines: Vec<Vec<char>> = output
+        .lines()
+        .map(|line| line.rsplit('\r').next().unwrap_or(line).chars().collect())
+        .collect();
+
+    let mut packages: Vec<WingetPackage> = Vec::new();
+    let mut columns: Option<Vec<usize>> = None;
+
+    for (index, line) in lines.iter().enumerate() {
+        if winget_is_separator(line) {
+            columns = index
+                .checked_sub(1)
+                .map(|header| winget_column_starts(&lines[header]))
+                .filter(|starts| starts.len() >= 3);
+            continue;
+        }
+        let Some(starts) = columns.as_ref() else {
+            continue;
+        };
+        if line.iter().all(|c| c.is_whitespace()) {
+            columns = None;
+            continue;
+        }
+
+        let name = winget_cell(line, starts[0], starts.get(1).copied());
+        let id = winget_cell(line, starts[1], starts.get(2).copied());
+        let version = winget_cell(line, starts[2], starts.get(3).copied());
+
+        // An identifier never carries spaces, which is what separates a package
+        // row from the prose WinGet prints at the same width.
+        if id.is_empty() || id.contains(char::is_whitespace) || name.is_empty() {
+            continue;
+        }
+        // A clipped identifier cannot be installed with `--exact`, and offering
+        // it would fail at the click rather than here.
+        if id.ends_with(WINGET_ELLIPSIS) {
+            continue;
+        }
+        packages.push(WingetPackage {
+            id,
+            name: name.trim_end_matches(WINGET_ELLIPSIS).to_string(),
+            version: version.trim_end_matches(WINGET_ELLIPSIS).to_string(),
+        });
+    }
+
+    packages
+}
+
+/// What WinGet offers for what was typed.
+///
+/// Only its own repository is asked: the `msstore` source is the Microsoft
+/// Store, and the store already has a section of its own for that — listing the
+/// same product twice under two names would be answering once and charging
+/// twice.
+pub async fn search_winget(query: &str) -> Result<Vec<WingetPackage>, String> {
+    let query = query.trim().to_string();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = tokio::task::spawn_blocking(move || {
+        crate::process::hidden_winget_output_timeout(
+            &[
+                "search",
+                query.as_str(),
+                "--source",
+                "winget",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+            ],
+            WINGET_METADATA_TIMEOUT,
+        )
+    })
+    .await
+    .map_err(|error| format!("No se pudo consultar WinGet: {error}"))?
+    .map_err(|error| format!("Windows Package Manager no está disponible: {error}"))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    // WinGet answers "no package found" with a non-zero code and an empty
+    // table. That is an answer, not a failure: the section says "sin
+    // resultados" rather than showing an error the user cannot act on.
+    let packages = parse_winget_search(&stdout);
+    if packages.is_empty() && !output.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if !stderr.is_empty() {
+            crate::logger::info(
+                "winget-search",
+                format!("WinGet no devolvió resultados: {stderr}"),
+            );
+        }
+    }
+    Ok(packages)
+}
+
 /// Runs an installer over a copy that is already there, getting whatever is
 /// running in that folder out of its way first and putting it back afterwards.
 ///
@@ -1709,6 +1825,63 @@ where
         });
     }
 
+    // Chocolatey tampoco descarga nada por su cuenta: su programa se encarga de
+    // todo, así que este origen empieza y acaba aquí. Si el equipo no lo tiene,
+    // se instala Chocolatey primero, como paso anunciado.
+    if source_type == "choco" {
+        drop(download_permit.take());
+        let _install_stage = acquire_install_stage(flags).await?;
+        let package_id = app
+            .get("choco_id")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.trim().is_empty())
+            .ok_or("Falta choco_id")?
+            .to_string();
+        let mut changed =
+            crate::choco::install(&package_id, force_update, false, flags, &mut on_progress).await?;
+        if !changed {
+            // Chocolatey's package record survives a vendor uninstall. A no-op
+            // from choco is therefore not proof that the program still exists.
+            on_progress(95, "Comprobando la aplicación registrada...".into(), false);
+            let entry = app.clone();
+            let detected = tokio::task::spawn_blocking(move || {
+                crate::detect::clear_detection_caches();
+                let system = crate::detect::scan_installed_programs();
+                let start_apps = crate::detect::scan_start_apps();
+                let winget = crate::detect::scan_winget_packages();
+                crate::detect::build_statuses(
+                    std::slice::from_ref(&entry),
+                    &std::collections::HashMap::new(),
+                    &system,
+                    &start_apps,
+                    &winget,
+                )
+                .values()
+                .any(|status| status.installed)
+            })
+            .await
+            .map_err(|error| format!("No se pudo comprobar el paquete de Chocolatey: {error}"))?;
+            if !detected {
+                crate::logger::info(
+                    "choco-repair",
+                    format!("{package_id}: Chocolatey conserva el registro pero Windows no encuentra la aplicación; se reinstala una vez."),
+                );
+                on_progress(10, "Reinstalando la aplicación que falta...".into(), false);
+                changed = crate::choco::install(
+                    &package_id, force_update, true, flags, &mut on_progress,
+                ).await?;
+            }
+        }
+        if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(CANCELLED_MARKER.into());
+        }
+        return Ok(InstallOutcome {
+            changed,
+            registered: None,
+            pending_restart: None,
+        });
+    }
+
     let mut winget_fallback_url = None;
     if source_type == "winget" {
         let _install_stage = acquire_install_stage(flags).await?;
@@ -1810,11 +1983,48 @@ where
     let mut techpowerup_plan: Option<crate::techpowerup::Plan> = None;
 
     let url = match source_type {
-        "direct" | "wget" => app
-            .get("download_url")
-            .and_then(|v| v.as_str())
-            .ok_or("Falta download_url")?
-            .to_string(),
+        "direct" | "wget" => {
+            let fixed = app.get("download_url").and_then(|v| v.as_str());
+            // Una ficha puede decir que su descarga la publica una página en vez
+            // de vivir en una dirección fija. Se lee entonces, no antes: es el
+            // enlace que la web ofrece en este momento, que es lo que obtendría
+            // quien la descargara a mano.
+            match (
+                app.get("download_page").and_then(|v| v.as_str()),
+                app.get("download_link_pattern").and_then(|v| v.as_str()),
+            ) {
+                (Some(page), Some(pattern)) if !page.trim().is_empty() => {
+                    on_progress(3, "Buscando la descarga del proveedor...".into(), false);
+                    match download::link_on_page(page, pattern).await {
+                        Ok(resolved) => {
+                            crate::logger::info(
+                                "download",
+                                format!("{name}: la página publica {resolved}"),
+                            );
+                            resolved
+                        }
+                        // La página puede estar caída o haber cambiado de forma,
+                        // y eso no tiene por qué dejar sin instalar: la
+                        // dirección del catálogo es la reserva, y en el diario
+                        // queda por qué se ha tenido que usar.
+                        Err(error) => {
+                            let fallback = fixed.ok_or_else(|| {
+                                format!("No se pudo resolver la descarga de {name}: {error}")
+                            })?;
+                            crate::logger::warn(
+                                "download",
+                                format!(
+                                    "{name}: no se pudo leer la página de descarga ({error}); \
+                                     se usará la dirección guardada en el catálogo."
+                                ),
+                            );
+                            fallback.to_string()
+                        }
+                    }
+                }
+                _ => fixed.ok_or("Falta download_url")?.to_string(),
+            }
+        }
         "github_release" => {
             let repo = app
                 .get("github_repo")
@@ -5111,6 +5321,74 @@ mod tests {
         assert!(parse_winget_upgrades(WINGET_UPGRADE_ES)
             .iter()
             .all(|upgrade| !upgrade.id.contains("actualizaciones")));
+    }
+
+    /// La tabla tal y como llega por una tubería, que es como la lee la tienda:
+    /// sin la columna Origen, y con Coincidencia en último lugar.
+    const WINGET_SEARCH_PIPED_ES: &str = concat!(
+        "Nombre                             Id                        Versión         Coincidencia\r\n",
+        "------------------------------------------------------------------------------------------\r\n",
+        "7-Zip                              7zip.7zip                 26.02           Moniker: 7zip\r\n",
+        "Advanced Archive Password Recovery Elcomsoft.ArchivePassword 4.66.266.6965   Tag: 7zip\r\n",
+        "NanaZip                            M2Team.NanaZip            6.5.1800.0      Tag: 7zip\r\n",
+        "7zr                                7zip.7zr                  26.03\r\n",
+    );
+
+    #[test]
+    fn a_search_row_is_read_by_column_even_with_spaces_in_the_name() {
+        let packages = parse_winget_search(WINGET_SEARCH_PIPED_ES);
+        let ids: Vec<&str> = packages.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            vec![
+                "7zip.7zip",
+                "Elcomsoft.ArchivePassword",
+                "M2Team.NanaZip",
+                "7zip.7zr"
+            ]
+        );
+        assert_eq!(packages[1].name, "Advanced Archive Password Recovery");
+        assert_eq!(packages[1].version, "4.66.266.6965");
+    }
+
+    /// El motivo de que no haya campo de origen: redirigida, WinGet no imprime
+    /// esa columna, y tomar la última dejaba "Moniker: 7zip" donde debía poner
+    /// la versión o el origen.
+    #[test]
+    fn the_match_column_never_leaks_into_the_version() {
+        for package in parse_winget_search(WINGET_SEARCH_PIPED_ES) {
+            assert!(
+                !package.version.contains("Moniker") && !package.version.contains("Tag:"),
+                "la versión de {} salió de la columna equivocada: {}",
+                package.id,
+                package.version
+            );
+        }
+    }
+
+    /// La cabecera con Origen sigue leyéndose igual: es la misma tabla con una
+    /// columna más a la derecha, y las tres primeras no se mueven.
+    #[test]
+    fn a_console_search_with_the_source_column_reads_the_same() {
+        let output = concat!(
+            "Nombre    Id            Versión   Coincidencia    Origen\r\n",
+            "--------------------------------------------------------\r\n",
+            "7-Zip     7zip.7zip     26.02     Moniker: 7zip   winget\r\n",
+        );
+        let packages = parse_winget_search(output);
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].id, "7zip.7zip");
+        assert_eq!(packages[0].version, "26.02");
+    }
+
+    #[test]
+    fn a_clipped_identifier_is_not_offered() {
+        let output = concat!(
+            "Nombre    Id            Versión\r\n",
+            "-------------------------------\r\n",
+            "Algo      Muy.Largo…    1.0\r\n",
+        );
+        assert!(parse_winget_search(output).is_empty());
     }
 
     #[test]

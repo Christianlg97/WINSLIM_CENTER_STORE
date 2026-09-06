@@ -254,6 +254,27 @@ const state = {
       error: "",
     },
   },
+  // Lo que WinGet y Chocolatey contestan a lo que se escribe en la barra de
+  // arriba. Cada uno guarda lo suyo, igual que la Microsoft Store, para que el
+  // que tarde no borre lo que el otro ya trajo. De Chocolatey se recuerda
+  // además si el equipo lo tiene: `null` mientras no se ha preguntado.
+  repos: {
+    winget: { query: "", requested: "", results: [], loading: false, error: "" },
+    choco: {
+      query: "",
+      requested: "",
+      results: [],
+      loading: false,
+      error: "",
+      available: null,
+      version: "",
+      // Si la tienda tiene el token de administrador, que es lo que Chocolatey
+      // necesita para todo. Se supone que sí mientras no se sepa: su manifiesto
+      // lo pide, y avisar de lo contrario antes de haberlo comprobado sería
+      // alarmar por nada.
+      elevated: true,
+    },
+  },
 };
 
 const derived = {
@@ -266,6 +287,15 @@ const derived = {
   consoleNames: [],
   installedCount: 0,
   updatesCount: 0,
+  // Los paquetes de WinGet y de Chocolatey que esta sesión ha mandado
+  // instalar. No son catálogo —no salen en ninguna lista ni se guardan— pero
+  // durante su instalación el resto de la tienda tiene que poder encontrarlos
+  // por su identificador, que es lo que hace `findApp`.
+  repoPackages: new Map(),
+  // Los paquetes que el catálogo ya cubre, en minúsculas, para descontarlos de
+  // lo que contesten los repositorios: la tienda no puede ofrecer dos veces el
+  // mismo programa con dos fichas distintas.
+  catalogPackageKeys: { winget: new Set(), choco: new Set() },
 };
 
 function replaceCatalog(catalog) {
@@ -285,6 +315,16 @@ function replaceCatalog(catalog) {
       delete state.resolvedIconSignatures[appId];
     }
   }
+  derived.catalogPackageKeys = {
+    winget: new Set(
+      state.catalog
+        .map((app) => String(app.winget_id || "").toLowerCase())
+        .filter(Boolean),
+    ),
+    choco: new Set(
+      state.catalog.map((app) => String(app.choco_id || "").toLowerCase()).filter(Boolean),
+    ),
+  };
   derived.searchBlobs = new Map(
     state.catalog.map((app) => [
       app.id,
@@ -346,6 +386,7 @@ function reconcileStatusChanges(changes) {
     [...changes.ids].some((id) => findApp(id)?.source_type === "component");
   if (
     componentVisibilityChanged ||
+    (repoInlineFits() && state.search.trim() && Object.values(state.repos).some((repo) => repo.results.length)) ||
     (state.section === "installed" && changes.installedChanged) ||
     (state.section === "updates" && changes.updatesChanged)
   ) {
@@ -1617,6 +1658,19 @@ function scheduleInlineMsStoreSearch() {
   inlineMsStoreTimer = setTimeout(() => void runInlineMsStoreSearch(query), MSSTORE_INLINE_DELAY);
 }
 
+/// Lo que hay que hacer con lo escrito arriba: preguntárselo a los tres
+/// catálogos de fuera. El propio se filtra en memoria y no pasa por aquí.
+///
+/// Un único punto de entrada para no tener que acordarse de los tres cada vez
+/// que la barra cambia, que son cuatro sitios distintos del programa.
+function scheduleInlineSearches() {
+  scheduleInlineMsStoreSearch();
+  scheduleInlineRepoSearches();
+  if (repoInlineFits() && state.search.trim().length >= MSSTORE_INLINE_MIN_CHARS) {
+    void ensureChocoStatus();
+  }
+}
+
 async function runInlineMsStoreSearch(query) {
   const inline = state.msstore.inline;
   inline.requested = query;
@@ -1704,6 +1758,410 @@ function msStoreInlineSectionHtml() {
           : ""
       }
     </section>`;
+}
+
+// --- Los otros dos repositorios -------------------------------------------
+//
+// Escribir en la barra de arriba pregunta a cuatro sitios: al catálogo propio,
+// que se filtra en memoria; a la Microsoft Store, que tiene su bloque justo
+// encima; y a WinGet y a Chocolatey, que son estos. Cada uno cuelga en su
+// propia subsección y ninguno espera a los demás: WinGet tardando cinco
+// segundos no puede dejar en blanco lo que Chocolatey ya ha traído.
+//
+// Y van separados del catálogo por lo mismo que la Microsoft Store: uno está
+// revisado a mano y los otros son repositorios enteros. Mezclarlos haría pasar
+// por seleccionado algo que nadie ha seleccionado.
+
+/// Los dos repositorios, descritos en vez de programados dos veces. Lo único
+/// que los distingue es a quién se le pregunta, cómo se llama lo que contesta
+/// y con qué campo se instala después.
+const REPOS = {
+  winget: {
+    label: "WinGet",
+    command: "winget_search",
+    /// El prefijo del identificador con el que viaja al backend. Lleva guión y
+    /// no dos puntos porque el instalador puede acabar creando una carpeta con
+    /// ese nombre, y Windows no admite `:` en una.
+    prefix: "winget-",
+    source_type: "winget",
+    package_field: "winget_id",
+    accent: "#0078d4",
+    empty: (query) => `WinGet no publica ningún paquete que coincida con «${query}».`,
+    /// De la respuesta del backend a lo que dibuja una tarjeta.
+    normalize: (item) => ({
+      key: item.id,
+      name: item.name || item.id,
+      version: item.version || "",
+      publisher: item.id.includes(".") ? item.id.split(".")[0] : "WinGet",
+      description: "",
+      icon: null,
+      page_url: "",
+      warning: "",
+    }),
+  },
+  choco: {
+    label: "Chocolatey",
+    command: "choco_search",
+    prefix: "choco-",
+    source_type: "choco",
+    package_field: "choco_id",
+    accent: "#80b5e3",
+    empty: (query) => `El repositorio de la comunidad no tiene nada que coincida con «${query}».`,
+    normalize: (item) => ({
+      key: item.id,
+      name: item.title || item.id,
+      version: item.version || "",
+      publisher: item.author || "Chocolatey",
+      description: item.summary || "",
+      icon: item.icon_url || null,
+      page_url: item.page_url || "",
+      // Chocolatey modera los paquetes de la comunidad, y uno sin ese visto
+      // bueno se enseña igual pero diciéndolo: es la diferencia entre lo que
+      // alguien ha revisado y lo que alguien acaba de subir.
+      warning: item.approved ? "" : "Sin moderar",
+    }),
+  },
+};
+
+/// Cuántos resultados enseña cada repositorio. Los mismos que la Microsoft
+/// Store, y por lo mismo: pasando de ahí dejan de ser un apunte debajo del
+/// catálogo y pasan a taparlo.
+const REPO_INLINE_LIMIT = 6;
+
+const repoInlineTimers = {};
+
+/// Dónde tiene sentido colgar los repositorios: donde se está buscando algo que
+/// instalar. En «Mis aplicaciones» y «Actualizaciones» se mira lo que ya está
+/// puesto, y en la sección de la Microsoft Store se está en otra tienda.
+function repoInlineFits() {
+  return !["installed", "updates", MSSTORE_SECTION].includes(state.section);
+}
+
+/// Manda a los dos repositorios la pregunta que hay escrita arriba.
+///
+/// Se llama a cada tecla, con el mismo trato que la Microsoft Store: por debajo
+/// del mínimo de letras no se pregunta, y vaciar la caja borra lo traído para
+/// que no quede como respuesta a algo que ya nadie pregunta.
+function scheduleInlineRepoSearches() {
+  const query = state.search.trim();
+  for (const repoId of Object.keys(REPOS)) {
+    const inline = state.repos[repoId];
+    clearTimeout(repoInlineTimers[repoId]);
+    if (!repoInlineFits() || query.length < MSSTORE_INLINE_MIN_CHARS) {
+      if (inline.query || inline.requested || inline.loading || inline.error) {
+        Object.assign(inline, {
+          query: "",
+          requested: "",
+          results: [],
+          loading: false,
+          error: "",
+        });
+        renderContent();
+      }
+      continue;
+    }
+    if (inline.requested === query) continue;
+    repoInlineTimers[repoId] = setTimeout(
+      () => void runInlineRepoSearch(repoId, query),
+      MSSTORE_INLINE_DELAY,
+    );
+  }
+}
+
+async function runInlineRepoSearch(repoId, query) {
+  const repo = REPOS[repoId];
+  const inline = state.repos[repoId];
+  inline.requested = query;
+  inline.loading = true;
+  inline.error = "";
+  renderContent();
+  void clientLog("info", repoId, `Búsqueda desde la barra: ${query}`);
+  try {
+    const results = await invoke(repo.command, { query });
+    // Mientras se preguntaba se ha seguido escribiendo: pintar esto ahora sería
+    // mentir sobre qué se buscó.
+    if (inline.requested !== query) return;
+    // Lo que el catálogo ya ofrece no se repite abajo: una tarjeta revisada a
+    // mano y otra sin revisar del mismo programa, con dos botones «Instalar»
+    // que hacen cosas distintas, es la peor respuesta posible a un nombre.
+    inline.results = (Array.isArray(results) ? results : [])
+      .map(repo.normalize)
+      .filter((pkg) => !derived.catalogPackageKeys[repoId].has(pkg.key.toLowerCase()));
+    inline.query = query;
+    inline.loading = false;
+    renderContent();
+  } catch (error) {
+    if (inline.requested !== query) return;
+    inline.loading = false;
+    inline.results = [];
+    inline.query = query;
+    inline.error = String(error);
+    renderContent();
+    void clientLog("warn", repoId, `Búsqueda desde la barra fallida: ${error}`);
+  }
+}
+
+/// Si el equipo tiene Chocolatey. Se pregunta una vez por sesión, la primera
+/// que hace falta, y sólo para poder avisar antes de pulsar de que la primera
+/// instalación traerá también el gestor.
+let chocoStatusProbe = null;
+
+async function ensureChocoStatus() {
+  if (state.repos.choco.available !== null) return;
+  // Se guarda la promesa, no sólo el resultado: entre que se pregunta y que
+  // llega la respuesta hay sitio para dos teclas más, y cada una lanzaba su
+  // propia consulta porque `available` seguía sin contestar. En el diario se
+  // veían tres `choco --version` seguidos para una sola búsqueda.
+  if (chocoStatusProbe) return chocoStatusProbe;
+  chocoStatusProbe = (async () => {
+    try {
+      const status = await invoke("choco_status");
+      state.repos.choco.available = !!status?.available;
+      state.repos.choco.version = status?.version || "";
+      state.repos.choco.elevated = status?.elevated !== false;
+    } catch (error) {
+      // No saberlo no impide instalar: el backend lo comprueba otra vez y se
+      // ocupa. Sólo se pierde el aviso previo.
+      state.repos.choco.available = false;
+      void clientLog("warn", "choco", `No se pudo comprobar Chocolatey: ${error}`);
+    } finally {
+      chocoStatusProbe = null;
+    }
+    renderContent();
+  })();
+  return chocoStatusProbe;
+}
+
+/// El identificador con el que un paquete de fuera del catálogo viaja por toda
+/// la tienda: su tarea de descarga, su diálogo y su fila en el panel.
+function repoAppId(repoId, packageKey) {
+  return `${REPOS[repoId].prefix}${packageKey}`;
+}
+
+/// Un paquete vestido de aplicación, para lo que ya sabe dibujar aplicaciones.
+function repoAppShape(repoId, pkg) {
+  const repo = REPOS[repoId];
+  return {
+    id: repoAppId(repoId, pkg.key),
+    name: pkg.name,
+    author: pkg.publisher,
+    description: pkg.description,
+    icon_url: pkg.icon || null,
+    icon_padding: 8,
+    accent_color: repo.accent,
+  };
+}
+
+/// La entrada de catálogo que el backend necesita para instalarlo.
+///
+/// No se guarda en `apps.json` ni se pretende: dura lo que dura la instalación
+/// y describe exactamente un paquete de un repositorio.
+function repoCatalogEntry(repoId, pkg) {
+  const repo = REPOS[repoId];
+  return {
+    id: repoAppId(repoId, pkg.key),
+    name: pkg.name,
+    description: pkg.description || `Paquete de ${repo.label}: ${pkg.key}`,
+    version: pkg.version || "latest",
+    author: pkg.publisher,
+    source_type: repo.source_type,
+    [repo.package_field]: pkg.key,
+    icon_url: pkg.icon || null,
+    accent_color: repo.accent,
+  };
+}
+
+function repoPackageByAppId(appId) {
+  for (const [repoId, repo] of Object.entries(REPOS)) {
+    if (!appId.startsWith(repo.prefix)) continue;
+    const key = appId.slice(repo.prefix.length);
+    const found = state.repos[repoId].results.find((pkg) => pkg.key === key);
+    if (found) return { repoId, pkg: found };
+  }
+  return null;
+}
+
+function installedRepoApp(repoId, pkg) {
+  const entry = repoCatalogEntry(repoId, pkg);
+  if (appStatus(entry.id).installed) return entry;
+  const packageField = REPOS[repoId].package_field;
+  return state.catalog.find((app) => appStatus(app.id).installed && (
+    String(app[packageField] || "").toLowerCase() === pkg.key.toLowerCase() ||
+    String(app.name || "").trim().toLowerCase() === pkg.name.trim().toLowerCase()
+  ));
+}
+
+function repoCardHtml(repoId, pkg, index) {
+  const repo = REPOS[repoId];
+  const appId = repoAppId(repoId, pkg.key);
+  const shape = repoAppShape(repoId, pkg);
+  const accent = repo.accent;
+  const avatarBg = avatarBackground(shape, accent);
+  const letter = (pkg.name || pkg.key || "?")[0].toUpperCase();
+  const busy = state.busy[appId];
+  const installedApp = installedRepoApp(repoId, pkg);
+  const meta = [pkg.publisher, pkg.version ? `v${pkg.version}` : ""]
+    .filter(Boolean)
+    .join("  ·  ");
+
+  const actions = busy
+    ? `<button type="button" class="btn secondary" disabled aria-busy="true">Instalando…</button>`
+    : installedApp
+      ? actionButtons(installedApp)
+      : `<button type="button" class="btn primary" data-repo-install="${escapeHtml(repoId)}"
+         data-repo-package="${escapeHtml(pkg.key)}">Instalar</button>${
+        pkg.page_url
+          ? `<button type="button" class="btn ghost" data-repo-page="${escapeHtml(pkg.page_url)}">Ver ficha</button>`
+          : ""
+      }`;
+
+  return `
+    <article class="app-card repo-card" data-repo-card="${escapeHtml(appId)}"
+      style="--card-accent:${accent}">
+      <div class="card-top">
+        <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, false)}</div>
+        <div>
+          <strong>${escapeHtml(pkg.name)}
+            <span class="origin-tag repo-tag">${escapeHtml(repo.label)}</span>
+            ${pkg.warning ? `<span class="origin-tag repo-warning-tag">${escapeHtml(pkg.warning)}</span>` : ""}
+          </strong>
+          <small>${escapeHtml(meta)}</small>
+          <small class="repo-package-id">${escapeHtml(pkg.key)}</small>
+        </div>
+      </div>
+      <p class="card-desc">${escapeHtml(pkg.description || "")}</p>
+      <div class="card-actions">${actions}</div>
+    </article>`;
+}
+
+/// La subsección de un repositorio: lo que ofrece para lo que se acaba de
+/// escribir.
+function repoInlineSectionHtml(repoId) {
+  const repo = REPOS[repoId];
+  const inline = state.repos[repoId];
+  const query = state.search.trim();
+  if (!repoInlineFits()) return "";
+  if (query.length < MSSTORE_INLINE_MIN_CHARS) return "";
+
+  const head = (note) => `
+    <div class="section-head ms-section-head">
+      <h3>${escapeHtml(repo.label)}</h3>
+      <span>${note}</span>
+    </div>`;
+
+  if (inline.loading && inline.requested === query) {
+    return `
+      <section class="section repo-inline-section">
+        ${head("Consultando el repositorio…")}
+        <div class="ms-inline-note"><span class="pulse-dot"></span> Buscando «${escapeHtml(query)}» en ${escapeHtml(repo.label)}…</div>
+      </section>`;
+  }
+  if (inline.query !== query) return "";
+  if (inline.error) {
+    return `
+      <section class="section repo-inline-section">
+        ${head("No se pudo consultar")}
+        <div class="ms-inline-note bad">${escapeHtml(inline.error)}</div>
+      </section>`;
+  }
+  if (!inline.results.length) {
+    return `
+      <section class="section repo-inline-section">
+        ${head("Sin resultados")}
+        <div class="ms-inline-note">${escapeHtml(repo.empty(query))}</div>
+      </section>`;
+  }
+
+  const shown = inline.results.slice(0, REPO_INLINE_LIMIT);
+  const rest = inline.results.length - shown.length;
+  // El aviso va aquí y no en el diálogo de confirmación porque es lo que
+  // cambia la decisión: instalar el primer paquete de Chocolatey instala
+  // también Chocolatey, y eso se sabe antes de pulsar, no después.
+  //
+  // Y va con su propia clase, no con la de las notas de debajo: aquélla
+  // reserva el aire por arriba, que es donde lo necesita quien cierra una
+  // rejilla, y aquí el aire hace falta por abajo para no quedar pegado a la
+  // primera fila de tarjetas.
+  const chocoNote =
+    repoId !== "choco"
+      ? ""
+      : state.repos.choco.elevated === false
+        ? // Sin permisos de administrador no hay instalación posible, y eso
+          // pesa más que decir si Chocolatey está o no: se dice esto en su
+          // lugar, con lo que hay que hacer.
+          `<div class="repo-inline-lead">WinSlimCenter no se está ejecutando como administrador, y Chocolatey lo necesita para instalar. Ábrelo como administrador para poder instalar desde aquí.</div>`
+        : state.repos.choco.available === false
+          ? `<div class="repo-inline-lead">Este equipo no tiene Chocolatey. La primera instalación lo instalará antes que el paquete.</div>`
+          : "";
+  return `
+    <section class="section repo-inline-section">
+      ${head(`${inline.results.length} ${inline.results.length === 1 ? "paquete" : "paquetes"}`)}
+      ${chocoNote}
+      <div class="grid">${shown.map((pkg, index) => repoCardHtml(repoId, pkg, index)).join("")}</div>
+      ${
+        rest > 0
+          ? `<div class="ms-inline-note">Y ${rest} ${rest === 1 ? "paquete más" : "paquetes más"} en ${escapeHtml(repo.label)}. Afina la búsqueda para verlos.</div>`
+          : ""
+      }
+    </section>`;
+}
+
+/// Instala un paquete que no está en el catálogo.
+///
+/// Se apunta en `derived.repoPackages` antes de pedirlo para que todo lo que ya
+/// existe —el diálogo de progreso, el panel de descargas, el aviso del final—
+/// lo encuentre por su identificador igual que a una aplicación del catálogo.
+async function installRepoPackage(repoId, packageKey) {
+  const repo = REPOS[repoId];
+  const pkg = state.repos[repoId].results.find((item) => item.key === packageKey);
+  if (!repo || !pkg) return;
+  const appId = repoAppId(repoId, pkg.key);
+  if (state.busy[appId]) {
+    showAlertModal("Instalación en curso", `'${pkg.name}' ya se está instalando.`);
+    return;
+  }
+  // Lo apuntado de instalaciones ya terminadas deja de hacer falta: quien
+  // preguntaba por ellas era el diálogo que ya se cerró.
+  for (const [known] of derived.repoPackages) {
+    if (!state.busy[known]) derived.repoPackages.delete(known);
+  }
+  const entry = repoCatalogEntry(repoId, pkg);
+  derived.repoPackages.set(appId, entry);
+
+  const needsChoco = repoId === "choco" && state.repos.choco.available === false;
+  const start = async () => {
+    state.busy[appId] = "installing";
+    state.finished.delete(appId);
+    renderContent();
+    renderDlPanel();
+    showPackageOperationModal(entry, false);
+    try {
+      await invoke("install_app", {
+        appEntry: entry,
+        forceUpdate: false,
+        variant: null,
+        closeRunning: false,
+      });
+    } catch (error) {
+      delete state.busy[appId];
+      state.operationAppId = null;
+      closeModal();
+      renderContent();
+      setStatus(`Error: ${error}`, "var(--red)");
+      showAlertModal("Error de instalación", String(error));
+    }
+  };
+
+  showConfirmModal({
+    title: `Instalar ${pkg.name}`,
+    message: needsChoco
+      ? `'${pkg.name}' viene de Chocolatey, que este equipo todavía no tiene. Se instalará primero Chocolatey y después el paquete. ¿Continuar?`
+      : `¿Deseas instalar '${pkg.name}' desde ${repo.label}?`,
+    app: entry,
+    confirmText: "Instalar",
+    confirmVariant: "primary",
+    onConfirm: () => void start(),
+  });
 }
 
 function msStoreMatchesSearch(app, query) {
@@ -2548,6 +3006,15 @@ function renderContentNow() {
   // para lo mismo. Debajo del catálogo propio porque es un añadido a la
   // búsqueda, no la búsqueda.
   const inlineStoreSection = searching ? msStoreInlineSectionHtml() : "";
+  // Y debajo de todo, los dos repositorios de paquetes. En este orden a
+  // propósito: el catálogo primero porque está revisado, la Microsoft Store
+  // después porque la firma Microsoft, y los repositorios al final porque son
+  // los más grandes y los menos seleccionados de los cuatro.
+  const inlineRepoSections = searching
+    ? Object.keys(REPOS)
+        .map((repoId) => repoInlineSectionHtml(repoId))
+        .join("")
+    : "";
 
   if (!apps.length && !storeSection) {
     if (state.section === "updates") {
@@ -2576,14 +3043,14 @@ function renderContentNow() {
             </div>
           </div>
         </div>`;
-    } else if (inlineStoreSection) {
-      // No decir «sin resultados» a secas teniendo justo debajo un bloque
-      // lleno de ellos: lo que no tiene nada es este catálogo, y eso es lo
-      // que se dice.
+    } else if (inlineStoreSection || inlineRepoSections) {
+      // No decir «sin resultados» a secas teniendo justo debajo bloques llenos
+      // de ellos: lo que no tiene nada es este catálogo, y eso es lo que se
+      // dice.
       html += `
         <div class="empty">
           <h3>Nada en el catálogo de WinSlimCenter</h3>
-          <p>Ninguna de las aplicaciones seleccionadas coincide con «${escapeHtml(state.search.trim())}». Abajo, lo que ofrece la Microsoft Store.</p>
+          <p>Ninguna de las aplicaciones seleccionadas coincide con «${escapeHtml(state.search.trim())}». Abajo, lo que ofrecen la Microsoft Store, WinGet y Chocolatey.</p>
         </div>`;
     } else {
       html += `<div class="empty"><h3>Sin resultados</h3><p>Prueba con otro buscador o sección.</p></div>`;
@@ -2591,6 +3058,7 @@ function renderContentNow() {
   }
 
   html += inlineStoreSection;
+  html += inlineRepoSections;
 
   const content = document.getElementById("content");
   // Replacing the markup sends the scroll back to the top. Redrawing the same
@@ -2653,7 +3121,7 @@ function bindShellDelegation() {
         state.section = nextSection;
         state.consoleFilter = "all";
         void clientLog("info", "navigation", `Sección seleccionada: ${state.section}`);
-        scheduleInlineMsStoreSearch();
+        scheduleInlineSearches();
         renderSidebar();
         renderContent();
         // Los canales se piden al entrar y se dibujan cuando llegan: la
@@ -2709,7 +3177,7 @@ function bindShellDelegation() {
       state.search = "";
       const bar = document.getElementById("search");
       if (bar) bar.value = "";
-      scheduleInlineMsStoreSearch();
+      scheduleInlineSearches();
       void clientLog("info", "msstore", `Búsqueda llevada a la sección: ${state.msstore.query}`);
       renderSidebar();
       renderContent();
@@ -2749,6 +3217,18 @@ function bindShellDelegation() {
     const msInstall = event.target.closest("[data-ms-install]");
     if (msInstall) {
       void installMsStoreProduct(msInstall.dataset.msInstall);
+      return;
+    }
+
+    const repoInstall = event.target.closest("[data-repo-install]");
+    if (repoInstall) {
+      void installRepoPackage(repoInstall.dataset.repoInstall, repoInstall.dataset.repoPackage);
+      return;
+    }
+
+    const repoPage = event.target.closest("[data-repo-page]");
+    if (repoPage) {
+      void invoke("open_url", { url: repoPage.dataset.repoPage });
       return;
     }
 
@@ -2892,8 +3372,17 @@ function openAppModal(id) {
   if (btnUninstall) btnUninstall.onclick = () => { closeModal(); uninstallApp(id); };
 }
 
+/// La aplicación detrás de un identificador.
+///
+/// Primero el catálogo, que es de quien habla casi todo. Después los paquetes
+/// de WinGet y de Chocolatey que se están instalando ahora mismo: llegaron de
+/// una búsqueda y no del catálogo, pero su instalación pasa por el mismo
+/// diálogo y el mismo panel, y ésos preguntan por aquí.
 function findApp(id) {
-  return derived.catalogById.get(id);
+  const known = derived.catalogById.get(id) || derived.repoPackages.get(id);
+  if (known) return known;
+  const found = repoPackageByAppId(id);
+  return found ? repoCatalogEntry(found.repoId, found.pkg) : undefined;
 }
 
 async function installApp(id, isUpdate = false) {
@@ -4884,7 +5373,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // seconds would otherwise leave the catalog filtered by a name nobody has.
     searchInput.value = "";
     state.search = "";
-    scheduleInlineMsStoreSearch();
+    scheduleInlineSearches();
     renderContent();
     await clientLog("info", "command", `Comando ${typed} ejecutado desde la barra de búsqueda.`);
     if (command.pending) setStatus(command.pending, "var(--accent)");
@@ -4908,7 +5397,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     searchTimer = setTimeout(renderContent, 180);
     // La Microsoft Store se pregunta aparte y más despacio: cada intento es un
     // viaje a sus servidores, no un filtro sobre lo que ya está en memoria.
-    scheduleInlineMsStoreSearch();
+    scheduleInlineSearches();
   });
   document.getElementById("btn-about").addEventListener("click", showAboutModal);
   // Called without arguments on purpose: the click event must not leak into the
@@ -5069,6 +5558,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     // Clearing the optimistic busy flag is itself a visible state change even
     // when installation changed no version and the later WinGet check fails.
     updateVisibleAppActions(new Set([app_id]));
+    // Un paquete de WinGet o de Chocolatey no tiene tarjeta en el catálogo, así
+    // que no hay nada que `updateVisibleAppActions` pueda repintar: su
+    // subsección se vuelve a dibujar entera. La entrada sigue apuntada hasta el
+    // final del manejador, que todavía pregunta por ella para dar el nombre.
+    if (derived.repoPackages.has(app_id)) renderContent();
     // Una aplicación de la tanda no tiene diálogo propio ni avisos propios: lo
     // que le pasó se cuenta en su fila, y el recuento de lo instalado se pone
     // al día una sola vez cuando terminan todas, no una vez por cada una.

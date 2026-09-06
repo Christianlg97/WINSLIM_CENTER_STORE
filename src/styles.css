@@ -3316,6 +3316,69 @@ textarea {
   color: var(--red);
 }
 
+/* WinGet y Chocolatey, colgados debajo de la Microsoft Store por lo mismo que
+   ella cuelga del catálogo: son repositorios enteros, no una selección, y el
+   corte es lo que impide que sus tarjetas pasen por revisadas. */
+.repo-inline-section {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--border);
+}
+
+.repo-inline-section .section-head h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* El aviso que encabeza una subsección, antes de sus tarjetas.
+   `.ms-inline-note` no sirve aquí: reserva su aire por arriba porque siempre
+   cierra una rejilla, y encima de una dejaba el texto pegado a la primera fila
+   de tarjetas. Éste lleva el aire donde le hace falta, y una línea a la
+   izquierda que lo separa de las tarjetas sin subir la voz. */
+.repo-inline-lead {
+  margin: 4px 0 16px;
+  padding: 8px 0 8px 12px;
+  border-left: 2px solid var(--border);
+  color: var(--text-light);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* De qué repositorio viene la tarjeta. Va junto al nombre porque, con cuatro
+   orígenes en la misma pantalla, es lo primero que hay que poder distinguir. */
+.repo-tag {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  white-space: nowrap;
+}
+
+/* Un paquete que la comunidad de Chocolatey todavía no ha revisado. Se enseña,
+   pero no como si estuviera al mismo nivel que el resto. El borde discontinuo
+   es lo que lo separa del sello del repositorio: la paleta de la tienda es
+   neutra a propósito y un color de aviso aquí no sería de nadie. */
+.repo-warning-tag {
+  padding: 2px 7px;
+  border: 1px dashed var(--border);
+  border-radius: 20px;
+  color: var(--text-light);
+  white-space: nowrap;
+}
+
+/* El identificador exacto con el que se instala. Es lo que distingue a dos
+   paquetes que se llaman igual, y sin él la tarjeta no dice cuál es cuál. */
+.repo-package-id {
+  display: block;
+  margin-top: 2px;
+  font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 10.5px;
+  color: var(--text-light);
+  opacity: 0.85;
+  overflow-wrap: anywhere;
+}
+
 /* La identidad del paquete, que es lo que de verdad distingue a dos
    aplicaciones con el mismo nombre visible. */
 .ms-installed-card .card-desc {

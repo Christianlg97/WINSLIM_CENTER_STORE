@@ -4149,6 +4149,32 @@
     ]
   },
   {
+    "id": "cheat_engine",
+    "name": "Cheat Engine",
+    "description": "Depurador y escáner de memoria de código abierto para inspeccionar y modificar valores de juegos y programas en ejecución.",
+    "version": "latest",
+    "author": "Dark Byte",
+    "category": "Modding",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_page": "https://www.cheatengine.org/downloads.php",
+    "download_link_pattern": "https://d3gpt2g9zwv61d.cloudfront.net/*.exe",
+    "download_filename": "CheatEngine_Setup.exe",
+    "icon_url": "assets/catalog/cheat_engine.png",
+    "icon_background": "#dfe6ec",
+    "icon_padding": 6,
+    "accent_color": "#2b6a8f",
+    "detect_names": [
+      "Cheat Engine"
+    ],
+    "launch_executable": "Cheat Engine.exe",
+    "known_launch_paths": [
+      "C:\\Program Files\\Cheat Engine 7.7\\Cheat Engine.exe",
+      "C:\\Program Files (x86)\\Cheat Engine 7.7\\Cheat Engine.exe"
+    ]
+  },
+  {
     "id": "gamesfull",
     "name": "GamesFull",
     "description": "Página en español de descarga de juegos de PC por torrent y descarga directa. Se abre en su propia ventana, con el navegador predeterminado.",

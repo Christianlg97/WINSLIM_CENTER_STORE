@@ -1,3 +1,4 @@
+mod choco;
 mod detect;
 mod download;
 mod env_path;
@@ -57,10 +58,25 @@ fn is_visible_catalog_section(section: &str) -> bool {
 pub struct AppState {
     pub catalog_path: Mutex<PathBuf>,
     pub catalog: Mutex<Vec<Value>>,
+    pub repo_entries: Mutex<HashMap<String, Value>>,
     pub installed: Mutex<HashMap<String, InstalledInfo>>,
     pub statuses: Mutex<HashMap<String, AppStatus>>,
     pub settings: Mutex<Settings>,
     pub downloads: SharedDownloads,
+}
+
+impl AppState {
+    // Search results must remain detectable after the installer returns, without
+    // writing third-party search results into the user's catalog file.
+    fn detection_catalog(&self) -> Vec<Value> {
+        let mut catalog = self.catalog.lock().clone();
+        for entry in self.repo_entries.lock().values() {
+            if !catalog.iter().any(|item| item.get("id") == entry.get("id")) {
+                catalog.push(entry.clone());
+            }
+        }
+        catalog
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -398,7 +414,7 @@ fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
         // occupy a Tokio worker.
         let (source_generation, catalog, installed) = {
             let _source = STATUS_SOURCE_LOCK.lock();
-            let catalog = state.catalog.lock().clone();
+            let catalog = state.detection_catalog();
             let mut guard = state.installed.lock();
             let before = guard.len();
             guard.retain(|_, info| {
@@ -719,8 +735,7 @@ fn probe_app_status(state: &AppState, app_id: &str) -> Option<AppStatus> {
         let (source_generation, entry, installed) = {
             let _source = STATUS_SOURCE_LOCK.lock();
             let entry = state
-                .catalog
-                .lock()
+                .detection_catalog()
                 .iter()
                 .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id))
                 .cloned()?;
@@ -899,6 +914,7 @@ async fn save_catalog(
             "direct" | "wget" => Some("download_url"),
             "github_release" | "github_repo" => Some("github_repo"),
             "winget" => Some("winget_id"),
+            "choco" => Some("choco_id"),
             "web" | "webapp" => Some("web_url"),
             // TechPowerUp no publica un enlace fijo: se resuelve por su ficha,
             // y de ella solo hace falta saber el nombre.
@@ -922,7 +938,12 @@ async fn save_catalog(
                 .any(|item| item.as_str().is_some_and(|value| !value.trim().is_empty())),
             _ => false,
         };
-        if required_source_field.is_some_and(|field| !states_its_source(field)) {
+        let resolves_download_page = matches!(source_type, "direct" | "wget")
+            && states_its_source("download_page")
+            && states_its_source("download_link_pattern");
+        if !resolves_download_page
+            && required_source_field.is_some_and(|field| !states_its_source(field))
+        {
             return Err(format!(
                 "Entrada {idx} ({id}) no contiene el dato necesario para su origen."
             ));
@@ -1291,13 +1312,9 @@ async fn confirm_installed(
             started.elapsed().as_secs()
         ),
     );
-    // The setup ran and Windows knows nothing about the application: it was
-    // closed without going through with it. Reported as the cancellation it is,
-    // in the same words as a wizard cancelled outright, rather than as a failure
-    // that would send the user looking for a cause that does not exist.
+    // A detection timeout is not evidence that the user cancelled the setup.
     Err(format!(
-        "{}Cerraste el instalador de {name} sin completar la instalación. No se ha instalado nada.",
-        installer::INSTALL_CANCELLED_PREFIX
+        "El instalador de {name} terminó, pero Windows todavía no permite confirmar la instalación."
     ))
 }
 
@@ -1524,8 +1541,7 @@ async fn uninstall_app(
         }
     }
     let catalog_entry = state
-        .catalog
-        .lock()
+        .detection_catalog()
         .iter()
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
         .cloned()
@@ -1912,8 +1928,7 @@ fn remove_component_shortcuts(state: &AppState, suite_id: &str) {
 fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {
     logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
     let catalog_entry = state
-        .catalog
-        .lock()
+        .detection_catalog()
         .iter()
         .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id))
         .cloned();
@@ -2144,6 +2159,57 @@ async fn msstore_search(query: String) -> Result<Value, String> {
 #[tauri::command]
 async fn msstore_details(product_id: String) -> Result<Value, String> {
     msstore::details(&product_id).await
+}
+
+// --- Los otros dos repositorios -------------------------------------------
+//
+// La barra de arriba pregunta a cuatro sitios a la vez: al catálogo de la
+// tienda, que es local; a la Microsoft Store; y a estos dos. Cada uno contesta
+// en su propia subsección y ninguno espera a los demás, de modo que WinGet
+// tardando no deja en blanco lo que Chocolatey ya ha traído.
+
+/// Lo que WinGet ofrece para lo que se ha escrito.
+#[tauri::command]
+async fn winget_search(query: String) -> Result<Vec<installer::WingetPackage>, String> {
+    logger::info("winget-search", format!("Búsqueda en WinGet: {query}"));
+    let packages = installer::search_winget(&query).await?;
+    logger::info(
+        "winget-search",
+        format!("WinGet devolvió {} paquetes.", packages.len()),
+    );
+    Ok(packages)
+}
+
+/// Lo que el repositorio de la comunidad de Chocolatey ofrece para lo mismo.
+#[tauri::command]
+async fn choco_search(query: String) -> Result<Vec<choco::ChocoPackage>, String> {
+    logger::info("choco-search", format!("Búsqueda en Chocolatey: {query}"));
+    let packages = choco::search(&query).await?;
+    logger::info(
+        "choco-search",
+        format!("Chocolatey devolvió {} paquetes.", packages.len()),
+    );
+    Ok(packages)
+}
+
+/// Si el equipo tiene Chocolatey y con qué versión.
+///
+/// No sale a la red: mira el disco. La sección lo usa para decir, antes de
+/// pulsar nada, que la primera instalación traerá también el gestor.
+#[tauri::command]
+async fn choco_status() -> Value {
+    let version = async_runtime::spawn_blocking(choco::version)
+        .await
+        .unwrap_or(None);
+    serde_json::json!({
+        "available": version.is_some(),
+        "version": version,
+        // Todo lo de Chocolatey —instalarlo y instalar con él— escribe donde
+        // sólo puede un administrador. La tienda instalada siempre lo es, así
+        // que esto sólo llega en `false` ejecutando desde `cargo`, y decirlo
+        // antes es mejor que fallar a medias después.
+        "elevated": process::is_elevated(),
+    })
 }
 
 /// Las aplicaciones de la tienda que Windows ya tiene registradas.
@@ -3226,6 +3292,14 @@ async fn install_app(
     let app_handle = app.clone();
 
     let app_entry_for_task = app_entry.clone();
+    if matches!(
+        app_entry.get("source_type").and_then(Value::as_str),
+        Some("choco" | "winget")
+    ) {
+        let _source = STATUS_SOURCE_LOCK.lock();
+        state.repo_entries.lock().insert(app_id.clone(), app_entry.clone());
+        mark_status_sources_changed();
+    }
     let app_id_for_task = app_id.clone();
     let name_for_task = name.clone();
     let force_for_task = force;
@@ -3418,7 +3492,12 @@ async fn install_app(
                         ),
                     }
                 }
-                if outcome.changed {
+                if outcome.changed
+                    || matches!(
+                        app_entry_for_task.get("source_type").and_then(Value::as_str),
+                        Some("choco" | "winget")
+                    )
+                {
                     let downloads_while_checking = downloads.clone();
                     let handle_while_checking = app_handle.clone();
                     let id_while_checking = app_id_for_task.clone();
@@ -3459,6 +3538,16 @@ async fn install_app(
 
         match result {
             Ok(changed) => {
+                if matches!(
+                    app_entry_for_task.get("source_type").and_then(Value::as_str),
+                    Some("choco" | "winget")
+                ) {
+                    // Also refresh the curated card for the same application.
+                    // The per-package probe only commits the repository ID.
+                    if let Err(error) = rebuild_statuses_async(app_handle.clone(), false).await {
+                        logger::warn("post-install-status", error);
+                    }
+                }
                 logger::info(
                     "install",
                     format!(
@@ -3786,6 +3875,7 @@ pub fn run() {
             app.manage(AppState {
                 catalog_path: Mutex::new(catalog_path),
                 catalog: Mutex::new(catalog),
+                repo_entries: Mutex::new(HashMap::new()),
                 installed: Mutex::new(installed),
                 statuses: Mutex::new(statuses),
                 settings: Mutex::new(settings),
@@ -3829,6 +3919,9 @@ pub fn run() {
             msstore_check_updates,
             msstore_uninstall,
             msstore_launch,
+            winget_search,
+            choco_search,
+            choco_status,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

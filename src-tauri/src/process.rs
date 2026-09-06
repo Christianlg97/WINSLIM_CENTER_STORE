@@ -28,6 +28,34 @@ pub fn background(command: &mut Command) -> &mut Command {
     command
 }
 
+/// Whether this process can write where only an administrator can.
+///
+/// Asked by opening `HKLM\SOFTWARE` for writing, which is the permission the
+/// question is really about: a program that can write there is running with the
+/// administrator token, and one that cannot will be refused by everything else
+/// that needs it. It is a read of the process token in practice, and it costs a
+/// registry open — no extra dependency, no new process.
+///
+/// The store's manifest asks Windows for `requireAdministrator`, so this is
+/// `true` for every installed copy. It can be `false` while developing, where
+/// the binary runs straight from `cargo`, and that is exactly the case worth
+/// naming instead of letting a helper fail with a permissions error nobody can
+/// place.
+#[cfg(windows)]
+pub fn is_elevated() -> bool {
+    use winreg::enums::{HKEY_LOCAL_MACHINE, KEY_READ, KEY_WRITE};
+    use winreg::RegKey;
+
+    RegKey::predef(HKEY_LOCAL_MACHINE)
+        .open_subkey_with_flags("SOFTWARE", KEY_READ | KEY_WRITE)
+        .is_ok()
+}
+
+#[cfg(not(windows))]
+pub fn is_elevated() -> bool {
+    true
+}
+
 /// Requests elevation through Windows UAC while keeping the PowerShell helper
 /// hidden. The target path has already been resolved by the backend.
 pub fn launch_elevated(executable: &Path) -> Result<(), String> {
