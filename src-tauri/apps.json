@@ -1390,6 +1390,34 @@
     "featured": false
   },
   {
+    "id": "lmstudio_bionic",
+    "name": "LM Studio Bionic",
+    "description": "El agente de IA de LM Studio pensado para modelos abiertos: programa, investiga y trabaja con documentos usando modelos locales de tu equipo o abiertos en la nube.",
+    "version": "latest",
+    "author": "Element Labs",
+    "category": "Desarrollo con IA",
+    "section": "IA",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://lmstudio.ai/download/bionic/latest/win32/x64?redirectVersion=2",
+    "download_filename": "Bionic-x64.exe",
+    "installer_args": [
+      "/S"
+    ],
+    "winget_id": "ElementLabs.Bionic",
+    "icon_url": "assets/catalog/lmstudio_bionic.svg",
+    "icon_background": "#161616",
+    "icon_padding": 0,
+    "accent_color": "#2f8bf4",
+    "launch_executable": "Bionic.exe",
+    "detect_names": [
+      "Bionic"
+    ],
+    "detect_exclude_names": [
+      "LM Studio"
+    ]
+  },
+  {
     "id": "kimi",
     "name": "Kimi AI",
     "description": "Asistente inteligente de Moonshot AI con ventana de contexto ultra amplia para análisis de datos y código.",
@@ -1552,6 +1580,53 @@
     "icon_url": "assets/catalog/slimjet.ico",
     "accent_color": "#059669",
     "featured": false
+  },
+  {
+    "id": "cent_browser",
+    "name": "Cent Browser",
+    "description": "Chromium con extras de serie: superarrastre, gestos de ratón, barra de pestañas desplazable, hibernación de pestañas y decenas de opciones que Chrome no expone; mantiene las extensiones Manifest V2.",
+    "version": "latest",
+    "author": "Cent Studio",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://static.centbrowser.com/win_stable/5.2.1168.83/centbrowser_5.2.1168.83_x64.exe",
+    "installer_args": [
+      "--cb-auto-update",
+      "--do-not-launch-chrome"
+    ],
+    "winget_id": "CentStudio.CentBrowser",
+    "icon_url": "assets/catalog/cent_browser.svg",
+    "icon_background": "#ffffff",
+    "icon_padding": 8,
+    "accent_color": "#4285f4",
+    "detect_names": [
+      "Cent Browser",
+      "CentBrowser"
+    ]
+  },
+  {
+    "id": "sigma_browser",
+    "name": "Sigma Browser",
+    "description": "Navegador privado con IA basado en Chromium: un agente que navega y rellena formularios por ti, chat con la página, investigación profunda, modelos locales y bloqueador de anuncios integrado.",
+    "version": "latest",
+    "author": "Sigma Browser",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://releases.sigmabrowser.com/release/windows/sigma_installer_latest_149.0.7827.117_559.exe",
+    "icon_url": "assets/catalog/sigma_browser.svg",
+    "icon_background": "#0b0b12",
+    "icon_padding": 0,
+    "accent_color": "#4f9cff",
+    "detect_names": [
+      "Sigma Browser",
+      "Sigma AI Browser",
+      "Sigma Private AI Browser",
+      "Sigma"
+    ]
   },
   {
     "id": "opera_gx",
@@ -4098,6 +4173,80 @@
     "accent_color": "#0070d1",
     "detect_names": [
       "PlayStation VR2 App"
+    ]
+  },
+  {
+    "id": "ds4windows",
+    "name": "DS4Windows",
+    "description": "Mapeador de mandos de código abierto: conecta tu DualShock 3/4 o DualSense a Windows 10/11 y úsalo como un mando de Xbox en cualquier juego, con perfiles, macros y control de la barra de luz.",
+    "version": "latest",
+    "author": "DS4-Windows.com",
+    "category": "Periféricos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "ds4windowsapp/DS4Windows",
+    "asset_pattern": "DS4Windows.*.x64.*.zip",
+    "download_url": "https://github.com/ds4windowsapp/DS4Windows/releases/download/Official/DS4Windows.3.5.x64.DS4-Windows.com.zip",
+    "portable": true,
+    "launch_executable": "DS4Windows.exe",
+    "start_menu_shortcut": true,
+    "icon_url": "assets/catalog/ds4windows.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#2f6fd6",
+    "detect_names": [
+      "DS4Windows"
+    ],
+    "web_url": "https://ds4-windows.com"
+  },
+  {
+    "id": "attack_shark_x68he",
+    "name": "Attack Shark X68HE",
+    "description": "Software oficial del teclado magnético Attack Shark X68HE: punto de actuación y Rapid Trigger por tecla, SOCD, macros, capas e iluminación, además de actualizar el firmware.",
+    "version": "latest",
+    "author": "Attack Shark",
+    "category": "Periféricos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://support.attackshark.com/ATTACKSHARK/X68HE/ATTACKSHARKX68HE.zip",
+    "installer_in_archive": true,
+    "installer_args": [
+      "/S"
+    ],
+    "launch_executable": "Attack Shark Driver v4.exe",
+    "icon_url": "assets/catalog/attack_shark.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 16,
+    "accent_color": "#111111",
+    "detect_names": [
+      "Attack Shark Driver v4",
+      "Attack Shark Driver",
+      "ATTACK SHARK X68HE"
+    ],
+    "residual_paths": [
+      "%LOCALAPPDATA%\\Programs\\Attack Shark Driver v4"
+    ],
+    "web_url": "https://www.attackshark.com/pages/driver-download"
+  },
+  {
+    "id": "s700_gaming_mouse",
+    "name": "S700 Gaming Mouse",
+    "description": "Controlador y software de configuración del ratón S700 Gaming Mouse: DPI, asignación de botones, macros e iluminación.",
+    "version": "latest",
+    "author": "S700",
+    "category": "Periféricos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://github.com/tebarcascallarromen-source/S700/releases/download/main/S700.Gaming.Mouse.zip",
+    "installer_in_archive": true,
+    "icon_url": "assets/catalog/s700_gaming_mouse.svg",
+    "accent_color": "#e11d48",
+    "detect_names": [
+      "S700 Gaming Mouse",
+      "S700"
     ]
   },
   {
