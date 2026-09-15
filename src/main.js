@@ -780,6 +780,86 @@ function lastScanLabel() {
 }
 
 /**
+ * La tarjeta de «Actualizaciones» cuando no queda nada pendiente. Ocupa el
+ * hueco de la lista y lleva dentro el botón de volver a comprobar, que es lo
+ * único que se puede hacer desde ahí.
+ */
+function updatesUpToDateCardHtml() {
+  const scanning = state.scanningUpdates;
+  return `
+    <div class="empty-updates-wrap">
+      <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
+        <div class="empty-updates-hero">
+          <div class="empty-updates-badge-container">
+            <div class="empty-updates-logo-wrapper">
+              <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
+            </div>
+            <div class="empty-updates-check-badge">✓</div>
+          </div>
+          <h2>Todo tu software está al día</h2>
+          <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
+          ${scanUpdatesButtonHtml({ hero: true })}
+          <p class="empty-updates-hint">${
+            scanning
+              ? "Comparando las versiones instaladas con WinGet y con la Microsoft Store."
+              : "Consulta WinGet y la Microsoft Store en busca de versiones nuevas de tus aplicaciones instaladas."
+          }</p>
+          <div class="empty-updates-status">
+            <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+/**
+ * La misma tarjeta cuando sí hay actualizaciones pendientes pero ninguna casa
+ * con lo escrito en la barra. Misma silueta para que la sección no cambie de
+ * cara al escribir: sólo cambian el distintivo, el texto y la acción, que aquí
+ * es vaciar la búsqueda para volver a verlas todas.
+ */
+function updatesSearchMissCardHtml(query) {
+  const pending = updatesCount();
+  const pendingLabel = `${pending} ${pending === 1 ? "actualización pendiente" : "actualizaciones pendientes"}`;
+  return `
+    <div class="empty-updates-wrap">
+      <div class="empty-updates-card empty-updates-search-miss" aria-label="Ninguna actualización coincide con la búsqueda">
+        <div class="empty-updates-hero">
+          <div class="empty-updates-badge-container">
+            <div class="empty-updates-logo-wrapper">
+              <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
+            </div>
+            <div class="empty-updates-check-badge empty-updates-search-badge" aria-hidden="true">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m20 20-4-4" />
+              </svg>
+            </div>
+          </div>
+          <h2>Sin actualizaciones para «${escapeHtml(query)}»</h2>
+          <p>Tienes ${pendingLabel}, pero ninguna de las aplicaciones con versión nueva coincide con ese criterio de búsqueda.</p>
+          <button type="button" class="btn primary empty-updates-clear" id="btn-clear-search"
+            title="Vaciar la barra de búsqueda y volver a ver todas las actualizaciones pendientes">
+            <svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect x="3" y="3" width="7" height="7" rx="1.5" />
+              <rect x="14" y="3" width="7" height="7" rx="1.5" />
+              <rect x="3" y="14" width="7" height="7" rx="1.5" />
+              <rect x="14" y="14" width="7" height="7" rx="1.5" />
+            </svg>
+            <span>${pending === 1 ? "Ver la actualización pendiente" : `Ver las ${pending} actualizaciones`}</span>
+          </button>
+          <p class="empty-updates-hint">Prueba con otro nombre de aplicación o vacía la barra de búsqueda para verlas todas.</p>
+          <div class="empty-updates-status">
+            <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+/**
  * Explicit "look for updates now" pass.
  *
  * Detection runs first so that apps installed or removed since the last scan are
@@ -3018,31 +3098,13 @@ function renderContentNow() {
 
   if (!apps.length && !storeSection) {
     if (state.section === "updates") {
-      const scanning = state.scanningUpdates;
-      html += `
-        <div class="empty-updates-wrap">
-          <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
-            <div class="empty-updates-hero">
-              <div class="empty-updates-badge-container">
-                <div class="empty-updates-logo-wrapper">
-                  <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
-                </div>
-                <div class="empty-updates-check-badge">✓</div>
-              </div>
-              <h2>Todo tu software está al día</h2>
-              <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
-              ${scanUpdatesButtonHtml({ hero: true })}
-              <p class="empty-updates-hint">${
-                scanning
-                  ? "Comparando las versiones instaladas con WinGet y con la Microsoft Store."
-                  : "Consulta WinGet y la Microsoft Store en busca de versiones nuevas de tus aplicaciones instaladas."
-              }</p>
-              <div class="empty-updates-status">
-                <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
-              </div>
-            </div>
-          </div>
-        </div>`;
+      // Con actualizaciones pendientes y un texto arriba que no casa con
+      // ninguna, lo que falta son coincidencias, no actualizaciones: decir
+      // «todo al día» sería mentir.
+      html +=
+        searching && updatesCount()
+          ? updatesSearchMissCardHtml(state.search.trim())
+          : updatesUpToDateCardHtml();
     } else if (inlineStoreSection || inlineRepoSections) {
       // No decir «sin resultados» a secas teniendo justo debajo bloques llenos
       // de ellos: lo que no tiene nada es este catálogo, y eso es lo que se
@@ -3271,6 +3333,16 @@ function bindShellDelegation() {
     }
     if (event.target.closest("#btn-update-all")) {
       void updateEverything();
+      return;
+    }
+    if (event.target.closest("#btn-clear-search")) {
+      // Se vacía también la caja de arriba, que es la que manda: dejar el
+      // texto ahí haría que la siguiente tecla volviera a filtrar por él.
+      state.search = "";
+      const bar = document.getElementById("search");
+      if (bar) bar.value = "";
+      scheduleInlineSearches();
+      renderContent();
       return;
     }
 
