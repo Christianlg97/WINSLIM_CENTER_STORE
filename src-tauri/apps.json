@@ -729,6 +729,32 @@
     "featured": false
   },
   {
+    "id": "cloudflare_warp",
+    "name": "Cloudflare WARP (1.1.1.1)",
+    "description": "Cliente gratuito de Cloudflare (ahora Cloudflare One Client) que cifra todo el tráfico del equipo y usa el DNS 1.1.1.1. Sin cuenta ni límite de datos; no elige país como una VPN clásica.",
+    "version": "latest",
+    "author": "Cloudflare, Inc.",
+    "category": "Redes y VPN",
+    "section": "Utilidades",
+    "featured": false,
+    "source_type": "winget",
+    "winget_id": "Cloudflare.Warp",
+    "winget_source": "winget",
+    "download_filename": "Cloudflare_WARP.msi",
+    "icon_url": "assets/catalog/cloudflare_warp.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#f38020",
+    "detect_names": [
+      "Cloudflare One Client",
+      "Cloudflare WARP"
+    ],
+    "known_launch_paths": [
+      "C:\\Program Files\\Cloudflare\\Cloudflare WARP\\Cloudflare WARP.exe"
+    ],
+    "launch_executable": "Cloudflare WARP.exe"
+  },
+  {
     "id": "rustdesk",
     "name": "RustDesk",
     "description": "Escritorio remoto open source, alternativa a TeamViewer y AnyDesk. Auto-hospedable.",
@@ -4997,6 +5023,10 @@
     "source_type": "winget",
     "winget_id": "Microsoft.Office",
     "winget_source": "winget",
+    "installer_args": [
+      "/configure",
+      "https://aka.ms/fhlwingetconfig"
+    ],
     "icon_url": "assets/catalog/microsoft_365.png",
     "accent_color": "#d83b01",
     "detect_names": [

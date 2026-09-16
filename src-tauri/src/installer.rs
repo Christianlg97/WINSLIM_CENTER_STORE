@@ -408,6 +408,38 @@ fn app_installer_args(app: &Value, installer_path: &Path) -> Vec<String> {
     }
 }
 
+/// Whether the setup is run without a window of its own.
+///
+/// Only silent / MSI / non-interactive installers are hidden. Interactive
+/// `.exe` setups (InnoSetup and the like) need their wizard and their UAC
+/// prompt on screen, and the store lets them have it.
+fn installer_runs_hidden(app: &Value, installer_path: &Path) -> bool {
+    let ext = installer_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    ext != "exe" || !app_installer_args(app, installer_path).is_empty()
+}
+
+/// What the progress line says while the setup runs.
+///
+/// A setup launched with its silent switches, or through Windows Installer,
+/// shows nothing: the store's bar sits at 90% for as long as the installation
+/// takes, and "Ejecutando instalador automáticamente..." read as if a window
+/// should have appeared — Microsoft 365 spends a quarter of an hour there
+/// downloading Office. Saying that the work is happening in the background,
+/// and to wait, is what the situation calls for. An interactive setup keeps
+/// the old line: a wizard is about to open and the user is expected to follow
+/// it.
+fn installer_stage_message(app: &Value, installer_path: &Path) -> String {
+    if installer_runs_hidden(app, installer_path) {
+        "Instalando aplicación en segundo plano, por favor espere...".into()
+    } else {
+        "Ejecutando instalador automáticamente...".into()
+    }
+}
+
 /// What the package's installer weighs, according to the server that hosts it.
 ///
 /// WinGet neither announces the size nor prints any progress once its output is
@@ -1472,7 +1504,7 @@ fn run_installer_in_background(
     let mut command = std::process::Command::new(&program);
     // Only hide the background window for silent / MSI / non-interactive installers.
     // Interactive .exe setups (such as InnoSetup) require visual UI and UAC prompts.
-    if ext != "exe" || !args.is_empty() {
+    if installer_runs_hidden(app, installer_path) {
         crate::process::background(&mut command);
     }
     command.args(&args);
@@ -2206,7 +2238,7 @@ where
         let (src, wrapped) = inspect_extracted_payload_async(app, &extract_dir).await?;
         match wrapped {
             Some(installer) => {
-                on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
+                on_progress(90, installer_stage_message(app, &installer), false);
                 run_installer_over_async(
                     app,
                     &installer,
@@ -2234,7 +2266,7 @@ where
             );
         }
         if should_run_as_installer(app, ext) {
-            on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
+            on_progress(90, installer_stage_message(app, &dest_file), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
             run_installer_over_async(
@@ -2265,7 +2297,7 @@ where
                     renamed.display()
                 ),
             );
-            on_progress(90, "Ejecutando instalador automáticamente...".into(), false);
+            on_progress(90, installer_stage_message(app, &renamed), false);
             run_installer_over_async(
                 app,
                 &renamed,
@@ -4678,6 +4710,32 @@ mod tests {
         let app = json!({ "installer_args": ["/S", "/NORESTART"] });
         let args = app_installer_args(&app, Path::new("setup.exe"));
         assert_eq!(args, vec!["/S", "/NORESTART"]);
+    }
+
+    #[test]
+    fn silent_setups_say_they_install_in_the_background() {
+        let silent = json!({ "installer_args": ["/configure", "https://aka.ms/fhlwingetconfig"] });
+        assert!(installer_runs_hidden(&silent, Path::new("setup.exe")));
+        assert_eq!(
+            installer_stage_message(&silent, Path::new("setup.exe")),
+            "Instalando aplicación en segundo plano, por favor espere..."
+        );
+        // Windows Installer is always asked for /qn, so there is no window.
+        assert!(installer_runs_hidden(&json!({}), Path::new("setup.msi")));
+        assert_eq!(
+            installer_stage_message(&json!({}), Path::new("setup.msi")),
+            "Instalando aplicación en segundo plano, por favor espere..."
+        );
+    }
+
+    #[test]
+    fn interactive_setups_keep_announcing_the_wizard() {
+        let interactive = json!({});
+        assert!(!installer_runs_hidden(&interactive, Path::new("setup.exe")));
+        assert_eq!(
+            installer_stage_message(&interactive, Path::new("setup.exe")),
+            "Ejecutando instalador automáticamente..."
+        );
     }
 
     #[test]
