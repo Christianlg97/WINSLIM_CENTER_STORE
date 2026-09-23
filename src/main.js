@@ -472,7 +472,8 @@ function resolveIconUrl(app) {
 
       // GitHub repository avatars identify an author or organisation, not the app.
       // Apps hosted there must provide an explicit original icon in the catalog.
-      if (url.hostname.includes("github.com")) {
+      const normalizedHostname = String(url.hostname).toLowerCase();
+      if (normalizedHostname === "github.com" || normalizedHostname.endsWith(".github.com")) {
         return null;
       }
 
