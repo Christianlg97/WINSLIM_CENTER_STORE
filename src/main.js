@@ -481,7 +481,10 @@ function resolveIconUrl(app) {
         ? (app.id?.includes("thunderbird") ? "thunderbird.net" : "firefox.com")
         : null;
       let targetDomain = mappedMozillaDomain || ICON_DOMAIN_MAP[url.hostname] || url.hostname;
-      if (targetDomain.includes("epicgames.com")) targetDomain = "epicgames.com";
+      const normalizedTargetDomain = String(targetDomain).toLowerCase();
+      if (normalizedTargetDomain === "epicgames.com" || normalizedTargetDomain.endsWith(".epicgames.com")) {
+        targetDomain = "epicgames.com";
+      }
       return `https://logo.clearbit.com/${encodeURIComponent(targetDomain)}?size=180`;
     } catch (e) {
       // ignore malformed download urls and let the fallback letter appear
