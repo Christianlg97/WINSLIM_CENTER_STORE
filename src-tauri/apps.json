@@ -21,6 +21,29 @@
     ]
   },
   {
+    "id": "winslim_usb_creator",
+    "name": "WinSlim USB Creator",
+    "description": "Crea memorias USB de arranque con WinSlim de forma sencilla. Portable: se instala en su carpeta y deja un acceso directo en el escritorio.",
+    "version": "latest",
+    "author": "Christianlg97",
+    "category": "Discos y almacenamiento",
+    "section": "Utilidades",
+    "featured": true,
+    "source_type": "wget",
+    "download_url": "https://github.com/Christianlg97/WinSlim-USB-Creator/releases/download/WUC_Lastest/WinSlim-USB-Creator.zip",
+    "download_filename": "WinSlim-USB-Creator.zip",
+    "portable": true,
+    "launch_executable": "WinSlim-USB-Creator.exe",
+    "desktop_shortcut": true,
+    "icon_url": "assets/catalog/winslim_usb_creator.png",
+    "accent_color": "#1f1f1f",
+    "detect_names": [
+      "WinSlim USB Creator",
+      "WinSlim-USB-Creator"
+    ],
+    "web_url": "https://github.com/Christianlg97/WinSlim-USB-Creator"
+  },
+  {
     "id": "steam",
     "name": "Steam",
     "description": "La plataforma de juegos más grande del mundo. Compra, descubre y juega a miles de títulos.",
@@ -4274,6 +4297,31 @@
       "S700 Gaming Mouse",
       "S700"
     ]
+  },
+  {
+    "id": "hummer_center",
+    "name": "HUMMER Center",
+    "description": "Software de gestión y personalización de la refrigeración líquida NOX Hummer X-240 LCD: pon en su pantalla LCD tus GIF, vídeos o temas y controla la iluminación.",
+    "version": "latest",
+    "author": "NOX",
+    "category": "Periféricos",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "wget",
+    "download_url": "https://github.com/Christianlg97/Hummer_App/releases/download/HUMMER.msi/HUMMER.msi",
+    "download_filename": "HUMMER.msi",
+    "icon_url": "assets/catalog/hummer_center.png",
+    "icon_background": "#ffffff",
+    "icon_padding": 6,
+    "accent_color": "#111111",
+    "detect_names": [
+      "HUMMER"
+    ],
+    "known_launch_paths": [
+      "C:\\Program Files (x86)\\HUMMER\\HUMMER\\HUMMER_Multi\\HUMMER.exe"
+    ],
+    "launch_executable": "HUMMER.exe",
+    "web_url": "https://www.nox-xtreme.com/refrigeracion/x-240-lcd-black"
   },
   {
     "id": "mod_organizer_2",

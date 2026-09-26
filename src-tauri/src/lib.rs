@@ -1421,6 +1421,28 @@ fn published_shortcut_name(entry: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
+/// El nombre del acceso directo que la tienda deja en el escritorio, cuando la
+/// ficha lo pide con `desktop_shortcut`.
+///
+/// Es el mismo caso que [`published_shortcut_name`]: un portable no trae quien
+/// le ponga un icono en el escritorio, así que lo pone la tienda al instalarlo y
+/// lo quita ella misma al desinstalarlo.
+fn desktop_shortcut_name(entry: &Value) -> Option<String> {
+    if !entry
+        .get("desktop_shortcut")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    entry
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
 /// Clears what the application left behind, confirms with Windows that it is
 /// really gone and drops its downloaded package.
 ///
@@ -1445,6 +1467,7 @@ async fn finish_uninstall(
     attempted: Vec<String>,
 ) -> Result<String, String> {
     let files_removed = !target.exists();
+    let desktop_shortcut = desktop_shortcut_name(&entry).and_then(|name| component_desktop_shortcut(&name));
     let mut warnings = Vec::new();
     if files_removed {
         // El acceso directo que la tienda escribió por una ficha portable se va
@@ -1458,6 +1481,21 @@ async fn finish_uninstall(
         warnings = run_uninstall_cleanup(entry.clone(), target.clone()).await?;
     }
     confirm_uninstalled(app, state, app_id, app_name, &attempted).await?;
+    // El acceso del escritorio que la tienda creó para una ficha portable se va
+    // con ella, apunte o no todavía a algo.
+    if let Some(shortcut) = desktop_shortcut {
+        match std::fs::remove_file(&shortcut) {
+            Ok(()) => logger::info(
+                "desktop-shortcut",
+                format!("Acceso directo retirado: {}", shortcut.display()),
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => logger::warn(
+                "desktop-shortcut",
+                format!("No se pudo retirar {}: {error}", shortcut.display()),
+            ),
+        }
+    }
     // Los accesos directos que la tienda puso por la suite se van con ella: sus
     // programas ya no están detrás.
     let shortcut_handle = app.clone();
@@ -3636,6 +3674,50 @@ async fn install_app(
                     }
                 }
 
+                // Lo mismo en el escritorio para las fichas que lo piden con
+                // `desktop_shortcut`: el portable se queda en la carpeta que
+                // administra la tienda y el acceso apunta allí.
+                if let Some(name) = desktop_shortcut_name(&app_entry_for_task) {
+                    let published = app_state
+                        .installed
+                        .lock()
+                        .get(&app_id_for_task)
+                        .and_then(|info| info.launch_path.clone())
+                        .map(PathBuf::from);
+                    match (published, component_desktop_shortcut(&name)) {
+                        (Some(executable), Some(shortcut)) => {
+                            std::thread::spawn(move || {
+                                match start_menu::write_shortcut(
+                                    &shortcut,
+                                    &executable,
+                                    &name,
+                                    &start_menu::Extras::default(),
+                                ) {
+                                    Ok(()) => logger::info(
+                                        "desktop-shortcut",
+                                        format!(
+                                            "Acceso directo en el escritorio: {name} -> {}",
+                                            executable.display()
+                                        ),
+                                    ),
+                                    Err(error) => logger::warn(
+                                        "desktop-shortcut",
+                                        format!(
+                                            "No se pudo crear el acceso directo de {name}: {error}"
+                                        ),
+                                    ),
+                                }
+                            });
+                        }
+                        _ => logger::warn(
+                            "desktop-shortcut",
+                            format!(
+                                "{app_id_for_task} quedó instalada sin ejecutable resuelto; no se crea acceso en el escritorio"
+                            ),
+                        ),
+                    }
+                }
+
                 // Only a fresh install opens the app. Doing it after an update
                 // meant every "Actualizar" press reopened a program the user had
                 // not asked to launch.
@@ -4003,6 +4085,24 @@ mod tests {
         // Asking with nothing to call it leaves nothing to publish.
         let nameless = serde_json::json!({ "id": "x", "name": "   ", "start_menu_shortcut": true });
         assert_eq!(published_shortcut_name(&nameless), None);
+    }
+
+    #[test]
+    fn only_the_cards_that_ask_for_it_get_a_desktop_shortcut() {
+        let portable = serde_json::json!({
+            "id": "winslim_usb_creator",
+            "name": "WinSlim USB Creator",
+            "portable": true,
+            "desktop_shortcut": true,
+        });
+        assert_eq!(
+            desktop_shortcut_name(&portable).as_deref(),
+            Some("WinSlim USB Creator")
+        );
+        let silent = serde_json::json!({ "id": "ghelper", "name": "GHelper", "portable": true });
+        assert_eq!(desktop_shortcut_name(&silent), None);
+        let nameless = serde_json::json!({ "id": "x", "name": " ", "desktop_shortcut": true });
+        assert_eq!(desktop_shortcut_name(&nameless), None);
     }
 
     #[test]

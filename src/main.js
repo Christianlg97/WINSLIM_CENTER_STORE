@@ -64,7 +64,7 @@ const MSSTORE_ARCHS = [
 ];
 
 const FEATURED_ORDER = [
-  "winslim_terminal", "powertoys", "vscode", "brave", "seven_zip",
+  "winslim_terminal", "winslim_usb_creator", "powertoys", "vscode", "brave", "seven_zip",
   "vlc", "obs_studio", "rustdesk", "steam", "discord",
 ];
 
