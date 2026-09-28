@@ -3625,6 +3625,35 @@
     "featured": false
   },
   {
+    "id": "dlss5_manager",
+    "name": "DLSS 5 Manager",
+    "description": "Gestor e instalador en un clic de DLSS 5, ReShade, OptiScaler y Live Flow: detecta los juegos instalados y aplica en cada uno los mods adecuados para tu gráfica, sea NVIDIA o AMD.",
+    "version": "latest",
+    "author": "NODIX TECH",
+    "category": "Controladores y GPU",
+    "section": "Utilidades",
+    "source_type": "github_release",
+    "github_repo": "NODIX-TECH/DLSS-5-MANAGER",
+    "asset_pattern": "DLSS.5.MANAGER.*.exe",
+    "download_url": "https://github.com/NODIX-TECH/DLSS-5-MANAGER/releases/download/1.3.4/DLSS.5.MANAGER.1.3.4.exe",
+    "installer_args": [
+      "/VERYSILENT",
+      "/SUPPRESSMSGBOXES",
+      "/NORESTART",
+      "/SP-"
+    ],
+    "launch_executable": "DLSS 5 MANAGER.exe",
+    "icon_url": "assets/catalog/dlss5_manager.png",
+    "icon_background": "#111111",
+    "icon_padding": 4,
+    "accent_color": "#76b900",
+    "detect_names": [
+      "DLSS 5 MANAGER"
+    ],
+    "web_url": "https://github.com/NODIX-TECH/DLSS-5-MANAGER",
+    "featured": false
+  },
+  {
     "id": "malwarebytes",
     "name": "Malwarebytes",
     "description": "Protección y análisis contra malware, ransomware, programas no deseados y amenazas web.",

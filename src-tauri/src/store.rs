@@ -327,9 +327,10 @@ mod tests {
                     &["Productividad"]
                 }
                 "Correo" | "Mensajería" => &["Social y Comunicación"],
-                "Emuladores" => &["Emuladores"],
+                "Emuladores" | "ROMs e ISOs" => &["Emuladores"],
                 "Navegadores" => &["Navegadores"],
-                "Periféricos"
+                "Descargas de juegos"
+                | "Periféricos"
                 | "Plataformas de juegos"
                 | "Streaming de juegos"
                 | "Utilidades de juego" => &["Juegos"],
