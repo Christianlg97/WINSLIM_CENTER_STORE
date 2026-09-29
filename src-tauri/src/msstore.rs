@@ -1961,6 +1961,10 @@ pub fn install_package(package: &StorePackage, path: &Path) -> Result<(), String
     }
 }
 
+/// Esperas antes de repetir un registro que chocó con otro despliegue.
+const APPX_CONFLICT_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_secs(3), Duration::from_secs(8)];
+
 fn install_appx(package: &StorePackage, path: &Path) -> Result<(), String> {
     let escaped = path.to_string_lossy().replace('\'', "''");
     let script = format!(
@@ -1969,24 +1973,45 @@ fn install_appx(package: &StorePackage, path: &Path) -> Result<(), String> {
 $encoded=[Convert]::ToBase64String($bytes); \
 [Console]::Error.WriteLine('WINSLIM_UTF8:'+$encoded); exit 1 }}"
     );
-    let output = crate::process::hidden_output(
-        "powershell.exe",
-        &[
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-WindowStyle",
-            "Hidden",
-            "-Command",
-            script.as_str(),
-        ],
-    )
-    .map_err(|error| format!("Windows no pudo registrar el paquete: {error}"))?;
+    let mut retries = APPX_CONFLICT_RETRY_DELAYS.iter();
+    let detail = loop {
+        let output = crate::process::hidden_output(
+            "powershell.exe",
+            &[
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script.as_str(),
+            ],
+        )
+        .map_err(|error| format!("Windows no pudo registrar el paquete: {error}"))?;
 
-    if output.success() {
-        return Ok(());
-    }
-    let detail = decode_powershell_error(&output.stderr);
+        if output.success() {
+            return Ok(());
+        }
+        let detail = decode_powershell_error(&output.stderr);
+        // Las instalaciones de esta aplicación ya no se solapan, pero Windows
+        // puede estar desplegando el mismo framework por su cuenta: en una ISO
+        // recién instalada la Microsoft Store se actualiza sola en cuanto
+        // arranca. Ese choque se resuelve repitiendo cuando el otro termina.
+        match retries.next() {
+            Some(delay) if is_transient_deployment_conflict(&detail) => {
+                crate::logger::warn(
+                    "msstore",
+                    format!(
+                        "Windows rechazó {} por un despliegue simultáneo; se reintentará en {} s. Error: {detail}",
+                        path.display(),
+                        delay.as_secs(),
+                    ),
+                );
+                std::thread::sleep(*delay);
+            }
+            _ => break detail,
+        }
+    };
     if is_newer_appx_already_installed(&detail) {
         crate::logger::info(
             "msstore",
@@ -2029,6 +2054,18 @@ $encoded=[Convert]::ToBase64String($bytes); \
 /// Microsoft Store y no debe impedir que se instale el paquete principal.
 fn is_newer_appx_already_installed(detail: &str) -> bool {
     detail.to_ascii_lowercase().contains("0x80073d06")
+}
+
+/// Errores con los que AppX responde cuando otro despliegue está tocando el
+/// mismo paquete en ese momento. Suelen llegar envueltos en 0x80073CF9, que
+/// por sí solo no dice nada, así que se busca el código interno:
+/// 0x80070490 (ERROR_NOT_FOUND), 0x80070020 (ERROR_SHARING_VIOLATION) y
+/// 0x80073D02 (recursos del paquete en uso).
+fn is_transient_deployment_conflict(detail: &str) -> bool {
+    let detail = detail.to_ascii_lowercase();
+    ["0x80070490", "0x80070020", "0x80073d02"]
+        .iter()
+        .any(|code| detail.contains(code))
 }
 
 /// Confirma el resultado de un paquete principal después de que AppX haya
@@ -3229,6 +3266,27 @@ mod tests {
         ));
         assert!(!is_newer_appx_already_installed(
             "Error de implementación con HRESULT: 0x80073CF9"
+        ));
+    }
+
+    #[test]
+    fn un_framework_desplegado_a_la_vez_se_reintenta() {
+        // El mensaje real de una actualización múltiple en una ISO limpia.
+        assert!(is_transient_deployment_conflict(
+            "Error de implementación con HRESULT: 0x80073CF9, Error en la instalación. \
+Póngase en contacto con el proveedor de software.\r\n\r\nError 0x80070490 en la operación \
+de implementación de Add con el volumen C: en el paquete \
+Microsoft.VCLibs.140.00_14.0.33519.0_x64__8wekyb3d8bbwe"
+        ));
+        assert!(is_transient_deployment_conflict(
+            "Deployment failed with HRESULT: 0x80073D02"
+        ));
+        // Un 0x80073CF9 sin causa de concurrencia es un error de verdad.
+        assert!(!is_transient_deployment_conflict(
+            "Error de implementación con HRESULT: 0x80073CF9, Error en la instalación."
+        ));
+        assert!(!is_transient_deployment_conflict(
+            "Deployment failed with HRESULT: 0x80073D06"
         ));
     }
 

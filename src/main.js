@@ -349,6 +349,18 @@ function replaceCatalog(catalog) {
   ];
 }
 
+function replaceRepoEntries(entries) {
+  state.repoEntries = Array.isArray(entries) ? entries : [];
+}
+
+function knownApps() {
+  const extra = (state.repoEntries || []).filter((entry) => !state.catalog.some((app) =>
+    app.id === entry.id || (entry.winget_id && app.winget_id === entry.winget_id) ||
+    (entry.choco_id && app.choco_id === entry.choco_id)
+  ));
+  return [...state.catalog, ...extra];
+}
+
 function replaceStatuses(statuses) {
   const previous = state.statuses;
   const next = statuses && typeof statuses === "object" ? statuses : {};
@@ -941,7 +953,7 @@ function sectionFilter(app) {
 }
 
 function searchFilter(app, query) {
-  return !query || (derived.searchBlobs.get(app.id) || "").includes(query);
+  return !query || (derived.searchBlobs.get(app.id) || [app.name, app.description, app.id].join(" ").toLocaleLowerCase("es-ES")).includes(query);
 }
 
 // Los programas que vienen dentro de otra aplicación solo tienen sentido cuando
@@ -953,7 +965,8 @@ function componentVisible(app) {
 
 function filteredApps() {
   const query = state.search.trim().toLocaleLowerCase("es-ES");
-  const apps = state.catalog.filter((app) =>
+  const source = ["installed", "updates"].includes(state.section) ? knownApps() : state.catalog;
+  const apps = source.filter((app) =>
     componentVisible(app) && sectionFilter(app) && searchFilter(app, query)
   );
   if (state.section !== "featured") return apps;
@@ -3454,10 +3467,30 @@ function openAppModal(id) {
 /// una búsqueda y no del catálogo, pero su instalación pasa por el mismo
 /// diálogo y el mismo panel, y ésos preguntan por aquí.
 function findApp(id) {
-  const known = derived.catalogById.get(id) || derived.repoPackages.get(id);
+  const known = derived.catalogById.get(id) || (state.repoEntries || []).find((app) => app.id === id) || derived.repoPackages.get(id);
   if (known) return known;
   const found = repoPackageByAppId(id);
   return found ? repoCatalogEntry(found.repoId, found.pkg) : undefined;
+}
+
+const portableBackupChoices = new Map();
+
+function portableDataChoices(info, uninstall = false) {
+  return {
+    label: "Datos de la aplicación portable",
+    selected: "preserve",
+    hint: "Esta operación puede borrar configuración, perfiles o partidas guardados en la carpeta del programa.",
+    options: [
+      { id: "preserve", name: "Conservar mis datos (recomendado)", description: uninstall
+        ? "Guarda una copia completa antes de quitar la aplicación."
+        : "Guarda una copia completa y recupera los datos identificables en la nueva versión. Si algún ajuste no se recupera automáticamente, seguirá en la copia." },
+      { id: "delete", name: "Eliminar los datos de esta instalación", description: "Quita también sus datos locales. Las copias de seguridad anteriores se mantienen." },
+    ],
+  };
+}
+
+function portableDataMessage(info) {
+  return info ? `\n\nEs una aplicación portable. Elige qué hacer con sus datos. Las copias se guardan en: ${info.backup_root}` : "";
 }
 
 async function installApp(id, isUpdate = false) {
@@ -3492,20 +3525,31 @@ async function installApp(id, isUpdate = false) {
     return;
   }
 
+  // Asked even when the app does not look installed: the backend refuses to
+  // replace a non-empty folder without this choice, whatever the status says.
+  let portableInfo = null;
+  try {
+    portableInfo = await invoke("portable_data_info", { appId: id, forUpdate: true });
+  } catch (error) {
+    showAlertModal("No se pudieron comprobar los datos", String(error));
+    return;
+  }
   const title = isUpdate ? `Actualizar ${app.name}` : `Instalar ${app.name}`;
 
   // An application published in several builds asks which one on the way in.
   // An update never asks: it reinstalls the build already chosen, because
   // changing it is changing the program.
   const remembered = state.settings?.variants?.[id];
-  const choices =
+  const choices = portableInfo ? portableDataChoices(portableInfo) :
     app.variants && !isUpdate
       ? { ...app.variants, selected: remembered || app.variants.default }
       : null;
 
   // Everything the two dialogs below end up doing. Which one asked, and what
   // the user answered, only decides what arrives here.
-  const start = async ({ variant = null, closeRunning = false } = {}) => {
+  const start = async ({ variant = null, closeRunning = false, portableData = null } = {}) => {
+    portableBackupChoices.delete(id);
+    if (portableData === "preserve") portableBackupChoices.set(id, portableInfo);
     state.busy[id] = isUpdate ? "updating" : "installing";
     updateVisibleAppActions(new Set([id]));
     state.finished.delete(id);
@@ -3517,6 +3561,7 @@ async function installApp(id, isUpdate = false) {
         forceUpdate: !!isUpdate || !!st.update_available,
         variant: variant || remembered || app.variants?.default || null,
         closeRunning,
+        portableData,
       });
     } catch (e) {
       delete state.busy[id];
@@ -3553,26 +3598,27 @@ async function installApp(id, isUpdate = false) {
 
   showConfirmModal({
     title,
-    message: isUpdate
+    message: (isUpdate
       ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
-      : `¿Deseas instalar '${app.name}' en tu equipo?`,
+      : `¿Deseas instalar '${app.name}' en tu equipo?`) + portableDataMessage(portableInfo),
     app,
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     choices,
     onConfirm: async (picked) => {
+      const selection = portableInfo ? { portableData: picked } : { variant: picked };
       const blocker = await blockerProbe;
       if (blocker) {
         showRunningAppModal({
           app,
           blocker,
           isUpdate,
-          onClose: () => start({ variant: picked, closeRunning: true }),
-          onAnyway: blocker.packaged ? () => start({ variant: picked }) : null,
+          onClose: () => start({ ...selection, closeRunning: true }),
+          onAnyway: blocker.packaged ? () => start(selection) : null,
         });
         return;
       }
-      await start({ variant: picked });
+      await start(selection);
     },
   });
 }
@@ -3642,19 +3688,29 @@ async function uninstallApp(id) {
 
   // Windows defers the removal of a package in use exactly as it defers an
   // update, so the same question is worth asking here.
-  const uninstallBlocker = await blockingRunningApp(id);
+  let portableInfo;
+  let uninstallBlocker;
+  try {
+    [uninstallBlocker, portableInfo] = await Promise.all([
+      blockingRunningApp(id), invoke("portable_data_info", { appId: id }),
+    ]);
+  } catch (error) {
+    showAlertModal("No se pudieron comprobar los datos", String(error));
+    return;
+  }
   showConfirmModal({
     title: `Desinstalar ${app.name}`,
-    message: uninstallBlocker
+    message: (uninstallBlocker
       ? `${uninstallBlocker.name} está en ejecución y se cerrará antes de quitarla: ` +
         (uninstallBlocker.packaged
           ? "mientras siga en uso, Windows deja la retirada del paquete pendiente y no llega a completarse."
           : "mientras siga abierta no se pueden borrar sus archivos y la desinstalación falla a medias.")
-      : `¿Estás seguro de que deseas desinstalar '${app.name}' de tu equipo?`,
+      : `¿Estás seguro de que deseas desinstalar '${app.name}' de tu equipo?`) + portableDataMessage(portableInfo),
+    choices: portableInfo ? portableDataChoices(portableInfo, true) : null,
     app,
     confirmText: uninstallBlocker ? `Cerrar ${uninstallBlocker.name} y desinstalar` : "Desinstalar",
     confirmVariant: "danger",
-    onConfirm: async () => {
+    onConfirm: async (picked) => {
       state.operationAppId = null;
       state.busy[id] = "uninstalling";
       updateVisibleAppActions(new Set([id]));
@@ -3688,15 +3744,20 @@ async function uninstallApp(id) {
         const outcome = await invoke("uninstall_app", {
           appId: id,
           closeRunning: !!uninstallBlocker,
+          portableData: portableInfo ? picked : null,
         });
         closeModal();
         const changes = await refreshInstalledFromBootstrap();
         reconcileStatusChanges(changes);
         setTransientStatus(`${app.name} se desinstaló correctamente`, "var(--green)", 5000);
-        showAlertModal(
-          "Desinstalación completada",
-          outcome || `${app.name} se desinstaló correctamente del equipo.`,
-        );
+        const message = outcome || `${app.name} se desinstaló correctamente del equipo.`;
+        if (portableInfo && picked === "preserve") {
+          showConfirmModal({
+            title: "Desinstalación completada",
+            message: `${message}\n\nTus datos se conservan en una copia completa en ${portableInfo.backup_root}.`,
+            confirmText: "Abrir copias", cancelText: "Cerrar", onConfirm: openPortableBackups,
+          });
+        } else showAlertModal("Desinstalación completada", message);
       } catch (e) {
         closeModal();
         const message = String(e);
@@ -3991,6 +4052,11 @@ function showBackgroundOperationModal(app, title, initialStatus, withProgress = 
   `, false, true);
 }
 
+async function openPortableBackups() {
+  try { await invoke("open_portable_backups"); }
+  catch (error) { showAlertModal("No se pudieron abrir las copias", String(error)); }
+}
+
 /**
  * Turns the operation dialog into its finished state instead of closing it.
  *
@@ -4047,6 +4113,7 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRest
   if (!actions) return;
   actions.innerHTML = `
     ${canLaunch ? '<button type="button" class="btn primary" id="operation-launch">Lanzar</button>' : ""}
+    ${portableBackupChoices.has(app?.id) ? '<button type="button" class="btn ghost" id="operation-backups">Abrir copia de datos</button>' : ""}
     <button type="button" class="btn ghost" id="operation-close">Cerrar</button>
   `;
   // Una aplicación de la Microsoft Store no se abre como las del catálogo, así
@@ -4057,6 +4124,7 @@ function showOperationCompleted(app, { canLaunch, isUpdate, changed, pendingRest
     else if (app) launchApp(app.id);
   });
   actions.querySelector("#operation-close")?.addEventListener("click", closeModal);
+  actions.querySelector("#operation-backups")?.addEventListener("click", openPortableBackups);
   actions.querySelector("button")?.focus();
 }
 
@@ -4154,7 +4222,7 @@ function isBulkUpdateRunning() {
 function pendingUpdateItems() {
   const busyKey = (key) => !!state.busy[key] || derived.taskByAppId.has(key);
   const items = [];
-  for (const app of state.catalog) {
+  for (const app of knownApps()) {
     const status = appStatus(app.id);
     if (!status.update_available || busyKey(app.id)) continue;
     items.push({
@@ -4208,6 +4276,15 @@ async function updateEverything() {
     return;
   }
 
+  try {
+    await Promise.all(items.filter((item) => item.kind === "catalog").map(async (item) => {
+      item.portableInfo = await invoke("portable_data_info", { appId: item.appId, forUpdate: true });
+    }));
+  } catch (error) {
+    showAlertModal("No se pudieron comprobar los datos", String(error));
+    return;
+  }
+  const portables = items.filter((item) => item.portableInfo);
   const fromStore = items.filter((item) => item.kind === "catalog").length;
   const fromMsStore = items.length - fromStore;
   const origins = [
@@ -4222,10 +4299,15 @@ async function updateEverything() {
       `WinSlimCenter y después va la Microsoft Store; las descargas corren en paralelo y ` +
       `las instalaciones se aplican una detrás de otra.\n\n` +
       `Las aplicaciones que estén abiertas se cerrarán para poder aplicar su actualización: ` +
-      `guarda antes lo que tengas sin guardar.`,
+      `guarda antes lo que tengas sin guardar.` + (portables.length
+        ? `\n\nPortables: ${portables.map((item) => item.name).join(", ")}.` + portableDataMessage(portables[0].portableInfo) : ""),
+    choices: portables.length ? portableDataChoices(portables[0].portableInfo) : null,
     confirmText: "Actualizar todo",
     confirmVariant: "primary",
-    onConfirm: () => startBulkUpdate(items),
+    onConfirm: (picked) => {
+      for (const item of portables) item.portableData = picked;
+      return startBulkUpdate(items);
+    },
   });
 }
 
@@ -4244,6 +4326,7 @@ async function startBulkUpdate(items) {
       progress: 0,
       status: "En espera de su turno…",
       dispatched: false,
+      dispatching: false,
     })),
     byKey: new Map(),
     startedAt: new Date(),
@@ -4273,6 +4356,7 @@ async function startBulkUpdate(items) {
       continue;
     }
     try {
+      item.dispatching = true;
       if (item.kind === "catalog") {
         state.busy[item.appId] = "updating";
         state.finished.delete(item.appId);
@@ -4282,6 +4366,7 @@ async function startBulkUpdate(items) {
           // La edición elegida en su día se respeta: actualizar es reinstalar
           // la misma, nunca cambiar de programa por el camino.
           variant: state.settings?.variants?.[item.appId] || item.app.variants?.default || null,
+          portableData: item.portableData || null,
           closeRunning: true,
         });
       } else {
@@ -4298,11 +4383,16 @@ async function startBulkUpdate(items) {
         });
       }
       item.dispatched = true;
+      item.dispatching = false;
+      if (bulk.cancelling && !isBulkItemFinal(item)) {
+        await invokeDownloadAction("cancel_download", { appId: item.key });
+      }
       if (item.state === "pending") {
         item.state = "queued";
         item.status = "En cola";
       }
     } catch (error) {
+      item.dispatching = false;
       // El backend rechazó la orden —ya instalada, ya en cola—: eso es el final
       // de esta fila, no de la tanda.
       if (item.kind === "catalog") delete state.busy[item.appId];
@@ -4376,6 +4466,10 @@ async function cancelBulkUpdate() {
   updateBulkUpdateModal();
   for (const item of bulk.items) {
     if (isBulkItemFinal(item)) continue;
+    if (item.dispatching) {
+      item.status = "Cancelación pendiente de confirmar la orden…";
+      continue;
+    }
     if (!item.dispatched) {
       finishBulkItem(item.key, "cancelled", "Cancelada antes de empezar");
       continue;
@@ -4564,11 +4658,14 @@ function updateBulkUpdateModal() {
   if (actions.dataset.signature === signature) return;
   actions.dataset.signature = signature;
   actions.innerHTML = bulk.finished
-    ? '<button type="button" class="btn primary" id="bulk-operation-close">Cerrar</button>'
+    ? (bulk.items.some((item) => item.portableData === "preserve" && item.state === "done")
+      ? '<button type="button" class="btn ghost" id="bulk-operation-backups">Abrir copias de datos</button>' : "") +
+      '<button type="button" class="btn primary" id="bulk-operation-close">Cerrar</button>'
     : `<button type="button" class="btn ghost" id="bulk-operation-cancel"${
         bulk.cancelling ? " disabled" : ""
       }>${bulk.cancelling ? "Cancelando…" : "Cancelar todo"}</button>`;
   actions.querySelector("#bulk-operation-close")?.addEventListener("click", closeModal);
+  actions.querySelector("#bulk-operation-backups")?.addEventListener("click", openPortableBackups);
   actions.querySelector("#bulk-operation-cancel")?.addEventListener("click", () =>
     void cancelBulkUpdate(),
   );
@@ -5113,6 +5210,7 @@ async function refreshInstalledFromBootstrap() {
   const data = await invoke("get_bootstrap");
   state.appVersion = data.app_version || state.appVersion;
   state.installed = data.installed || {};
+  replaceRepoEntries(data.repo_entries || []);
   const changes = replaceStatuses(data.statuses || {});
   renderAppVersion();
   return changes;
@@ -5127,6 +5225,7 @@ async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSe
   }
   state.appVersion = data.app_version || state.appVersion;
   state.installed = data.installed || {};
+  replaceRepoEntries(data.repo_entries || []);
   const changes = replaceStatuses(data.statuses || {});
   replaceTasks(data.tasks || []);
   if (includeSettings) {
@@ -5142,7 +5241,10 @@ async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSe
   return { data, changes };
 }
 
+let storeUpdateRunning = false;
 async function startStoreUpdate() {
+  if (storeUpdateRunning) return;
+  storeUpdateRunning = true;
   try {
     setStatus("Descargando la nueva versión de la tienda...", "var(--accent)");
     const msg = await invoke("update_center_app");
@@ -5150,6 +5252,9 @@ async function startStoreUpdate() {
   } catch (e) {
     setStatus(`Error de actualización: ${e}`, "var(--red)");
     showAlertModal("Error de actualización", String(e));
+  } finally {
+    storeUpdateRunning = false;
+    setProgress(0);
   }
 }
 
@@ -5391,6 +5496,11 @@ window.addEventListener("DOMContentLoaded", async () => {
       });
   };
   const listenerRegistrations = [
+    listen("self-update-progress", (event) => {
+      if (!storeUpdateRunning) return;
+      setStatus(event.payload.status || "Actualizando WinSlimCenter…", "var(--accent)");
+      setProgress(event.payload.progress || 0);
+    }),
     listen("downloads-changed", (event) => dispatchBackendEvent("downloads-changed", event)),
     listen("background-progress", (event) => dispatchBackendEvent("background-progress", event)),
     listen("install-finished", (event) => dispatchBackendEvent("install-finished", event)),
@@ -5734,6 +5844,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     hydrateResolvedIcons();
     state.appVersion = data.app_version || state.appVersion;
     state.installed = data.installed || {};
+    replaceRepoEntries(data.repo_entries || []);
     replaceStatuses(data.statuses || {});
     state.settings = data.settings || state.settings;
     replaceTasks(data.tasks || []);

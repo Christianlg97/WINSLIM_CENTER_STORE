@@ -8,6 +8,7 @@ mod msix;
 mod msstore;
 mod msstore_soap;
 mod paths;
+mod portable;
 mod process;
 mod residue;
 mod start_menu;
@@ -820,6 +821,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
     let tasks = state.downloads.lock().snapshots();
     Ok(serde_json::json!({
         "catalog": catalog,
+        "repo_entries": state.repo_entries.lock().values().cloned().collect::<Vec<_>>(),
         "installed": installed,
         "statuses": statuses,
         "settings": settings,
@@ -1029,6 +1031,55 @@ fn open_apps_dir(app: AppHandle) -> Result<(), String> {
     tauri_plugin_opener::OpenerExt::opener(&app)
         .open_path(dir.to_string_lossy().to_string(), None::<String>)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn open_portable_backups(app: AppHandle) -> Result<(), String> {
+    let root = portable::backup_root();
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    tauri_plugin_opener::OpenerExt::opener(&app)
+        .open_path(root.to_string_lossy().to_string(), None::<String>)
+        .map_err(|e| e.to_string())
+}
+
+/// The folder whose data an install/update or uninstall is about to replace or
+/// delete, if any. The backend refuses to touch such a folder without a data
+/// choice, so each branch here mirrors the one the operation itself will take.
+#[tauri::command]
+async fn portable_data_info(app: AppHandle, app_id: String, for_update: Option<bool>) -> Result<Option<Value>, String> {
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let entry = state
+            .detection_catalog()
+            .into_iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
+            .unwrap_or_else(|| serde_json::json!({ "id": app_id }));
+        if entry.get("source_type").and_then(Value::as_str) == Some("webapp") {
+            return Ok(None);
+        }
+        let directory = if for_update.unwrap_or(false) {
+            // Installing always swaps into this folder, whatever installed.json
+            // remembers. External installations remain the vendor's job.
+            let target = paths::app_dir().join(&app_id);
+            (target.is_dir() && !installer::directory_is_empty(&target)).then_some(target)
+        } else {
+            let status = state.statuses.lock().get(&app_id).cloned();
+            let Some(status) = status.filter(|st| st.installed) else { return Ok(None); };
+            if status.origin == "system" {
+                let identity = residue::AppIdentity::from_catalog(&entry, status.uninstall_command.as_deref())
+                    .with_install_location(status.install_location.as_deref());
+                installer::portable_directory(&PathBuf::from(status.install_path), &identity)
+            } else {
+                // `remove_managed_install` asks for a choice whenever this exists.
+                let managed = state.installed.lock().get(&app_id).map(|info| PathBuf::from(&info.install_path));
+                managed.filter(|path| path.exists())
+            }
+        };
+        Ok(directory.map(|directory| serde_json::json!({
+            "directory": directory.to_string_lossy(),
+            "backup_root": portable::backup_root().to_string_lossy(),
+        })))
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -1544,6 +1595,7 @@ async fn uninstall_app(
     state: State<'_, AppState>,
     app_id: String,
     close_running: Option<bool>,
+    portable_data: Option<String>,
 ) -> Result<String, String> {
     logger::info(
         "uninstall",
@@ -1578,12 +1630,17 @@ async fn uninstall_app(
             );
         }
     }
-    let catalog_entry = state
+    let mut catalog_entry = state
         .detection_catalog()
         .iter()
         .find(|entry| entry.get("id").and_then(Value::as_str) == Some(app_id.as_str()))
         .cloned()
         .unwrap_or_else(|| serde_json::json!({ "id": app_id }));
+    // Keeping data also keeps declared external settings folders. Shortcut and
+    // registry cleanup still run normally.
+    if portable_data.as_deref() == Some("preserve") {
+        catalog_entry.as_object_mut().map(|entry| entry.remove("residual_paths"));
+    }
     let app_name = catalog_entry
         .get("name")
         .and_then(Value::as_str)
@@ -1660,6 +1717,18 @@ async fn uninstall_app(
             .and_then(Value::as_str)
             .is_some_and(|source| source.eq_ignore_ascii_case("msstore"));
         let (handled_directory, attempted) = async_runtime::spawn_blocking(move || {
+            let mut fallback_data = portable_data.clone();
+            if let Some(directory) = installer::portable_directory(Path::new(&install_path), &identity) {
+                let policy = portable::DataPolicy::parse(portable_data.as_deref())?;
+                if policy == portable::DataPolicy::Preserve {
+                    let stopped = process::close_application_at(&directory, CLOSE_GRACE);
+                    process::start_services(&stopped.services);
+                    portable::backup(&directory, directory.file_name().and_then(|s| s.to_str()).unwrap_or("portable"))?;
+                    // Already backed up before asking WinGet, which may remove
+                    // the same portable folder. Do not duplicate the snapshot.
+                    fallback_data = Some("delete".into());
+                }
+            }
             // Whether anything other than WinGet can act on this application: a
             // command Windows registered for it, or a real folder on disk.
             // Without either, a packaged application really is WinGet's business
@@ -1803,7 +1872,7 @@ async fn uninstall_app(
             // The fallback is attempted even without an indexed path: that is
             // exactly the case of portable programs, which Windows lists as
             // installed without saying where they are.
-            match installer::uninstall_from_install_path(&PathBuf::from(&install_path), &identity) {
+            match installer::uninstall_from_install_path(&PathBuf::from(&install_path), &identity, fallback_data.as_deref()) {
                 Ok(directory) => {
                     return Ok((Some(directory.to_string_lossy().to_string()), Vec::new()))
                 }
@@ -1853,7 +1922,7 @@ async fn uninstall_app(
     // The filesystem work runs off the lock (it retries and sleeps), and only the
     // bookkeeping is done under it.
     async_runtime::spawn_blocking(move || {
-        installer::remove_managed_install(&uninstall_id, &managed_path)
+        installer::remove_managed_install(&uninstall_id, &managed_path, portable_data.as_deref())
     })
     .await
     .map_err(|error| format!("Falló la tarea de desinstalación: {error}"))??;
@@ -2372,6 +2441,9 @@ async fn msstore_install(
 
     let flags = {
         let mut downloads = state.downloads.lock();
+        if SELF_UPDATE.available_permits() == 0 {
+            return Err("Espera a que termine la actualización de WinSlimCenter.".into());
+        }
         downloads
             .begin(&task, &name, None)
             .ok_or_else(|| format!("'{name}' ya está en la cola de descargas."))?
@@ -2438,16 +2510,15 @@ async fn msstore_install(
         // extremo empiece a rechazar peticiones. Mientras espera turno la tarea
         // se queda en «En cola», que es como la dejó `begin`.
         //
-        // El permiso se conserva también durante el registro en Windows. El
-        // catálogo lo suelta antes porque su instalador puede tardar minutos
-        // con el usuario delante; aquí registrar un paquete es cuestión de
-        // segundos y no compensa complicar la función para adelantarlo.
+        // `run_msstore_install` suelta el permiso en cuanto termina de
+        // descargar: el registro en Windows espera su turno en la cola de
+        // instalación compartida y no debe tener parada una descarga ajena.
         let outcome = match acquire_download_slot(&flags).await {
-            Ok(_download_permit) => {
+            Ok(download_permit) => {
                 run_msstore_install(
                     &app_handle,
-                    &downloads,
                     &flags,
+                    download_permit,
                     &task_for_job,
                     &product_id,
                     &ring,
@@ -2568,15 +2639,23 @@ async fn msstore_install(
 /// El progreso se reparte entre las dos mitades del trabajo: la descarga ocupa
 /// hasta el 70 % y la instalación el resto, para que la barra no se quede
 /// clavada en el 100 % mientras Windows todavía está registrando paquetes.
+///
+/// Todo lo que toca AppX —el instalador oficial y el registro de cada
+/// paquete— ocurre dentro de la cola de instalación compartida. «Actualizar
+/// todo» lanza varias aplicaciones a la vez y muchas comparten frameworks
+/// (VCLibs, UI.Xaml, .NET Native): dos `Add-AppxPackage` simultáneos del mismo
+/// framework hacían que Windows rechazara uno con 0x80073CF9/0x80070490,
+/// mientras que la misma actualización a solas terminaba bien.
 async fn run_msstore_install(
     app: &AppHandle,
-    downloads: &download::SharedDownloads,
     flags: &Arc<download::DownloadFlags>,
+    download_permit: tokio::sync::SemaphorePermit<'static>,
     task: &str,
     product_id: &str,
     ring: &str,
     arch: &str,
 ) -> Result<usize, String> {
+    let downloads = app.state::<AppState>().downloads.clone();
     let report = |state: Option<TaskState>, progress: Option<u32>, status: String| {
         {
             let mut dl = downloads.lock();
@@ -2604,6 +2683,14 @@ async fn run_msstore_install(
     let mut official_install_error = None;
     if msstore::uses_official_store_installer(product_id, ring) {
         downloads.lock().update_pausable(task, false);
+        if installer::install_stage_busy() {
+            report(
+                Some(TaskState::Installing),
+                Some(72),
+                "Esperando a que termine otra instalación...".into(),
+            );
+        }
+        let _install_stage = installer::acquire_install_stage(flags).await?;
         report(
             Some(TaskState::Installing),
             Some(72),
@@ -2663,15 +2750,24 @@ async fn run_msstore_install(
         })
         .await?;
     }
+    drop(download_permit);
 
     if cancelled() {
         return give_up();
     }
 
+    downloads.lock().update_pausable(task, false);
+    if installer::install_stage_busy() {
+        report(
+            Some(TaskState::Installing),
+            Some(DOWNLOAD_START + DOWNLOAD_SHARE),
+            "Esperando a que termine otra instalación...".into(),
+        );
+    }
+    let _install_stage = installer::acquire_install_stage(flags).await?;
+
     // A partir de aquí manda Windows: ni la pausa ni la cancelación pueden
     // prometer nada sobre un paquete que ya se está registrando.
-    downloads.lock().update_pausable(task, false);
-
     for (index, package) in ordered.iter().enumerate() {
         let path = msstore::package_path(&directory, package);
         let label = package_label(package, index, total);
@@ -2738,7 +2834,7 @@ fn update_check_result_is_reusable(request: u64, source_generation: u64) -> bool
 async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatus>, String> {
     let started = std::time::Instant::now();
     logger::info("updates", "Comprobando actualizaciones.");
-    let catalog = state.catalog.lock().clone();
+    let catalog = state.detection_catalog();
     let mut statuses = state.statuses.lock().clone();
     let baseline_statuses = statuses.clone();
     // The scan used to be skipped unless a `source_type: winget` app was
@@ -3084,7 +3180,9 @@ fn prepare_and_launch_self_update(update_paths: SelfUpdatePaths) -> Result<(), S
     std::fs::create_dir_all(&update_paths.staging_dir).map_err(|error| error.to_string())?;
     installer::extract_zip(&update_paths.download_path, &update_paths.staging_dir)?;
 
-    let source_root = if let Ok(entries) = std::fs::read_dir(&update_paths.staging_dir) {
+    let source_root = if update_paths.staging_dir.join("WinSlimCenter.exe").is_file() {
+        update_paths.staging_dir.clone()
+    } else if let Ok(entries) = std::fs::read_dir(&update_paths.staging_dir) {
         let dirs: Vec<_> = entries
             .filter_map(Result::ok)
             .filter(|entry| entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false))
@@ -3097,6 +3195,9 @@ fn prepare_and_launch_self_update(update_paths: SelfUpdatePaths) -> Result<(), S
     } else {
         update_paths.staging_dir.clone()
     };
+    if !source_root.join("WinSlimCenter.exe").is_file() {
+        return Err("El paquete de actualización no contiene WinSlimCenter.exe.".into());
+    }
 
     let exe_dir = paths::exe_dir();
     let exe_path = std::env::current_exe().map_err(|error| error.to_string())?;
@@ -3169,56 +3270,34 @@ Remove-Item -Path '{}' -Force -ErrorAction SilentlyContinue
     Ok(())
 }
 
+static SELF_UPDATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
+
 #[tauri::command]
 async fn update_center_app(app: AppHandle) -> Result<String, String> {
+    let _updating = SELF_UPDATE.try_acquire().map_err(|_| "La actualización de la tienda ya está en curso.")?;
+    if app.state::<AppState>().downloads.lock().has_active_tasks() {
+        return Err("Espera a que terminen las instalaciones antes de actualizar WinSlimCenter.".into());
+    }
+    let _slot = DOWNLOAD_SLOTS.acquire().await.map_err(|e| e.to_string())?;
     logger::info("self-update", "Actualización de WinSlimCenter solicitada.");
-    let app_handle = app.clone();
-    async_runtime::spawn(async move {
-        let result = async {
-            let paths = async_runtime::spawn_blocking(prepare_self_update_download)
-                .await
-                .map_err(|error| {
-                    format!("No se pudo preparar la actualización en segundo plano: {error}")
-                })??;
-
-            let flags = download::DownloadFlags::new();
-            download::download_url(
-                GITHUB_LATEST_URL,
-                &paths.download_path,
-                &flags,
-                |_, _, _| {},
-            )
-            .await?;
-
-            async_runtime::spawn_blocking(move || prepare_and_launch_self_update(paths))
-                .await
-                .map_err(|error| {
-                    format!("No se pudo preparar la actualización en segundo plano: {error}")
-                })??;
-            Ok::<(), String>(())
-        }
-        .await;
-        match result {
-            Ok(()) => app_handle.exit(0),
-            Err(error) => {
-                logger::error("self-update", &error);
-                let cleanup = async_runtime::spawn_blocking(|| {
-                    installer::cleanup_package_download("winslimcenter-update")
-                })
-                .await;
-                match cleanup {
-                    Ok(Ok(())) => {}
-                    Ok(Err(cleanup_error)) => logger::warn("cleanup", cleanup_error),
-                    Err(join_error) => logger::warn(
-                        "cleanup",
-                        format!("No se pudo esperar la limpieza de la actualización: {join_error}"),
-                    ),
-                }
-            }
-        }
-    });
-
-    Ok("Actualización iniciada. La app se cerrará y reabrirá automáticamente.".into())
+    let result = async {
+        let paths = async_runtime::spawn_blocking(prepare_self_update_download)
+            .await.map_err(|error| error.to_string())??;
+        let flags = download::DownloadFlags::new();
+        download::download_url(GITHUB_LATEST_URL, &paths.download_path, &flags, |progress, status, _| {
+            let _ = app.emit("self-update-progress", serde_json::json!({ "progress": progress, "status": status }));
+        }).await?;
+        async_runtime::spawn_blocking(move || prepare_and_launch_self_update(paths))
+            .await.map_err(|error| error.to_string())??;
+        Ok::<(), String>(())
+    }.await;
+    if let Err(error) = result {
+        logger::error("self-update", &error);
+        let _ = async_runtime::spawn_blocking(|| installer::cleanup_package_download("winslimcenter-update")).await;
+        return Err(error);
+    }
+    app.exit(0);
+    Ok("Actualización preparada. Reiniciando WinSlimCenter…".into())
 }
 
 #[tauri::command]
@@ -3232,6 +3311,7 @@ async fn install_app(
     // way Windows applies a package update straight away, and it is never
     // decided here.
     close_running: Option<bool>,
+    portable_data: Option<String>,
 ) -> Result<(), String> {
     let app_id = app_entry
         .get("id")
@@ -3240,7 +3320,11 @@ async fn install_app(
         .to_string();
     // Which build was asked for is settled here rather than in the interface, so
     // that the update check and a later reinstall reach for the same one.
-    let app_entry = store::apply_variant(&app_entry, variant.as_deref());
+    let mut app_entry = store::apply_variant(&app_entry, variant.as_deref());
+    // This is an operation choice, never a setting trusted from an editable catalog.
+    app_entry.as_object_mut().ok_or("Ficha de aplicación no válida")?.insert(
+        "_portable_data_policy".into(), portable_data.map(Value::String).unwrap_or(Value::Null),
+    );
     let settings_to_save = if let Some(chosen) = app_entry.get("variant").and_then(Value::as_str) {
         let mut settings = state.settings.lock();
         if settings.variants.get(&app_id).map(String::as_str) != Some(chosen) {
@@ -3320,8 +3404,22 @@ async fn install_app(
         }
     };
 
+    if matches!(app_entry.get("source_type").and_then(Value::as_str), Some("choco" | "winget")) {
+        let _source = STATUS_SOURCE_LOCK.lock();
+        let mut entries = state.repo_entries.lock();
+        let mut updated = entries.clone();
+        let mut persisted = app_entry.clone();
+        persisted.as_object_mut().map(|entry| entry.remove("_portable_data_policy"));
+        updated.insert(app_id.clone(), persisted);
+        store::save_repo_entries(&updated)?;
+        *entries = updated;
+        mark_status_sources_changed();
+    }
     let flags = {
         let mut dl = state.downloads.lock();
+        if SELF_UPDATE.available_permits() == 0 {
+            return Err("Espera a que termine la actualización de WinSlimCenter.".into());
+        }
         dl.begin(&app_id, &name, accent)
             .ok_or_else(|| format!("'{name}' ya está en la cola de descargas."))?
     };
@@ -3330,14 +3428,6 @@ async fn install_app(
     let app_handle = app.clone();
 
     let app_entry_for_task = app_entry.clone();
-    if matches!(
-        app_entry.get("source_type").and_then(Value::as_str),
-        Some("choco" | "winget")
-    ) {
-        let _source = STATUS_SOURCE_LOCK.lock();
-        state.repo_entries.lock().insert(app_id.clone(), app_entry.clone());
-        mark_status_sources_changed();
-    }
     let app_id_for_task = app_id.clone();
     let name_for_task = name.clone();
     let force_for_task = force;
@@ -3927,7 +4017,14 @@ pub fn run() {
             let settings = store::load_settings();
             // Keep the first window responsive. The complete Windows, Start Apps and
             // Winget scan starts from the frontend after its first visible frame.
-            let statuses = detect::build_statuses(&catalog, &installed, &[], &[], "");
+            let repo_entries = store::load_repo_entries();
+            let mut detection_catalog = catalog.clone();
+            for entry in repo_entries.values() {
+                if !detection_catalog.iter().any(|item| item.get("id") == entry.get("id")) {
+                    detection_catalog.push(entry.clone());
+                }
+            }
+            let statuses = detect::build_statuses(&detection_catalog, &installed, &[], &[], "");
             logger::info(
                 "startup",
                 format!(
@@ -3957,7 +4054,7 @@ pub fn run() {
             app.manage(AppState {
                 catalog_path: Mutex::new(catalog_path),
                 catalog: Mutex::new(catalog),
-                repo_entries: Mutex::new(HashMap::new()),
+                repo_entries: Mutex::new(repo_entries),
                 installed: Mutex::new(installed),
                 statuses: Mutex::new(statuses),
                 settings: Mutex::new(settings),
@@ -3977,6 +4074,8 @@ pub fn run() {
             get_templates,
             save_settings,
             open_apps_dir,
+            open_portable_backups,
+            portable_data_info,
             open_logs,
             write_log,
             run_woa,

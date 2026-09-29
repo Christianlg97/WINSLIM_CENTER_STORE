@@ -1767,13 +1767,19 @@ impl InstallOutcome {
     }
 }
 
-/// Downloads may run concurrently, but Windows installers, WinGet and the
-/// final portable-directory swap mutate system/application state and should not
-/// overlap. Keeping the permit inside this module makes that invariant hold for
-/// every caller.
+/// Downloads may run concurrently, but Windows installers, WinGet, Microsoft
+/// Store package registration and the final portable-directory swap mutate
+/// system/application state and should not overlap. Keeping the permit inside
+/// this module makes that invariant hold for every caller.
 static INSTALL_STAGE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
 
-async fn acquire_install_stage(
+/// Whether another task currently owns the installation stage, so a caller can
+/// tell the user why it is waiting instead of leaving a stale status.
+pub fn install_stage_busy() -> bool {
+    INSTALL_STAGE.available_permits() == 0
+}
+
+pub async fn acquire_install_stage(
     flags: &DownloadFlags,
 ) -> Result<tokio::sync::SemaphorePermit<'static>, String> {
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
@@ -2238,6 +2244,7 @@ where
         let (src, wrapped) = inspect_extracted_payload_async(app, &extract_dir).await?;
         match wrapped {
             Some(installer) => {
+                protect_portable_before_setup(&install_path, app).await?;
                 on_progress(90, installer_stage_message(app, &installer), false);
                 run_installer_over_async(
                     app,
@@ -2249,7 +2256,7 @@ where
                 .await?;
                 used_system_installer = true;
             }
-            None => swap_into_install_path_async(&src, &install_path).await?,
+            None => swap_into_install_path_async(&src, &install_path, app).await?,
         }
     } else {
         let ext = dest_file
@@ -2266,6 +2273,7 @@ where
             );
         }
         if should_run_as_installer(app, ext) {
+            protect_portable_before_setup(&install_path, app).await?;
             on_progress(90, installer_stage_message(app, &dest_file), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
             // lifetime. The child process is awaited before this directory is removed.
@@ -2279,6 +2287,7 @@ where
             .await?;
             used_system_installer = true;
         } else if !is_portable && looks_like_windows_executable_async(&dest_file).await? {
+            protect_portable_before_setup(&install_path, app).await?;
             // Kept as a separate case from the extension above because it is a
             // different claim: this one is what the file says it is rather than
             // what it is called. Battle.net's setup arrives as `getInstaller`,
@@ -2316,7 +2325,7 @@ where
             tokio::fs::rename(&dest_file, stage_dir.join(&filename))
                 .await
                 .map_err(|error| error.to_string())?;
-            swap_into_install_path_async(&stage_dir, &install_path).await?;
+            swap_into_install_path_async(&stage_dir, &install_path, app).await?;
         }
     }
 
@@ -2593,10 +2602,29 @@ fn swap_into_install_path(staged: &Path, install_path: &Path) -> Result<(), Stri
     }
 }
 
-async fn swap_into_install_path_async(staged: &Path, install_path: &Path) -> Result<(), String> {
+async fn protect_portable_before_setup(install_path: &Path, app: &Value) -> Result<(), String> {
+    let path = install_path.to_path_buf();
+    let entry = app.clone();
+    tokio::task::spawn_blocking(move || {
+        if path.is_dir() && !directory_is_empty(&path) {
+            let policy = crate::portable::DataPolicy::parse(entry.get("_portable_data_policy").and_then(Value::as_str))?;
+            if policy == crate::portable::DataPolicy::Preserve {
+                crate::portable::backup(&path, entry.get("id").and_then(Value::as_str).unwrap_or("portable"))?;
+            }
+        }
+        Ok(())
+    }).await.map_err(|error| error.to_string())?
+}
+
+async fn swap_into_install_path_async(staged: &Path, install_path: &Path, app: &Value) -> Result<(), String> {
     let staged = staged.to_path_buf();
     let install_path = install_path.to_path_buf();
-    tokio::task::spawn_blocking(move || swap_into_install_path(&staged, &install_path))
+    let id = app.get("id").and_then(Value::as_str).unwrap_or("portable").to_string();
+    let policy = app.get("_portable_data_policy").and_then(Value::as_str).map(str::to_string);
+    tokio::task::spawn_blocking(move || {
+        crate::portable::prepare_update(&staged, &install_path, &id, policy.as_deref())?;
+        swap_into_install_path(&staged, &install_path)
+    })
         .await
         .map_err(|error| format!("No se pudo completar la copia de la aplicación: {error}"))?
 }
@@ -3035,7 +3063,7 @@ pub fn copy_dir_all(src: &Path, dst: &Path) -> Result<(), String> {
 /// Only touches the filesystem: the caller updates `installed.json` while
 /// holding the state lock, so a concurrent installation cannot be erased by a
 /// stale snapshot being written back.
-pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), String> {
+pub fn remove_managed_install(app_id: &str, install_path: &Path, portable_data: Option<&str>) -> Result<(), String> {
     crate::logger::info(
         "uninstall",
         format!(
@@ -3044,6 +3072,7 @@ pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), S
         ),
     );
     if install_path.exists() {
+        let policy = crate::portable::DataPolicy::parse(portable_data)?;
         // Installing already stops whatever runs in the folder before an
         // installer touches it; removing it did not, so uninstalling an
         // application while it was open failed on the files it still held. The
@@ -3060,6 +3089,9 @@ pub fn remove_managed_install(app_id: &str, install_path: &Path) -> Result<(), S
             );
         }
         crate::process::start_services(&stopped.services);
+        if policy == crate::portable::DataPolicy::Preserve {
+            crate::portable::backup(install_path, app_id)?;
+        }
         // `remove_path_robust` clears read-only attributes and retries, which
         // matters when the application was running a moment ago and Windows has
         // not released every handle yet. A raw `remove_dir_all` failed halfway
@@ -3451,6 +3483,17 @@ fn find_typical_uninstaller(install_dir: &Path) -> Option<PathBuf> {
     executables.into_iter().next()
 }
 
+/// The folder `uninstall_from_install_path` would delete outright, if any.
+///
+/// Mirrors its conditions (not packaged, no registered or bundled uninstaller)
+/// so the interface asks about portable data exactly when files would go.
+pub fn portable_directory(install_path: &Path, identity: &crate::residue::AppIdentity) -> Option<PathBuf> {
+    if is_packaged_app_target(install_path) || identity.registered_uninstaller().is_some() { return None; }
+    let indexed = if is_filesystem_target(install_path) { install_path } else { Path::new("") };
+    let directory = crate::residue::removable_install_dir(indexed, identity).ok()?;
+    find_typical_uninstaller(&directory).is_none().then_some(directory)
+}
+
 /// Removes an application whose registered uninstaller could not do the job.
 ///
 /// Returns the folder it acted on, which is not always the one the store had
@@ -3460,6 +3503,7 @@ fn find_typical_uninstaller(install_dir: &Path) -> Option<PathBuf> {
 pub fn uninstall_from_install_path(
     install_path: &Path,
     identity: &crate::residue::AppIdentity,
+    portable_data: Option<&str>,
 ) -> Result<PathBuf, String> {
     // `install_path` doubles as the launch target, so an application listed in
     // the Start Menu arrives here as a `shell:AppsFolder\…` moniker. Only an
@@ -3538,6 +3582,12 @@ pub fn uninstall_from_install_path(
     );
     // The message is already written for the person reading it: repeating the
     // internal "no se encontró desinstalador" here only buried it.
+    let policy = crate::portable::DataPolicy::parse(portable_data)?;
+    let stopped = crate::process::close_application_at(&install_dir, std::time::Duration::from_secs(8));
+    crate::process::start_services(&stopped.services);
+    if policy == crate::portable::DataPolicy::Preserve {
+        crate::portable::backup(&install_dir, install_dir.file_name().and_then(|s| s.to_str()).unwrap_or("portable"))?;
+    }
     remove_path_robust(&install_dir)?;
     // Deleting the files is not enough: the uninstall entry, the `App Paths`
     // alias, the shortcut and the PATH entry all keep telling the system — and
@@ -5201,7 +5251,7 @@ mod tests {
         assert_eq!(cleanup_shortcuts_for_install_target(packaged), Ok(0));
         // And the folder fallback must refuse it instead of guessing a path.
         assert!(
-            uninstall_from_install_path(packaged, &crate::residue::AppIdentity::default()).is_err()
+            uninstall_from_install_path(packaged, &crate::residue::AppIdentity::default(), None).is_err()
         );
         // Declared residual paths must not anchor to it either.
         let app = json!({ "residual_paths": ["{install_dir}\\cache"] });

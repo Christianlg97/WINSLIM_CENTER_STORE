@@ -140,6 +140,26 @@ pub fn save_installed(data: &HashMap<String, InstalledInfo>) -> Result<(), Strin
     save_json(&paths::installed_json(), data)
 }
 
+pub fn load_repo_entries() -> HashMap<String, Value> {
+    load_json(&paths::app_dir().join("repository-apps.json"), HashMap::new())
+}
+
+pub fn save_repo_entries(entries: &HashMap<String, Value>) -> Result<(), String> {
+    // Callers serialize writes while holding AppState::repo_entries. A failed
+    // write must leave the previous session's package identities recoverable.
+    let target = paths::app_dir().join("repository-apps.json");
+    save_repo_entries_at(&target, entries)
+}
+
+fn save_repo_entries_at(target: &Path, entries: &HashMap<String, Value>) -> Result<(), String> {
+    let temporary = target.with_extension(format!("{}.tmp", std::process::id()));
+    save_json(&temporary, entries)?;
+    std::fs::rename(&temporary, target).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        e.to_string()
+    })
+}
+
 pub fn load_settings() -> Settings {
     migrate_settings(load_json(&paths::settings_json(), Settings::default()))
 }
@@ -203,6 +223,20 @@ pub fn app_templates() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repository_entries_survive_reload_and_replacement() {
+        let root = std::env::temp_dir().join(format!("winslim-repositories-{}", std::process::id()));
+        let target = root.join("repository-apps.json");
+        let mut entries = HashMap::new();
+        entries.insert("winget-demo".into(), serde_json::json!({ "id": "winget-demo", "source_type": "winget", "winget_id": "Vendor.Demo" }));
+        save_repo_entries_at(&target, &entries).unwrap();
+        entries.insert("choco-other".into(), serde_json::json!({ "id": "choco-other", "source_type": "choco", "choco_id": "other" }));
+        save_repo_entries_at(&target, &entries).unwrap();
+        let loaded: HashMap<String, Value> = load_json(&target, HashMap::new());
+        assert_eq!(loaded, entries);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn load_catalog_falls_back_when_file_is_missing() {

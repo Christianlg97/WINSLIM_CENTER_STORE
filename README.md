@@ -72,6 +72,14 @@ Escribir en la barra superior pregunta a la vez al **catálogo de WinSlimCenter*
 - **Caché en Memoria Thread-Safe**: Verificación de paquetes WinGet optimizada mediante caché temporal de 3 segundos para evitar bloqueos del proceso.
 - **Filtros Interactivos por Consola**: Filtrado instantáneo en la sección de Emuladores (*PS1, PS2, PS3, PSP, Xbox, GameCube, Wii, Switch, N64, Game Boy, Sharp, etc.*).
 
+### 💾 Datos de las Aplicaciones Portables
+
+Antes de actualizar o desinstalar un portable, el diálogo permite **conservar** o **eliminar** los datos de esa instalación. Conservar está seleccionado de forma predeterminada; «Actualizar todo» ofrece la misma elección para los portables de la tanda.
+
+Al conservar, WinSlimCenter guarda una copia completa en `%LOCALAPPDATA%\WinSlimCenter-Backups`, fuera de las carpetas que limpia al instalar o desinstalar. Si la copia falla, la operación se detiene. Los diálogos de finalización permiten abrir las copias. Eliminar los datos actuales no borra copias anteriores.
+
+En las actualizaciones, las nuevas instalaciones registran los archivos originales para recuperar después los archivos personales añadidos o modificados. Para instalaciones anteriores que todavía no tienen ese registro, se recuperan automáticamente los archivos adicionales; los archivos que coinciden con los de la nueva versión quedan disponibles en la copia completa para recuperarlos manualmente. Los ejecutables y bibliotecas nuevos no se sustituyen por versiones antiguas.
+
 ### 🎨 Apariencia y Personalización Premium
 - **Diseño Oscuro Minimalista**: Estética profesional basada en tarjetas con efectos de iluminación, bordes suaves y tipografía refinada.
 - **Sistema de Presets**: Apariencias predefinidas (*Plata, Índigo, Esmeralda, Carmesí, Ámbar*) y selector de color de acento HEX personalizado.
@@ -144,6 +152,7 @@ graph TD
 | :--- | :--- |
 | [src-tauri/src/lib.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/lib.rs) | Punto de entrada Tauri, gestión de estado (`AppState`), comandos IPC y cola de tareas. |
 | [src-tauri/src/installer.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/installer.rs) | Coordinador de instalación/desinstalación, ejecución silenciosa y resolución de ejecutables. |
+| [src-tauri/src/portable.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/portable.rs) | Copias de seguridad de los datos de portables y recuperación de archivos personales al actualizar. |
 | [src-tauri/src/detect.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/detect.rs) | Escáner del Registro de Windows, paquetes WinGet (con caché de 3s) y accesos UWP (`shell:`). |
 | [src-tauri/src/download.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/download.rs) | Gestor de descargas HTTP asíncronas con Tokio, pausa, reanudación y cancelación. |
 | [src-tauri/src/choco.rs](file:///c:/Users/Administrador/Desktop/WinSlimCenter_Git/WINSLIM_CENTER_STORE/src-tauri/src/choco.rs) | Chocolatey: búsqueda por la API OData de la comunidad, instalación del gestor y de sus paquetes. |
@@ -190,6 +199,16 @@ El diseño visual está construido con **Vanilla CSS** nativo y variables person
    ```text
    WINSLIM_CENTER_STORE\Build\WinSlimCenter.exe
    ```
+
+### Comprobaciones de desarrollo
+
+```powershell
+npm run frontend:check
+npm run test:ui
+npm run test:rust
+```
+
+La prueba Rust requiere el Windows SDK de las herramientas C++ y añade al ejecutable de pruebas el manifiesto de Common Controls v6 que necesita Tauri. No modifica el manifiesto ni los permisos del ejecutable de la aplicación.
 
 ---
 

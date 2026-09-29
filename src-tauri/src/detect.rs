@@ -477,6 +477,20 @@ pub fn names_match(catalog_name: &str, display_name: &str) -> bool {
     false
 }
 
+/// Git for Windows tags its releases `v2.56.0.windows.1`, while its installer,
+/// the Windows registry and WinGet call that same release `2.56.0`. A second
+/// build on the same Git base is tagged `v2.56.0.windows.2` and installs as
+/// `2.56.0.2`. Read literally, the suffix looked like a fourth component, so
+/// `2.56.0.windows.1` always beat the installed `2.56.0` and the update never
+/// went away after installing it.
+fn without_platform_revision(version: &str) -> String {
+    match version.split_once(".windows.") {
+        Some((base, "1")) => base.to_string(),
+        Some((base, revision)) => format!("{base}.{revision}"),
+        None => version.to_string(),
+    }
+}
+
 /// Compare dotted versions. Returns Some(true) if remote > local.
 pub fn is_newer(remote: &str, local: &str) -> Option<bool> {
     let r = remote.trim();
@@ -484,8 +498,8 @@ pub fn is_newer(remote: &str, local: &str) -> Option<bool> {
     if r.is_empty() || l.is_empty() {
         return None;
     }
-    let rl = r.to_lowercase();
-    let ll = l.to_lowercase();
+    let rl = without_platform_revision(&r.to_lowercase());
+    let ll = without_platform_revision(&l.to_lowercase());
     if matches!(rl.as_str(), "latest" | "lastest") || matches!(ll.as_str(), "latest" | "lastest") {
         return None;
     }
@@ -500,8 +514,8 @@ pub fn is_newer(remote: &str, local: &str) -> Option<bool> {
             .filter_map(|p| p.parse().ok())
             .collect()
     };
-    let rv = parse(r);
-    let lv = parse(l);
+    let rv = parse(&rl);
+    let lv = parse(&ll);
     // A tag with no numbers at all ("nightly", "LTS", "stable") carries no
     // ordering information. Reporting "newer" just because the two strings
     // differ invented updates that never existed, so the answer is "unknown"
@@ -1389,6 +1403,17 @@ mod tests {
         assert_eq!(is_newer("1.0", "1.0.0"), Some(false));
         assert_eq!(is_newer("24.08", "24.07"), Some(true));
         assert_eq!(is_newer("latest", "1.0"), None);
+    }
+
+    #[test]
+    fn a_git_for_windows_tag_matches_the_version_its_installer_registers() {
+        // v2.56.0.windows.1 is what Windows registers as 2.56.0.
+        assert_eq!(is_newer("v2.56.0.windows.1", "2.56.0"), Some(false));
+        assert_eq!(is_newer("v2.57.0.windows.1", "2.56.0"), Some(true));
+        // A second build on the same base installs as 2.56.0.2.
+        assert_eq!(is_newer("v2.56.0.windows.2", "2.56.0"), Some(true));
+        assert_eq!(is_newer("v2.56.0.windows.2", "2.56.0.2"), Some(false));
+        assert_eq!(is_newer("v2.56.0.windows.1", "2.56.0.2"), Some(false));
     }
 
     #[test]

@@ -8,6 +8,8 @@
     "build": "npm run frontend:build && npx tauri build --config src-tauri/tauri.prod.conf.json",
     "frontend:build": "node scratch/build_frontend.mjs",
     "frontend:check": "node scratch/build_frontend.mjs --check",
+    "test:ui": "node scratch/test_repo_detection.cjs && node scratch/test_review_regressions.cjs",
+    "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scratch/test_rust.ps1",
     "audit:catalog": "node scratch/audit_catalog_links.cjs",
     "audit:categories": "node scratch/audit_catalog_categories.cjs",
     "tauri": "npx tauri",
