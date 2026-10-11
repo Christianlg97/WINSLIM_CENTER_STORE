@@ -358,9 +358,20 @@ pub struct AppStatus {
     pub install_location: Option<String>,
 }
 
+/// Whether a character belongs to a name rather than separating its words.
+///
+/// `+` and `#` are part of names such as "Notepad++" or "C#". Dropping them
+/// reduced "Notepad++" to "notepad", which is exactly what an English Windows
+/// calls its own Notepad in the Start Menu: on first boot the store took
+/// `Microsoft.WindowsNotepad` for Notepad++, offered to update it and installed
+/// Notepad++ on a machine that never had it.
+fn is_name_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '+' | '#')
+}
+
 fn norm(s: &str) -> String {
     s.chars()
-        .filter(|c| c.is_alphanumeric())
+        .filter(|c| is_name_char(*c))
         .flat_map(|c| c.to_lowercase())
         .collect()
 }
@@ -409,7 +420,7 @@ fn is_generic_word(s: &str) -> bool {
 /// word is naming one product, not two.
 fn words(value: &str) -> Vec<String> {
     value
-        .split(|c: char| !c.is_alphanumeric())
+        .split(|c: char| !is_name_char(c))
         .filter(|word| !word.is_empty())
         .map(|word| word.to_lowercase())
         .collect()
@@ -1476,6 +1487,25 @@ mod tests {
             app_id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
         }];
         assert!(match_start_app(&entry, "WinSlimTerminal", &apps).is_none());
+    }
+
+    #[test]
+    fn notepad_plus_plus_is_not_the_notepad_windows_ships() {
+        // En el primer arranque, con Windows aún en inglés, el menú Inicio llama
+        // «Notepad» al Bloc de notas: la tienda lo daba por Notepad++, ofrecía
+        // actualizarlo e instalaba Notepad++ en un equipo que no lo tenía.
+        assert!(!names_match("Notepad++", "Notepad"));
+        assert!(!names_match("Notepad++", "Windows Notepad"));
+        assert!(!names_match("C#", "C"));
+        let entry = serde_json::json!({ "winget_id": "Notepad++.Notepad++" });
+        let apps = vec![StartApp {
+            name: "Notepad".into(),
+            app_id: "Microsoft.WindowsNotepad_8wekyb3d8bbwe!App".into(),
+        }];
+        assert!(match_start_app(&entry, "Notepad++", &apps).is_none());
+        // El de verdad se sigue reconociendo, en el registro y en el menú Inicio.
+        assert!(names_match("Notepad++", "Notepad++ (64-bit x64)"));
+        assert!(names_match("Notepad++", "Notepad++"));
     }
 
     #[test]

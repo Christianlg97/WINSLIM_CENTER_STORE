@@ -2639,15 +2639,13 @@ async function openMsStoreModal(productId) {
 
   openModal(`
     <div class="confirm-dialog app-detail-modal ms-detail" data-ms-detail="${escapeHtml(id)}">
-      <div class="confirm-dialog-header">
-        <div class="card-avatar" style="background:${avatarBg}; width: 56px; height: 56px; border-radius: 16px; font-size: 22px; flex-shrink: 0; overflow: hidden;">
+      <div class="confirm-dialog-header app-detail-header">
+        <div class="card-avatar app-detail-avatar" style="background:${avatarBg};">
           ${renderAvatar(shape, letter, true)}
         </div>
-        <div>
-          <h2 class="confirm-dialog-title" style="font-size: 20px; font-weight: 700;">${escapeHtml(product.title || id)}</h2>
-          <small style="color: var(--text-medium); font-size: 13px; font-weight: 500;">
-            Por ${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis${kind ? `  ·  ${escapeHtml(kind)}` : ""}
-          </small>
+        <div class="app-detail-heading">
+          <h2 class="confirm-dialog-title app-detail-title">${escapeHtml(product.title || id)}</h2>
+          ${appDetailMetaHtml([`Por ${product.publisher || "Microsoft Store"}`, "Gratis", kind])}
           <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
           ${
             installed
@@ -2657,13 +2655,11 @@ async function openMsStoreModal(productId) {
           }
         </div>
       </div>
-      <p class="confirm-dialog-msg" style="margin-top: 14px; font-size: 14px; line-height: 1.6;">
-        ${escapeHtml(product.description || "")}
-      </p>
+      ${appDescriptionHtml(product.description)}
       <div id="ms-detail-extra" class="ms-detail-extra">
         <p class="ms-detail-loading">Consultando la ficha en la Microsoft Store…</p>
       </div>
-      <div class="modal-foot" style="margin-top: 24px;">
+      <div class="modal-foot">
         <button type="button" class="btn ghost" id="ms-modal-close">Cerrar</button>
         <button type="button" class="btn secondary" id="ms-modal-web">Ver en la web</button>
         ${
@@ -3390,6 +3386,49 @@ function bindShellDelegation() {
   });
 }
 
+/**
+ * La descripción de una ficha, como tarjeta con su etiqueta.
+ *
+ * El texto iba suelto en un `confirm-dialog-msg`, que conserva los saltos y
+ * espacios tal cual para los avisos que los necesitan. Escrito en su propia
+ * línea dentro de la plantilla, se llevaba también la sangría del código: un
+ * hueco encima, la primera línea desplazada y otro hueco debajo. Aquí el texto
+ * entra recortado y sólo cuentan los saltos que trae de verdad —las fichas de
+ * la Microsoft Store vienen en párrafos y con listas de una línea por punto—.
+ */
+function appDescriptionHtml(text) {
+  const paragraphs = String(text || "")
+    .replace(/\r\n?/g, "\n")
+    .split(/\n\s*\n/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  if (!paragraphs.length) return "";
+  return `
+    <section class="app-description">
+      <h3 class="app-description-label">Descripción</h3>
+      <div class="app-description-text">
+        ${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}
+      </div>
+    </section>`;
+}
+
+// La línea bajo el nombre de una ficha: autor, versión y categoría, separados
+// por puntos que pone la hoja de estilos para que no viajen con el texto.
+function appDetailMetaHtml(parts) {
+  return `<p class="app-detail-meta">${parts
+    .filter(Boolean)
+    .map((part) => `<span>${escapeHtml(part)}</span>`)
+    .join("")}</p>`;
+}
+
+// «latest» es lo que dice el catálogo cuando la versión la decide el origen al
+// instalar; para quien lee la ficha, eso es la última, no «vlatest».
+function appDetailVersionLabel(version) {
+  const text = String(version || "").trim();
+  if (!/\d/.test(text)) return "Última versión";
+  return /^v/i.test(text) ? text : `v${text}`;
+}
+
 function openAppModal(id) {
   const app = findApp(id);
   if (!app) return;
@@ -3423,22 +3462,18 @@ function openAppModal(id) {
 
   openModal(`
     <div class="confirm-dialog app-detail-modal">
-      <div class="confirm-dialog-header">
-        <div class="card-avatar" style="background:${avatarBg}; width: 56px; height: 56px; border-radius: 16px; font-size: 22px; flex-shrink: 0; overflow: hidden;">
+      <div class="confirm-dialog-header app-detail-header">
+        <div class="card-avatar app-detail-avatar" style="background:${avatarBg};">
           ${avatar}
         </div>
-        <div>
-          <h2 class="confirm-dialog-title" style="font-size: 20px; font-weight: 700;">${escapeHtml(app.name)}</h2>
-          <small style="color: var(--text-medium); font-size: 13px; font-weight: 500;">
-            Por ${escapeHtml(app.author || "—")}  ·  v${escapeHtml(version)}  ·  ${escapeHtml(app.category || "")}
-          </small>
-          <div>${installedBanner}</div>
+        <div class="app-detail-heading">
+          <h2 class="confirm-dialog-title app-detail-title">${escapeHtml(app.name)}</h2>
+          ${appDetailMetaHtml([`Por ${app.author || "—"}`, appDetailVersionLabel(version), app.category])}
+          ${installedBanner ? `<div>${installedBanner}</div>` : ""}
         </div>
       </div>
-      <p class="confirm-dialog-msg" style="margin-top: 14px; font-size: 14px; line-height: 1.6; color: var(--text-main);">
-        ${escapeHtml(app.description || "")}
-      </p>
-      <div class="modal-foot" style="margin-top: 24px;">
+      ${appDescriptionHtml(app.description)}
+      <div class="modal-foot">
         <button type="button" class="btn ghost" id="modal-app-close">Cerrar</button>
         ${actionBtnsHtml}
       </div>
@@ -3596,12 +3631,24 @@ async function installApp(id, isUpdate = false) {
   const blockerProbe =
     isUpdate || st.installed ? blockingRunningApp(id) : Promise.resolve(null);
 
+  // Una actualización publicada en GitHub enseña lo que trae: las notas de la
+  // release que se va a instalar, no las de la última que haya.
+  const notesRepo =
+    isUpdate && app.source_type === "github_release" && app.github_repo ? app.github_repo : null;
+  const target = isUpdate ? String(st.latest_version || "").trim() : "";
+  const withV = (version) => (/^\d/.test(version) ? `v${version}` : version);
+
   showConfirmModal({
     title,
     message: (isUpdate
       ? `¿Deseas actualizar '${app.name}' a la versión más reciente?`
       : `¿Deseas instalar '${app.name}' en tu equipo?`) + portableDataMessage(portableInfo),
     app,
+    subtitle:
+      target && st.version
+        ? `${app.author ? `${app.author} · ` : ""}${withV(st.version)} → ${withV(target)}`
+        : null,
+    details: notesRepo ? releaseNotesShell() : "",
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     choices,
@@ -3621,6 +3668,17 @@ async function installApp(id, isUpdate = false) {
       await start(selection);
     },
   });
+
+  if (notesRepo) {
+    const section = document.querySelector("#modal .release-notes");
+    const page = `https://github.com/${notesRepo}/releases${target ? `/tag/${encodeURIComponent(target)}` : ""}`;
+    loadReleaseNotes(notesRepo, target)
+      .then((notes) => fillReleaseNotes(section, notes, page))
+      .catch((error) => {
+        void clientLog("warn", "release-notes", `${notesRepo}@${target}: ${error}`);
+        fillReleaseNotes(section, null, `https://github.com/${notesRepo}/releases`);
+      });
+  }
 }
 
 /**
@@ -3823,9 +3881,7 @@ function showElevationFallbackModal(id, app, reason) {
         </div>
       </div>
       <p class="confirm-dialog-msg">${escapeHtml(reason)}</p>
-      <p class="confirm-dialog-msg" style="margin-top: 10px; color: var(--text-medium);">
-        WinSlimCenter puede volver a abrir ${escapeHtml(appName)} mediante el diálogo seguro de UAC de Windows.
-      </p>
+      <p class="confirm-dialog-msg" style="margin-top: 10px; color: var(--text-medium);">WinSlimCenter puede volver a abrir ${escapeHtml(appName)} mediante el diálogo seguro de UAC de Windows.</p>
       <div class="modal-foot" style="margin-top: 20px;">
         <button type="button" class="btn ghost" id="modal-elevation-cancel">Cancelar</button>
         <button type="button" class="btn primary" id="modal-elevation-run">Ejecutar como administrador</button>
@@ -4724,10 +4780,13 @@ function renderChoices(choices) {
     </fieldset>`;
 }
 
-function showConfirmModal({ title, message, app, confirmText = "Confirmar", confirmVariant = "primary", choices = null, secondary = null, cancelText = "Cancelar", onCancel = null, onConfirm }) {
+// `details` es marcado propio de este archivo —nunca texto del usuario ni de
+// la red—, y va entre las opciones y los botones.
+function showConfirmModal({ title, message, app, subtitle = null, details = "", confirmText = "Confirmar", confirmVariant = "primary", choices = null, secondary = null, cancelText = "Cancelar", onCancel = null, onConfirm }) {
   const avatar = app ? renderAvatar(app, app.name?.[0] || "?", true) : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
+  const sub = subtitle ?? (app ? `${app.author || ""} ${app.version ? "· v" + app.version : ""}` : "");
 
   openModal(`
     <div class="confirm-dialog">
@@ -4744,14 +4803,15 @@ function showConfirmModal({ title, message, app, confirmText = "Confirmar", conf
         <div>
           <h2 class="confirm-dialog-title">${escapeHtml(title)}</h2>
           ${
-            app
-              ? `<small style="color: var(--text-medium); font-size: 12px; font-weight: 500;">${escapeHtml(app.author || "")} ${app.version ? "· v" + escapeHtml(app.version) : ""}</small>`
+            sub.trim()
+              ? `<small style="color: var(--text-medium); font-size: 12px; font-weight: 500;">${escapeHtml(sub)}</small>`
               : ""
           }
         </div>
       </div>
       <p class="confirm-dialog-msg">${escapeHtml(message)}</p>
       ${renderChoices(choices)}
+      ${details}
       <div class="modal-foot" style="margin-top: 20px;">
         <button type="button" class="btn ghost" id="modal-btn-cancel">${escapeHtml(cancelText)}</button>
         ${secondary ? `<button type="button" class="btn ghost" id="modal-btn-secondary">${escapeHtml(secondary)}</button>` : ""}
@@ -5402,6 +5462,290 @@ function showAboutModal() {
   };
 }
 
+// ---- Novedades: las notas que el autor escribe al publicar una release ----
+
+// El hueco de las notas dentro de un diálogo. Nace con un esqueleto de carga y
+// lo rellena `fillReleaseNotes` cuando las notas llegan.
+function releaseNotesShell() {
+  return `
+    <section class="release-notes" aria-live="polite" aria-busy="true">
+      <header class="release-notes-head">
+        <span class="release-notes-label">Novedades</span>
+        <span class="release-notes-meta"></span>
+        <button type="button" class="release-notes-link hidden">
+          Ver en GitHub
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="7" y1="17" x2="17" y2="7"/>
+            <polyline points="8 7 17 7 17 16"/>
+          </svg>
+        </button>
+      </header>
+      <div class="release-notes-body">
+        <div class="release-notes-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+      </div>
+    </section>`;
+}
+
+/**
+ * Pone las notas en el hueco que dejó `releaseNotesShell`.
+ *
+ * `notes` es lo que devuelve el backend (`ReleaseNotes`), o `null` cuando no
+ * se pudieron leer: entonces queda dicho, con el enlace a la página de la
+ * release para quien quiera leerlas allí.
+ */
+function fillReleaseNotes(section, notes, pageUrl) {
+  if (!section?.isConnected) return;
+  section.setAttribute("aria-busy", "false");
+  const meta = section.querySelector(".release-notes-meta");
+  const body = section.querySelector(".release-notes-body");
+  const link = section.querySelector(".release-notes-link");
+  const openExternal = (url) =>
+    invoke("open_url", { url }).catch((error) =>
+      setTransientStatus(`No se pudo abrir el enlace: ${error}`, "var(--red)", 6000)
+    );
+  const page = notes?.url || pageUrl;
+  if (page) {
+    link.classList.remove("hidden");
+    link.onclick = () => openExternal(page);
+  }
+
+  body.replaceChildren();
+  const say = (text) => {
+    const line = document.createElement("p");
+    line.className = "release-notes-empty";
+    line.textContent = text;
+    body.appendChild(line);
+  };
+  if (!notes) {
+    say("No se pudieron cargar las notas de esta versión.");
+    return;
+  }
+
+  // La etiqueta sólo se enseña cuando dice una versión: la tienda publica
+  // todo bajo «latest», que no le cuenta nada a nadie.
+  const tag = String(notes.tag || "").trim();
+  const date = formatReleaseDate(notes.updated);
+  meta.innerHTML = `
+    ${/\d/.test(tag) ? `<span class="release-notes-tag">${escapeHtml(tag)}</span>` : ""}
+    ${date ? `<span class="release-notes-date">${escapeHtml(date)}</span>` : ""}`;
+
+  const title = String(notes.title || "").trim();
+  if (title && title.toLowerCase() !== tag.toLowerCase()) {
+    const heading = document.createElement("p");
+    heading.className = "release-notes-title";
+    heading.textContent = title;
+    body.appendChild(heading);
+  }
+  const content = notes.html ? sanitizeReleaseHtml(notes.html) : null;
+  if (content && (content.textContent.trim() || content.querySelector("img"))) {
+    body.appendChild(content);
+  } else {
+    say("El autor no publicó notas para esta versión.");
+  }
+
+  // Los enlaces se abren en el navegador del sistema, nunca dentro de la
+  // tienda; las capturas, en el mismo visor que las de las fichas.
+  body.onclick = (event) => {
+    const shot = event.target.closest(".release-notes-shot");
+    if (shot) {
+      // Contadas al pulsar: una captura que no cargó ya no está en la tira.
+      const shots = [...body.querySelectorAll(".release-notes-shot")];
+      openShotViewer(
+        shots.map((item) => item.querySelector("img").src),
+        shots.indexOf(shot)
+      );
+      return;
+    }
+    const anchor = event.target.closest("[data-href]");
+    if (anchor) {
+      event.preventDefault();
+      openExternal(anchor.dataset.href);
+    }
+  };
+  body.onkeydown = (event) => {
+    if (event.key === "Enter" && event.target.matches("[data-href]")) {
+      event.preventDefault();
+      openExternal(event.target.dataset.href);
+    }
+  };
+}
+
+function formatReleaseDate(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "short", year: "numeric" }).format(date);
+}
+
+// Lo que se conserva de las notas tal como GitHub las dibuja. Todo lo demás se
+// desenvuelve —su texto se queda— o, si no es texto, se descarta.
+const RELEASE_NOTES_TAGS = new Set([
+  "P", "BR", "HR", "H1", "H2", "H3", "H4", "H5", "H6", "UL", "OL", "LI", "STRONG", "B", "EM",
+  "I", "DEL", "S", "CODE", "PRE", "BLOCKQUOTE", "A", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD",
+  "DETAILS", "SUMMARY", "KBD", "SUP", "SUB",
+]);
+const RELEASE_NOTES_DROPPED = new Set([
+  "SCRIPT", "STYLE", "IFRAME", "OBJECT", "EMBED", "FORM", "INPUT", "BUTTON", "TEXTAREA", "SELECT",
+  "VIDEO", "AUDIO", "SVG", "MATH", "TEMPLATE", "LINK", "META", "NOSCRIPT", "CANVAS",
+]);
+// Avisos de GitHub (> [!NOTE] …), con el título en el idioma de la tienda.
+const RELEASE_NOTES_ALERTS = {
+  note: "Nota",
+  tip: "Consejo",
+  important: "Importante",
+  warning: "Advertencia",
+  caution: "Precaución",
+};
+// Las capturas sólo se cargan de los servidores donde GitHub guarda lo que se
+// adjunta a una release; cualquier otra imagen queda como enlace.
+const RELEASE_NOTES_IMAGE_HOSTS = /^https:\/\/([a-z0-9-]+\.)?(githubusercontent\.com|github\.com)\//i;
+
+/**
+ * Reconstruye el HTML de unas notas con una lista corta de elementos y sin más
+ * atributos que los enlaces http(s).
+ *
+ * Las notas las escribe cualquier autor, y esta ventana puede instalar y
+ * desinstalar programas: nada de lo que traigan puede llegar a ejecutarse.
+ * DOMParser no ejecuta nada al analizar, y lo que sale de aquí son nodos
+ * nuevos, no los suyos.
+ */
+function sanitizeReleaseHtml(html) {
+  const source = new DOMParser().parseFromString(html, "text/html");
+  const out = document.createDocumentFragment();
+  const isHttp = (url) => /^https?:\/\//i.test(url || "");
+  const linkTo = (element, url) => {
+    element.dataset.href = url;
+    element.title = url;
+    element.setAttribute("role", "link");
+    element.tabIndex = 0;
+  };
+
+  const walk = (from, into) => {
+    for (const node of from.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        into.appendChild(document.createTextNode(node.textContent));
+        continue;
+      }
+      if (node.nodeType !== Node.ELEMENT_NODE) continue;
+      const tag = node.tagName;
+      if (RELEASE_NOTES_DROPPED.has(tag)) continue;
+      // Los «#» que GitHub cuelga junto a cada título para enlazarlo.
+      if (tag === "A" && node.classList.contains("anchor")) continue;
+
+      if (tag === "DIV" && node.classList.contains("markdown-alert")) {
+        const kind =
+          Object.keys(RELEASE_NOTES_ALERTS).find((k) => node.classList.contains(`markdown-alert-${k}`)) ||
+          "note";
+        const box = document.createElement("blockquote");
+        box.className = `release-notes-alert ${kind}`;
+        walk(node, box);
+        const alertTitle = box.querySelector(".release-notes-alert-title");
+        if (alertTitle) alertTitle.textContent = RELEASE_NOTES_ALERTS[kind];
+        into.appendChild(box);
+        continue;
+      }
+
+      if (tag === "IMG") {
+        const src = node.getAttribute("src");
+        if (RELEASE_NOTES_IMAGE_HOSTS.test(src || "")) {
+          const shot = document.createElement("button");
+          shot.type = "button";
+          shot.className = "release-notes-shot";
+          shot.setAttribute("aria-label", "Ampliar la captura");
+          const image = document.createElement("img");
+          image.src = src;
+          image.alt = node.getAttribute("alt") || "";
+          image.loading = "lazy";
+          image.decoding = "async";
+          // Las de GitHub van firmadas y caducan: una que ya no carga desaparece
+          // en lugar de dejar un hueco roto.
+          image.addEventListener("error", () => shot.remove(), { once: true });
+          shot.appendChild(image);
+          into.appendChild(shot);
+        } else if (isHttp(src)) {
+          const chip = document.createElement("a");
+          chip.className = "release-notes-media";
+          chip.textContent = node.getAttribute("alt")?.trim() || "Imagen";
+          linkTo(chip, src);
+          into.appendChild(chip);
+        }
+        continue;
+      }
+
+      // GitHub envuelve cada captura en un enlace a sí misma: la captura ya se
+      // amplía al pulsarla, así que el enlace sobra.
+      if (tag === "A" && node.querySelector("img") && !node.textContent.trim()) {
+        walk(node, into);
+        continue;
+      }
+      if (!RELEASE_NOTES_TAGS.has(tag)) {
+        walk(node, into);
+        continue;
+      }
+
+      const element = document.createElement(tag.toLowerCase());
+      if (tag === "P" && node.classList.contains("markdown-alert-title")) {
+        element.className = "release-notes-alert-title";
+      } else if (tag === "A") {
+        const href = node.getAttribute("href");
+        if (isHttp(href)) linkTo(element, href);
+      } else if ((tag === "TH" || tag === "TD") && /^(left|center|right)$/.test(node.getAttribute("align") || "")) {
+        element.style.textAlign = node.getAttribute("align");
+      } else if (tag === "OL" && /^\d+$/.test(node.getAttribute("start") || "")) {
+        element.setAttribute("start", node.getAttribute("start"));
+      }
+      walk(node, element);
+      // «### WinSlimCenter 2.3.3 ###»: almohadillas escritas a mano como adorno
+      // de un título que ya es un título.
+      if (/^H[1-6]$/.test(tag) && !element.children.length) {
+        element.textContent = element.textContent.trim().replace(/^#+\s*/, "").replace(/\s+#+$/, "");
+      }
+      into.appendChild(element);
+    }
+  };
+
+  walk(source.body, out);
+
+  // Capturas seguidas, como las que acompañan a cada release de la tienda, van
+  // juntas en una tira de miniaturas: una debajo de otra a todo el ancho no
+  // dejaban ver nada más del diálogo.
+  const parents = new Set([...out.querySelectorAll(".release-notes-shot")].map((shot) => shot.parentNode));
+  for (const parent of parents) {
+    let strip = null;
+    for (const child of [...parent.childNodes]) {
+      if (child.nodeType === Node.ELEMENT_NODE && child.classList.contains("release-notes-shot")) {
+        if (!strip) {
+          strip = document.createElement("div");
+          strip.className = "release-notes-shots";
+          parent.insertBefore(strip, child);
+        }
+        strip.appendChild(child);
+      } else if (strip && child.nodeType === Node.TEXT_NODE && !child.textContent.trim()) {
+        child.remove();
+      } else {
+        strip = null;
+      }
+    }
+  }
+  return out;
+}
+
+// Las notas de una aplicación de GitHub se piden una vez por sesión y versión:
+// abrir y cerrar el diálogo no vuelve a llamar a GitHub.
+const releaseNotesRequests = new Map();
+
+function loadReleaseNotes(repo, tag) {
+  const key = `${repo}@${tag || ""}`;
+  if (!releaseNotesRequests.has(key)) {
+    const request = invoke("get_release_notes", { repo, tag: tag || null }).catch((error) => {
+      releaseNotesRequests.delete(key);
+      throw error;
+    });
+    releaseNotesRequests.set(key, request);
+  }
+  return releaseNotesRequests.get(key);
+}
+
 // Shown once per run when the repository publishes a build newer than this one.
 function showStoreUpdateModal(update) {
   const version = String(update?.version || "").trim();
@@ -5432,6 +5776,7 @@ function showStoreUpdateModal(update) {
         cerrará para aplicarla y volverá a abrirse sola.
       </p>
       ${versions}
+      ${releaseNotesShell()}
       <div class="modal-foot" style="margin-top: 6px;">
         <button type="button" class="btn ghost" id="store-update-skip">Omitir</button>
         <button type="button" class="btn primary" id="store-update-now">Actualizar ahora</button>
@@ -5439,6 +5784,12 @@ function showStoreUpdateModal(update) {
     </div>
   `);
   document.getElementById("modal").classList.add("modal-hero");
+  // Las notas llegan con el aviso, en la misma consulta que dijo la versión.
+  fillReleaseNotes(
+    document.querySelector("#modal .release-notes"),
+    update?.notes || null,
+    update?.release_page
+  );
   document.getElementById("store-update-skip").onclick = () => {
     closeModal();
     setTransientStatus("Actualización omitida. Se volverá a avisar al abrir la tienda.", "var(--text-medium)", 6000);

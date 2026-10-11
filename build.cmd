@@ -10,25 +10,43 @@ set "CARGO_TARGET_DIR=%WINSLIM_TARGET_DIR%"
 rem The CLI is resolved after the C++ environment is ready: the last fallback
 rem builds tauri-cli from source and needs the linker itself.
 
+rem ---------------------------------------------------------------------------
+rem The C++ toolchain: Rust links with Microsoft's linker, so nothing builds
+rem without it. Visual Studio is found through vswhere, which knows every
+rem edition and version (Build Tools or the full IDE, 2022 or later) instead of
+rem three fixed 2022 paths. A missing one is installed and the build carries on:
+rem asking for a second run only postponed the same failure.
+rem
+rem Every install below goes through scratch\install_toolchain.ps1, which tries
+rem winget first and the vendor's official installer when winget is missing or
+rem fails, so a machine without winget is no longer a dead end.
+rem ---------------------------------------------------------------------------
+set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
+set "INSTALL_TOOLCHAIN=%~dp0scratch\install_toolchain.ps1"
+
 where link.exe >nul 2>&1
 if not errorlevel 1 goto :do_build
 
-echo [INFO] Inicializando entorno de compilacion de Visual Studio C++...
-if exist "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-  call "C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-  goto :do_build
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat" (
-  call "C:\Program Files\Microsoft Visual Studio\2022\Community\VC\Auxiliary\Build\vcvars64.bat"
-  goto :do_build
-)
-if exist "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat" (
-  call "C:\Program Files\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"
-  goto :do_build
-)
+call :find_vcvars
+if defined VCVARS goto :vc_init
 
+echo.
+echo [ADVERTENCIA] No se detecto el compilador C++ de Visual Studio (link.exe).
+echo [INFO] Instalando Visual Studio C++ Build Tools...
+echo.
+call :install_component vctools
+call :find_vcvars
+if not defined VCVARS goto :err_vctools
+
+:vc_init
+echo [INFO] Inicializando entorno de compilacion de Visual Studio C++...
+rem vcvars64 calls vswhere by name. Build Tools installed by winget leave its
+rem folder off the PATH, and the script then printed "vswhere.exe no se
+rem reconoce" in the middle of a build that was working fine.
+for %%D in ("%VSWHERE%") do set "PATH=%%~dpD;%PATH%"
+call "%VCVARS%" >nul
 where link.exe >nul 2>&1
-if errorlevel 1 goto :install_vctools
+if errorlevel 1 goto :err_vctools
 
 :do_build
 rem ---------------------------------------------------------------------------
@@ -55,9 +73,9 @@ if not errorlevel 1 goto :node_ready
 
 echo.
 echo [ADVERTENCIA] No se detecto Node.js.
-echo [INFO] Intentando instalar Node.js LTS con winget...
+echo [INFO] Instalando Node.js LTS...
 echo.
-winget install --id OpenJS.NodeJS.LTS --accept-package-agreements --accept-source-agreements
+call :install_component node
 if exist "%ProgramFiles%\nodejs\node.exe" set "PATH=%ProgramFiles%\nodejs;%PATH%"
 where node.exe >nul 2>&1
 if errorlevel 1 goto :node_missing
@@ -182,26 +200,33 @@ echo.
 pause
 exit /b 0
 
-:install_vctools
-echo.
-echo [ADVERTENCIA] No se detecto el enlazador C++ (link.exe missing).
-echo [INFO] Intentando instalar Visual Studio C++ Build Tools con winget...
-echo.
-winget install --id Microsoft.VisualStudio.2022.BuildTools --override "--passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
-if errorlevel 1 goto :err_winget
+rem ---------------------------------------------------------------------------
+rem Subroutines, reached only through `call`.
+rem ---------------------------------------------------------------------------
 
-echo.
-echo [EXITO] C++ Build Tools instalado. Vuelve a ejecutar este script para compilar.
-echo.
-pause
+rem Installs one toolchain component (vctools, rust or node).
+:install_component
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%INSTALL_TOOLCHAIN%" -Component %1
+exit /b %errorlevel%
+
+rem Sets VCVARS to vcvars64.bat of the newest Visual Studio that has the C++
+rem compiler, or leaves it empty. `call` keeps cmd from stripping the quotes
+rem around a path that contains "(x86)".
+:find_vcvars
+set "VCVARS="
+set "VS_PATH="
+if not exist "%VSWHERE%" exit /b 0
+for /f "usebackq delims=" %%P in (`call "%VSWHERE%" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VS_PATH=%%P"
+if not defined VS_PATH exit /b 0
+if exist "%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat" set "VCVARS=%VS_PATH%\VC\Auxiliary\Build\vcvars64.bat"
 exit /b 0
 
 :install_rust
 echo.
 echo [ADVERTENCIA] No se detecto Cargo (la cadena de herramientas de Rust).
-echo [INFO] Intentando instalar Rust con winget...
+echo [INFO] Instalando Rust...
 echo.
-winget install --id Rustlang.Rustup --accept-package-agreements --accept-source-agreements
+call :install_component rust
 if exist "%USERPROFILE%\.cargo\bin" set "PATH=%USERPROFILE%\.cargo\bin;%PATH%"
 where rustup >nul 2>&1
 if errorlevel 1 goto :err_rust
@@ -246,9 +271,10 @@ echo.
 pause
 exit /b 1
 
-:err_winget
+:err_vctools
 echo.
-echo [ERROR] No se pudo completar la instalacion automatica de C++ Build Tools.
+echo [ERROR] No se pudo preparar el compilador C++ de Visual Studio.
+echo Se intento con winget y con el instalador oficial de Microsoft.
 echo Abriendo la pagina oficial de descarga en tu navegador...
 start https://visualstudio.microsoft.com/visual-cpp-build-tools/
 echo.

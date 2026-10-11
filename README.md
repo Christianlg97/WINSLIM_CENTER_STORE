@@ -181,7 +181,9 @@ El diseño visual está construido con **Vanilla CSS** nativo y variables person
 ### Requisitos de Entorno
 1. **Node.js** (v18 o superior)
 2. **Rust Toolchain** (`x86_64-pc-windows-msvc`)
-3. **Visual Studio 2022 Build Tools** (con carga de trabajo de desarrollo en C++)
+3. **Visual Studio Build Tools** (2022 o posterior, con carga de trabajo de desarrollo en C++)
+
+`build.cmd` comprueba los tres antes de compilar. Si falta alguno lo instala —con winget y, si winget no está o falla, con el instalador oficial de Microsoft, rust-lang.org o nodejs.org— y sigue compilando en la misma ejecución. Windows pedirá permisos de administrador para las Build Tools y Node.js. Visual Studio se localiza con `vswhere`, así que sirve cualquier edición instalada.
 
 ### Comandos de Compilación
 

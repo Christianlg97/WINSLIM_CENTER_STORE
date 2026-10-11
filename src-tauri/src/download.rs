@@ -594,6 +594,45 @@ mod tests {
             Some("https://example.com/x64.exe".into())
         );
     }
+
+    const NOTES_FEED: &str = concat!(
+        "<feed><title>Release notes from notepad-plus-plus</title>",
+        "<entry><id>tag:github.com,2008:Repository/1/v8.9.8.1</id>",
+        "<updated>2026-09-24T10:00:00Z</updated>",
+        "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/o/r/releases/tag/v8.9.8.1\"/>",
+        "<title>Notepad++ 8.9.8.1</title>",
+        "<content type=\"html\">&lt;p&gt;R&amp;amp;D &amp;#39;fix&amp;#39;&lt;/p&gt;</content></entry>",
+        "<entry><id>tag:github.com,2008:Repository/1/v8.9.8</id>",
+        "<updated>2026-09-01T10:00:00Z</updated>",
+        "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/o/r/releases/tag/v8.9.8\"/>",
+        "<title>Notepad++ 8.9.8</title>",
+        "<content type=\"html\">&lt;p&gt;anterior&lt;/p&gt;</content></entry></feed>"
+    );
+
+    #[test]
+    fn release_notes_come_from_the_newest_entry_of_the_feed() {
+        let notes = release_notes_from_feed(NOTES_FEED, None).expect("newest entry");
+        assert_eq!(notes.tag, "v8.9.8.1");
+        assert_eq!(notes.title, "Notepad++ 8.9.8.1");
+        assert_eq!(notes.updated, "2026-09-24T10:00:00Z");
+        assert_eq!(notes.url, "https://github.com/o/r/releases/tag/v8.9.8.1");
+        // Decoded exactly once: what the author escaped stays escaped.
+        assert_eq!(notes.html, "<p>R&amp;D &#39;fix&#39;</p>");
+    }
+
+    #[test]
+    fn release_notes_are_found_by_the_version_whoever_spells_it() {
+        // GitHub says `v8.9.8`, WinGet says `8.9.8`: the same release.
+        let notes = release_notes_from_feed(NOTES_FEED, Some("8.9.8")).expect("same version");
+        assert_eq!(notes.html, "<p>anterior</p>");
+        assert_eq!(
+            release_notes_from_feed(NOTES_FEED, Some("v8.9.8.1")).map(|notes| notes.tag),
+            Some("v8.9.8.1".into())
+        );
+        // A release the feed does not list is not replaced by another one.
+        assert!(release_notes_from_feed(NOTES_FEED, Some("9.0")).is_none());
+        assert!(release_notes_from_feed("<feed></feed>", None).is_none());
+    }
 }
 
 fn fmt_size(mut size: f64) -> String {
@@ -1486,6 +1525,136 @@ async fn github_releases_feed(client: &reqwest::Client, repo: &str) -> Result<St
         return Err("llegó vacío".into());
     }
     Ok(body)
+}
+
+/// What a release says about itself, ready to be shown: the notes its author
+/// wrote when publishing it, as GitHub renders them on the release page.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ReleaseNotes {
+    pub tag: String,
+    pub title: String,
+    /// Rendered by GitHub, but still the author's markup: the interface keeps a
+    /// short list of harmless elements and drops the rest before showing it.
+    pub html: String,
+    /// When the release was last published or edited, as the feed states it.
+    pub updated: String,
+    pub url: String,
+}
+
+/// The notes of the release published under `tag`, or of the newest one.
+///
+/// Read from the releases feed for the reason `github_release_text` gives: the
+/// API allows sixty requests an hour and the update check already spends them,
+/// so opening an update dialog must not be what runs them out.
+pub async fn github_release_notes(repo: &str, tag: Option<&str>) -> Result<ReleaseNotes, String> {
+    let feed = github_releases_feed(http_client()?, repo).await?;
+    release_notes_from_feed(&feed, tag).ok_or_else(|| match tag {
+        Some(tag) => format!("la release {tag} no aparece en el feed de {repo}"),
+        None => format!("el feed de {repo} no tiene ninguna release"),
+    })
+}
+
+/// One entry of a GitHub releases feed: the one for `tag`, or the newest.
+///
+/// The tag the store knows may not be spelled like the release's: WinGet
+/// reports `8.9.8.1` for the release tagged `v8.9.8.1`. A tag therefore names
+/// an entry when the two are the same version, not only the same text.
+///
+/// The feed is GitHub's own, fixed Atom, so the few elements needed are picked
+/// out directly rather than bringing in an XML parser for them.
+pub fn release_notes_from_feed(feed: &str, tag: Option<&str>) -> Option<ReleaseNotes> {
+    let same_release = |listed: &str, wanted: &str| {
+        let (listed, wanted) = (listed.trim(), wanted.trim());
+        listed.eq_ignore_ascii_case(wanted)
+            || (crate::detect::is_newer(listed, wanted) == Some(false)
+                && crate::detect::is_newer(wanted, listed) == Some(false))
+    };
+    feed.split("<entry>")
+        .skip(1)
+        .map(|chunk| chunk.split("</entry>").next().unwrap_or(chunk))
+        .filter_map(|entry| {
+            let url = element_attribute(entry, "link", "href")?;
+            let entry_tag = url.rsplit_once("/releases/tag/")?.1.to_string();
+            Some(ReleaseNotes {
+                title: element_text(entry, "title").unwrap_or_else(|| entry_tag.clone()),
+                // An entry without notes is still a release; it just has nothing to say.
+                html: element_text(entry, "content").unwrap_or_default(),
+                updated: element_text(entry, "updated").unwrap_or_default(),
+                tag: entry_tag,
+                url,
+            })
+        })
+        .find(|notes| match tag {
+            Some(wanted) => same_release(&notes.tag, wanted),
+            None => true,
+        })
+}
+
+/// The text inside the first `<name …>…</name>` of `xml`, entities decoded.
+fn element_text(xml: &str, name: &str) -> Option<String> {
+    let open = xml.find(&format!("<{name}"))?;
+    let after_open = &xml[open..];
+    let start_tag_end = after_open.find('>')?;
+    if after_open[..start_tag_end].ends_with('/') {
+        return Some(String::new());
+    }
+    let body = &after_open[start_tag_end + 1..];
+    let end = body.find(&format!("</{name}>"))?;
+    Some(decode_xml_entities(&body[..end]))
+}
+
+/// The value of `attribute` on the first `<name …>` start tag of `xml`.
+fn element_attribute(xml: &str, name: &str, attribute: &str) -> Option<String> {
+    let open = xml.find(&format!("<{name}"))?;
+    let start_tag = &xml[open..open + xml[open..].find('>')?];
+    let key = format!(" {attribute}=\"");
+    let value_start = start_tag.find(&key)? + key.len();
+    let value_len = start_tag[value_start..].find('"')?;
+    Some(decode_xml_entities(
+        &start_tag[value_start..value_start + value_len],
+    ))
+}
+
+/// Undoes XML escaping once: the feed carries the rendered notes as escaped
+/// text, and decoding twice would turn the author's own `&lt;` into markup.
+fn decode_xml_entities(text: &str) -> String {
+    let mut decoded = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        decoded.push_str(&rest[..amp]);
+        rest = &rest[amp..];
+        let entity = rest
+            .find(';')
+            .filter(|end| *end <= 10)
+            .and_then(|end| {
+                let character = match &rest[1..end] {
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "amp" => Some('&'),
+                    "quot" => Some('"'),
+                    "apos" => Some('\''),
+                    numeric => numeric
+                        .strip_prefix("#x")
+                        .or_else(|| numeric.strip_prefix("#X"))
+                        .and_then(|hex| u32::from_str_radix(hex, 16).ok())
+                        .or_else(|| numeric.strip_prefix('#')?.parse().ok())
+                        .and_then(char::from_u32),
+                };
+                character.map(|character| (character, end))
+            });
+        match entity {
+            Some((character, end)) => {
+                decoded.push(character);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                decoded.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    decoded.push_str(rest);
+    decoded
 }
 
 pub async fn github_latest_release_asset(

@@ -28,7 +28,9 @@
       const msStoreProducts = [
         { product_id: "9WZDNCRFJ3PZ", kind: "uwp", title: "Contoso Notes", description: "Un bloc de notas de ejemplo con sincronización simulada y temas claros y oscuros.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/notepad_plus_plus.svg", price: "Free", family: "Apps", package_families: ["Contoso.Notes_abc"] },
         { product_id: "9NBLGGH4NNS1", kind: "uwp", title: "Contoso Player", description: "Reproductor de vídeo de ejemplo con listas de reproducción.", publisher: "Contoso Ltd.", icon_url: "/src/assets/catalog/vlc.svg", price: "Free", family: "Apps", package_families: ["Contoso.Player_abc"] },
-        { product_id: "XPDC2RH70K22MN", kind: "win32", title: "Contoso Studio", description: "Editor clásico de ejemplo que se instala con su propio asistente.", publisher: "Contoso Labs", icon_url: "/src/assets/catalog/obsidian.svg", price: "Free", family: "Apps", package_families: [] },
+        // Descripción larga, en párrafos y con una lista de una línea por punto,
+        // como las que devuelve la Microsoft Store de verdad.
+        { product_id: "XPDC2RH70K22MN", kind: "win32", title: "Contoso Studio", description: "Editor clásico de ejemplo que se instala con su propio asistente.\r\n\r\nPensado para proyectos grandes: abre carpetas enteras, recuerda las pestañas de la última sesión y guarda copias automáticas mientras trabajas.\r\n\r\nNovedades de esta versión:\r\n• Búsqueda en todos los archivos del proyecto.\r\n• Temas claro y oscuro que siguen al sistema.\r\n• Atajos de teclado configurables.\r\n\r\nContoso Studio es gratuito para uso personal y educativo. Las empresas con más de cinco puestos necesitan una licencia comercial, que se puede adquirir desde la propia aplicación o en la web del fabricante.", publisher: "Contoso Labs", icon_url: "/src/assets/catalog/obsidian.svg", price: "Free", family: "Apps", package_families: [] },
       ];
       // Lo que este equipo de mentira tiene instalado de la tienda.
       let msStoreInstalled = [
@@ -113,10 +115,51 @@
             if (command === "update_center_app") return "Actualización simulada correctamente";
             // ?store-update=2.9.0 hace que el repositorio publique esa versión; sin
             // el parámetro la tienda está al día, que es el caso corriente.
+            // Las notas imitan las de una release real de la tienda: título con
+            // almohadillas, una lista, un aviso y capturas alojadas en GitHub.
+            // ?store-notes=none las quita, que es lo que pasa cuando sólo
+            // respondió la API y no hubo feed que leer.
             if (command === "check_store_update") {
               await new Promise((resolve) => setTimeout(resolve, 500));
               const published = msStoreTestParams.get("store-update");
-              return published ? { version: published, current: "0.1.3" } : null;
+              if (!published) return null;
+              const shot = "https://raw.githubusercontent.com/Christianlg97/WINSLIM_CENTER_STORE/main/src/assets/winslim-center-logo.png";
+              const notes = msStoreTestParams.get("store-notes") === "none" ? null : {
+                tag: "latest",
+                title: "latest",
+                html: `<h1>### WinSlimCenter ${published} ###</h1>
+<ul><li>Las ventanas de actualización muestran las <strong>novedades</strong> de cada release.</li>
+<li>El Bloc de notas de Windows ya no se confunde con <code>Notepad++</code>.</li></ul>
+<div class="markdown-alert markdown-alert-warning"><p class="markdown-alert-title"><svg></svg>Warning</p><p>Cierra los juegos abiertos antes de actualizar.</p></div>
+<a href="${shot}"><img src="${shot}" alt="image"></a>
+<a href="${shot}"><img src="${shot}" alt="image"></a>
+<p><a href="https://github.com/Christianlg97/WINSLIM_CENTER_STORE/commits/main">Todos los cambios</a></p>`,
+                updated: "2026-10-11T09:00:00Z",
+                url: "https://github.com/Christianlg97/WINSLIM_CENTER_STORE/releases/tag/latest",
+              };
+              return {
+                version: published,
+                current: "0.1.3",
+                notes,
+                release_page: "https://github.com/Christianlg97/WINSLIM_CENTER_STORE/releases/latest",
+              };
+            }
+            // Las notas de una aplicación de GitHub. ?notes-fail simula que el
+            // feed no responde y ?notes-delay=2000 que tarda.
+            if (command === "get_release_notes") {
+              await new Promise((resolve) => setTimeout(resolve, Number(msStoreTestParams.get("notes-delay") || 300)));
+              if (msStoreTestParams.has("notes-fail")) throw "el feed no respondió";
+              return {
+                tag: args.tag || "v2.0.0",
+                title: `Versión ${args.tag || "2.0.0"}`,
+                html: "<h2>Novedades</h2><ul><li>Arranque más rápido.</li><li>Corrige el cierre al minimizar.</li></ul><script>window.__pwned = true<\/script><p onclick=\"window.__pwned = true\">Más detalles en <a href=\"javascript:window.__pwned=true\">este enlace</a>.</p>",
+                updated: "2026-10-01T12:00:00Z",
+                url: `https://github.com/${args.repo}/releases/tag/${args.tag || "v2.0.0"}`,
+              };
+            }
+            if (command === "open_url") {
+              window.__openedUrls = (window.__openedUrls || []).concat(args.url);
+              return null;
             }
             // ?running=2 hace que la aplicación que se va a actualizar esté
             // abierta con ese número de procesos. ?running-packaged la declara

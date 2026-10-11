@@ -3122,6 +3122,12 @@ struct StoreUpdate {
     /// Empty when the release does not say which version it is.
     version: String,
     current: String,
+    /// What the release says it brings, shown in the update dialog. It comes in
+    /// the same feed the version was read from, so it costs no request of its
+    /// own; `None` when only the API answered and there was no feed to read.
+    notes: Option<download::ReleaseNotes>,
+    /// Where the release can be read in full, whatever answered.
+    release_page: String,
 }
 
 /// Reports the published release when it is newer than the copy that is running.
@@ -3150,10 +3156,43 @@ async fn check_store_update() -> Result<Option<StoreUpdate>, String> {
         "self-update",
         format!("Release publicada: {published}, instalada: {current}, más reciente: {newer}"),
     );
-    Ok(newer.then_some(StoreUpdate {
+    Ok(newer.then(|| StoreUpdate {
         version: published,
         current,
+        notes: download::release_notes_from_feed(&text, None),
+        release_page: format!("https://github.com/{GITHUB_REPO}/releases/latest"),
     }))
+}
+
+/// The notes of a GitHub-hosted application's release, for its update dialog.
+///
+/// `tag` is the version the update will install, so the notes shown are the
+/// ones of the release about to arrive and not of whatever was published last.
+#[tauri::command]
+async fn get_release_notes(
+    repo: String,
+    tag: Option<String>,
+) -> Result<download::ReleaseNotes, String> {
+    let repo = repo.trim();
+    // Only `owner/name`: the value ends up in a URL.
+    let valid = repo.split('/').count() == 2
+        && repo.split('/').all(|part| {
+            !part.is_empty()
+                && part
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        });
+    if !valid {
+        return Err(format!("Repositorio no válido: {repo}"));
+    }
+    let tag = tag.as_deref().map(str::trim).filter(|tag| !tag.is_empty());
+    download::github_release_notes(repo, tag).await.map_err(|error| {
+        logger::warn(
+            "release-notes",
+            format!("No se pudieron leer las notas de {repo} ({tag:?}): {error}"),
+        );
+        installer::display_install_error(&error)
+    })
 }
 
 struct SelfUpdatePaths {
@@ -4067,6 +4106,7 @@ pub fn run() {
             refresh_statuses,
             check_updates,
             check_store_update,
+            get_release_notes,
             update_center_app,
             get_tasks,
             reload_catalog,

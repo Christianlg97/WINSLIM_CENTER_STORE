@@ -1939,6 +1939,335 @@ textarea {
   color: var(--accent);
 }
 
+/* «Novedades»: lo que el autor escribió al publicar la release. Una tarjeta como
+   las del diálogo «Acerca de» —borde, radio y etiqueta en versalitas—, con el
+   texto alineado a la izquierda aunque el aviso de la tienda vaya centrado. */
+.release-notes {
+  width: 100%;
+  justify-self: stretch;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  text-align: left;
+  animation: fadeUp 0.35s ease;
+}
+
+.release-notes-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 6px 8px 6px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.release-notes-label {
+  color: var(--text-light);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.release-notes-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.release-notes-tag {
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-badge);
+  color: var(--text-dark);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.release-notes-date {
+  color: var(--text-light);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.release-notes-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: auto;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-medium);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.release-notes-link:hover {
+  border-color: var(--border);
+  background: var(--bg-card-hover);
+  color: var(--text-dark);
+}
+
+.release-notes-body {
+  max-height: min(260px, 34vh);
+  overflow-y: auto;
+  scrollbar-width: thin;
+  padding: 12px 16px 14px;
+  color: var(--text-medium);
+  font-size: 12.5px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.release-notes-body > :first-child {
+  margin-top: 0;
+}
+
+.release-notes-body > :last-child {
+  margin-bottom: 0;
+}
+
+.release-notes-body :is(h1, h2, h3, h4, h5, h6) {
+  margin: 14px 0 6px;
+  color: var(--text-dark);
+  font-family: var(--font-display);
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.release-notes-body h1 { font-size: 15px; }
+.release-notes-body h2 { font-size: 14px; }
+.release-notes-body h3 { font-size: 13px; }
+.release-notes-body :is(h4, h5, h6) { font-size: 12.5px; }
+
+.release-notes-body :is(p, ul, ol, pre, blockquote, table, details) {
+  margin: 0 0 8px;
+}
+
+.release-notes-body :is(ul, ol) {
+  padding-left: 18px;
+}
+
+.release-notes-body li + li {
+  margin-top: 3px;
+}
+
+.release-notes-body li::marker {
+  color: var(--text-light);
+}
+
+.release-notes-body :is(strong, b, summary) {
+  color: var(--text-dark);
+}
+
+.release-notes-body summary {
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.release-notes-body :is(code, kbd) {
+  padding: 1px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--bg-badge);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+}
+
+.release-notes-body pre {
+  overflow: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-sidebar);
+  overflow-wrap: normal;
+}
+
+.release-notes-body pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  white-space: pre;
+}
+
+.release-notes-body blockquote {
+  padding: 2px 0 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-light);
+}
+
+.release-notes-body hr {
+  margin: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.release-notes-body table {
+  display: block;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.release-notes-body :is(th, td) {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+}
+
+.release-notes-body th {
+  background: var(--bg-badge);
+  color: var(--text-dark);
+}
+
+.release-notes-body [data-href] {
+  color: var(--text-dark);
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+  text-underline-offset: 2px;
+  cursor: pointer;
+  transition: text-decoration-color 0.15s;
+}
+
+.release-notes-body [data-href]:hover {
+  text-decoration-color: currentColor;
+}
+
+.release-notes-body [data-href]:focus-visible,
+.release-notes-shot:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* Los avisos de GitHub (> [!NOTE]…) en la paleta de la tienda: el tema es de
+   grises y un aviso de colores sería lo único que desentonase. */
+.release-notes-body .release-notes-alert {
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent);
+  border-radius: 0 9px 9px 0;
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  color: var(--text-medium);
+}
+
+.release-notes-body .release-notes-alert.note,
+.release-notes-body .release-notes-alert.tip {
+  border-left-color: var(--text-light);
+  background: color-mix(in srgb, var(--text-light) 6%, transparent);
+}
+
+.release-notes-body .release-notes-alert > :last-child {
+  margin-bottom: 0;
+}
+
+.release-notes-body .release-notes-alert-title {
+  margin-bottom: 4px;
+  color: var(--text-dark);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* Las capturas de la release: miniaturas que se amplían en el mismo visor que
+   las de las fichas de producto. */
+.release-notes-shots {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 8px;
+  margin: 10px 0 8px;
+}
+
+.release-notes-shot {
+  display: block;
+  width: 100%;
+  aspect-ratio: 3 / 2;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sidebar);
+  cursor: zoom-in;
+  transition: border-color 0.15s, transform 0.12s;
+}
+
+.release-notes-shot:hover {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border) 45%);
+}
+
+.release-notes-shot:active {
+  transform: translateY(1px);
+}
+
+.release-notes-shot img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.release-notes-body .release-notes-media {
+  display: inline-flex;
+  margin: 2px 0;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-badge);
+  font-size: 11px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.release-notes-title {
+  color: var(--text-dark);
+  font-weight: 700;
+}
+
+.release-notes-empty {
+  color: var(--text-light);
+}
+
+.release-notes-skeleton {
+  display: grid;
+  gap: 9px;
+  padding: 2px 0;
+}
+
+.release-notes-skeleton i {
+  display: block;
+  height: 10px;
+  border-radius: 6px;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.04));
+  background-size: 200% 100%;
+  animation: releaseNotesShimmer 1.2s ease-in-out infinite;
+}
+
+.release-notes-skeleton i:nth-child(1) { width: 42%; }
+.release-notes-skeleton i:nth-child(2) { width: 92%; }
+.release-notes-skeleton i:nth-child(3) { width: 78%; }
+.release-notes-skeleton i:nth-child(4) { width: 64%; }
+
+@keyframes releaseNotesShimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .release-notes,
+  .release-notes-skeleton i {
+    animation: none;
+  }
+}
+
 .version-product {
   color: var(--text-light);
   font-size: 11px;
@@ -2020,6 +2349,134 @@ textarea {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+/* La ficha de una aplicación —del catálogo o de la Microsoft Store—: más aire
+   alrededor que un aviso, un nombre que se lee de un vistazo y los botones a un
+   paso de la descripción en lugar de colgando al fondo. */
+.modal:has(> .app-detail-modal) {
+  padding: 20px 22px;
+}
+
+.app-detail-header {
+  gap: 16px;
+}
+
+.card-avatar.app-detail-avatar {
+  width: 56px;
+  height: 56px;
+  border-radius: 14px;
+  font-size: 22px;
+}
+
+.app-detail-heading {
+  min-width: 0;
+}
+
+.confirm-dialog-title.app-detail-title {
+  font-size: 24px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  color: var(--text-dark);
+  overflow-wrap: anywhere;
+}
+
+.app-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 4px 0 0;
+  color: var(--text-light);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.app-detail-meta span + span::before {
+  content: "·";
+  margin: 0 8px;
+  color: color-mix(in srgb, var(--text-light) 60%, transparent);
+}
+
+.app-detail-modal > .modal-foot {
+  margin-top: 2px;
+}
+
+.app-detail-modal > .modal-foot .btn {
+  height: 36px;
+  min-width: 92px;
+  padding: 0 20px;
+  border-radius: 12px;
+  font-size: 14px;
+}
+
+/* La descripción de una ficha: la misma tarjeta que los datos de la Microsoft
+   Store y las novedades de una release —borde, radio y etiqueta en versalitas—,
+   para que el diálogo se lea como una sola pieza. */
+.app-description {
+  margin-top: 4px;
+  padding: 15px 20px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+}
+
+.app-description-label {
+  margin: 0 0 10px;
+  color: var(--text-light);
+  font-family: var(--font-body);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Las fichas de la Microsoft Store pueden ocupar pantallas enteras: el texto
+   se desplaza dentro de la tarjeta y los datos y capturas de debajo siguen a
+   la vista. Las del catálogo caben de sobra y no notan el límite. */
+.app-description-text {
+  max-height: 210px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  /* Un fundido abajo avisa de que el texto sigue, y se va al llegar al final.
+     Lo mueve el propio desplazamiento: un texto que cabe no tiene línea de
+     tiempo, la animación no se aplica y no se funde nada. */
+  mask-image: linear-gradient(to bottom, #000 calc(100% - var(--description-fade)), transparent);
+  animation: descriptionFade linear both;
+  animation-timeline: scroll(self);
+}
+
+@property --description-fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+
+@keyframes descriptionFade {
+  0%,
+  88% {
+    --description-fade: 26px;
+  }
+  100% {
+    --description-fade: 0px;
+  }
+}
+
+.app-description-text p {
+  margin: 0;
+  /* Entre el blanco del nombre y el gris de la etiqueta: es lo que se lee. */
+  color: color-mix(in srgb, var(--text-dark) 70%, var(--text-medium) 30%);
+  font-size: 14.5px;
+  line-height: 1.55;
+  /* Recortado al entrar: los únicos saltos que quedan son los del texto. */
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  text-wrap: pretty;
+}
+
+.app-description-text p + p {
+  margin-top: 9px;
 }
 
 .msstore-error-lead {
