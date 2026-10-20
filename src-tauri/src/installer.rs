@@ -4779,6 +4779,23 @@ mod tests {
     }
 
     #[test]
+    fn velopack_setups_run_silently_so_updates_replace_the_installed_copy() {
+        // SCSKiller ships a Velopack Setup.exe. Without `--silent` it shows its
+        // own window and, when a copy is already installed, asks whether to
+        // replace it — an update from the store would sit waiting on that
+        // dialog. `--silent` hides it and answers yes.
+        let catalog = crate::store::load_catalog(Path::new("/definitely/does/not/exist/apps.json"));
+        let app = catalog
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("scskiller"))
+            .expect("SCSKiller debe estar en el catálogo");
+        let setup = Path::new("SCSKiller-Setup.exe");
+        assert!(should_run_as_installer(app, "exe"));
+        assert_eq!(app_installer_args(app, setup), vec!["--silent"]);
+        assert!(installer_runs_hidden(app, setup));
+    }
+
+    #[test]
     fn interactive_setups_keep_announcing_the_wizard() {
         let interactive = json!({});
         assert!(!installer_runs_hidden(&interactive, Path::new("setup.exe")));

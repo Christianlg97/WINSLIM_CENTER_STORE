@@ -4401,6 +4401,37 @@
     ]
   },
   {
+    "id": "scskiller",
+    "name": "SCSKiller",
+    "description": "Acaba con los tirones por compilación de shaders: compila de antemano los shaders de tus juegos en la caché del controlador de la GPU, para que no se detengan a compilarlos en mitad de la partida. DirectX 12, y DirectX 11 en NVIDIA; gráficas NVIDIA y AMD.",
+    "version": "latest",
+    "author": "BlueHeisenberg",
+    "category": "Utilidades de juego",
+    "section": "Juegos",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "BlueHeisenberg/SCSKiller",
+    "asset_pattern": "SCSKiller-Setup.exe",
+    "download_url": "https://github.com/BlueHeisenberg/SCSKiller/releases/latest/download/SCSKiller-Setup.exe",
+    "download_filename": "SCSKiller-Setup.exe",
+    "installer_args": [
+      "--silent"
+    ],
+    "launch_executable": "SCSKiller.exe",
+    "icon_url": "assets/catalog/scskiller.png",
+    "icon_background": "#0b1219",
+    "icon_padding": 0,
+    "accent_color": "#4bc2ff",
+    "detect_names": [
+      "SCSKiller",
+      "SCSKiller.App"
+    ],
+    "residual_paths": [
+      "%LOCALAPPDATA%\\SCSKiller"
+    ],
+    "web_url": "https://github.com/BlueHeisenberg/SCSKiller"
+  },
+  {
     "id": "cheat_engine",
     "name": "Cheat Engine",
     "description": "Depurador y escáner de memoria de código abierto para inspeccionar y modificar valores de juegos y programas en ejecución.",

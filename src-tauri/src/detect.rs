@@ -1704,6 +1704,11 @@ mod tests {
                 r"C:\D\Update.exe --uninstall -s",
                 r"C:\D\Update.exe --uninstall",
             ),
+            // Velopack (SCSKiller) spells the quiet switch out in full.
+            (
+                r#""C:\U\AppData\Local\SCSKiller.App\Update.exe" --uninstall --silent"#,
+                r#""C:\U\AppData\Local\SCSKiller.App\Update.exe" --uninstall"#,
+            ),
             (
                 r#""C:\C\VC_redist.x64.exe" /uninstall /quiet"#,
                 r#""C:\C\VC_redist.x64.exe"  /uninstall"#,
