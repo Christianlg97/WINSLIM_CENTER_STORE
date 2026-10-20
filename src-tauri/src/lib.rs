@@ -2831,6 +2831,24 @@ fn update_check_result_is_reusable(request: u64, source_generation: u64) -> bool
     )
 }
 
+/// Whether a GitHub release is an update over what is installed.
+///
+/// Tags without numbers ("nightly") can only be told apart by spelling, which is
+/// right for a copy the store installed itself: it records the tag. An installed
+/// version that is itself unknown — the catalog's "latest", or nothing — is a
+/// different case. No tag is newer than it and every tag differs from it, so the
+/// store offered SCSKiller 1.3.0 over 1.3.0, and would have gone on offering it
+/// after installing, since that changes nothing the store can read.
+fn github_release_is_update(tag: &str, installed: &str) -> bool {
+    let installed = installed.trim();
+    if installed.is_empty()
+        || matches!(installed.to_ascii_lowercase().as_str(), "latest" | "lastest")
+    {
+        return false;
+    }
+    detect::is_newer(tag, installed).unwrap_or(tag != installed)
+}
+
 async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatus>, String> {
     let started = std::time::Instant::now();
     logger::info("updates", "Comprobando actualizaciones.");
@@ -2957,7 +2975,7 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
         // for everything else, including the GitHub entries whose lookup failed
         // because the public API quota ran out.
         if let Some(tag) = github_results.get(id) {
-            st.update_available = detect::is_newer(tag, &st.version).unwrap_or(*tag != st.version);
+            st.update_available = github_release_is_update(tag, &st.version);
             st.latest_version = Some(tag.clone());
             continue;
         }
@@ -4302,6 +4320,18 @@ mod tests {
         assert_eq!(detect::is_newer("1.6.1", "1.6.0"), Some(true));
         assert_eq!(detect::is_newer("1.6.0", "1.6.0"), Some(false));
         assert_eq!(detect::is_newer("1.5.9", "1.6.0"), Some(false));
+    }
+
+    #[test]
+    fn an_unknown_installed_version_is_never_behind_a_release() {
+        // Detected from the Start Menu alone, SCSKiller had no version and the
+        // store offered 1.3.0 over the 1.3.0 already installed.
+        assert!(!github_release_is_update("v1.3.0", "latest"));
+        assert!(!github_release_is_update("v1.3.0", ""));
+        assert!(!github_release_is_update("v1.3.0", "1.3.0"));
+        assert!(github_release_is_update("v1.3.1", "1.3.0"));
+        // Tags without numbers are still told apart by spelling.
+        assert!(github_release_is_update("nightly", "stable"));
     }
 
     #[test]

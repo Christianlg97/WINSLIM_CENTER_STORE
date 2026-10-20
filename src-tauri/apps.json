@@ -4417,6 +4417,7 @@
     "installer_args": [
       "--silent"
     ],
+    "velopack_id": "SCSKiller.App",
     "launch_executable": "SCSKiller.exe",
     "icon_url": "assets/catalog/scskiller.png",
     "icon_background": "#0b1219",

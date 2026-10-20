@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Serialize)]
@@ -825,6 +825,89 @@ pub fn detect_exclude_names_from_entry(entry: &serde_json::Value) -> Vec<String>
         .collect()
 }
 
+/// What Velopack itself records about an installation it made.
+///
+/// Velopack installs per user into `%LOCALAPPDATA%\<id>`, keeps the exact
+/// version it put there in `current\sq.version` and removes it with the
+/// `Update.exe` beside that folder. Its setup is also meant to register an
+/// uninstall entry, but SCSKiller 1.3.0's was seen to stop right after creating
+/// its shortcuts and never write one. The Start Menu was then the only trace
+/// left: no version, so the store offered 1.3.0 over 1.3.0, and no uninstaller,
+/// so removing it would have deleted the folder without running SCSKiller's own
+/// cleanup of the game folders. The manifest and `Update.exe` are what Velopack
+/// relies on itself, so they answer both questions whatever the registry says.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VelopackInstall {
+    root: PathBuf,
+    version: String,
+    main_exe: Option<String>,
+}
+
+/// The installation the entry names with `velopack_id`, if it is there.
+fn velopack_install(entry: &Value) -> Option<VelopackInstall> {
+    let id = entry.get("velopack_id")?.as_str()?.trim();
+    // An identifier, never a path: the catalog is editable.
+    if id.is_empty() || id.contains(['\\', '/', ':']) || id.starts_with('.') {
+        return None;
+    }
+    velopack_install_at(&dirs::data_local_dir()?.join(id))
+}
+
+fn velopack_install_at(root: &Path) -> Option<VelopackInstall> {
+    // Uninstalling leaves `Update.exe` behind for a few seconds while it
+    // deletes itself, but `current` goes first: no manifest, no installation.
+    let manifest = std::fs::read_to_string(root.join("current").join("sq.version")).ok()?;
+    if !root.join("Update.exe").is_file() {
+        return None;
+    }
+    Some(VelopackInstall {
+        root: root.to_path_buf(),
+        version: nuspec_value(&manifest, "version")?,
+        main_exe: nuspec_value(&manifest, "mainExe"),
+    })
+}
+
+/// The text of one element of the NuGet manifest Velopack writes.
+fn nuspec_value(manifest: &str, element: &str) -> Option<String> {
+    let open = format!("<{element}>");
+    let start = manifest.find(&open)? + open.len();
+    let end = start + manifest[start..].find(&format!("</{element}>"))?;
+    Some(manifest[start..end].trim().to_string()).filter(|value| !value.is_empty())
+}
+
+fn velopack_status(entry: &Value, catalog_version: &str, install: VelopackInstall) -> AppStatus {
+    // Velopack's own shortcuts open `current\<mainExe>`, so the store does too.
+    let executable = install
+        .main_exe
+        .as_deref()
+        .or_else(|| entry.get("launch_executable").and_then(Value::as_str))
+        .map(|name| install.root.join("current").join(name))
+        .filter(|path| path.is_file());
+    let update = catalog_update_available(catalog_version, &install.version);
+    let root = install.root.to_string_lossy().to_string();
+    AppStatus {
+        installed: true,
+        version: install.version,
+        origin: "system".into(),
+        install_path: executable
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .unwrap_or_else(|| root.clone()),
+        update_available: update,
+        pending_restart: false,
+        latest_version: update.then(|| catalog_version.to_string()),
+        can_uninstall: true,
+        can_launch: executable.is_some(),
+        // The same command Velopack registers as `QuietUninstallString`.
+        uninstall_command: Some(format!(
+            "\"{}\" --uninstall --silent",
+            install.root.join("Update.exe").display()
+        )),
+        uninstall_command_full: None,
+        install_location: Some(root),
+    }
+}
+
 pub fn build_statuses(
     catalog: &[serde_json::Value],
     center_installed: &HashMap<String, crate::store::InstalledInfo>,
@@ -938,6 +1021,13 @@ pub fn build_statuses(
                 );
                 continue;
             }
+        }
+
+        // Ahead of the registry: Velopack's manifest is the version that is on
+        // disk, and its uninstall entry may be missing altogether.
+        if let Some(install) = velopack_install(entry) {
+            map.insert(id.to_string(), velopack_status(entry, catalog_version, install));
+            continue;
         }
 
         if let Some(sys) = match_system_app(name, &detect_names, &exclude_names, system) {
@@ -1414,6 +1504,64 @@ mod tests {
         assert_eq!(is_newer("1.0", "1.0.0"), Some(false));
         assert_eq!(is_newer("24.08", "24.07"), Some(true));
         assert_eq!(is_newer("latest", "1.0"), None);
+    }
+
+    #[test]
+    fn a_velopack_install_answers_from_its_own_manifest() {
+        let root = std::env::temp_dir().join(format!("winslim-velopack-{}", std::process::id()));
+        let current = root.join("current");
+        std::fs::create_dir_all(&current).unwrap();
+        assert_eq!(velopack_install_at(&root), None);
+        std::fs::write(
+            current.join("sq.version"),
+            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<package><metadata>\n<id>SCSKiller.App</id>\n\
+             <version>1.3.0</version>\n<mainExe>SCSKiller.exe</mainExe>\n</metadata></package>",
+        )
+        .unwrap();
+        // A manifest without the updater beside it is not something Velopack
+        // could update or remove.
+        assert_eq!(velopack_install_at(&root), None);
+        std::fs::write(root.join("Update.exe"), b"").unwrap();
+        std::fs::write(current.join("SCSKiller.exe"), b"").unwrap();
+
+        let install = velopack_install_at(&root).expect("instalación Velopack completa");
+        assert_eq!(install.version, "1.3.0");
+        let status = velopack_status(&serde_json::json!({ "id": "scskiller" }), "latest", install);
+        assert!(status.installed && status.can_uninstall && status.can_launch);
+        assert_eq!(status.version, "1.3.0");
+        assert!(!status.update_available);
+        assert_eq!(
+            status.install_path,
+            current.join("SCSKiller.exe").to_string_lossy()
+        );
+        assert_eq!(
+            status.uninstall_command,
+            Some(format!(
+                "\"{}\" --uninstall --silent",
+                root.join("Update.exe").display()
+            ))
+        );
+        assert_eq!(
+            status.install_location.as_deref(),
+            Some(root.to_string_lossy().as_ref())
+        );
+
+        // Uninstalling removes `current` first and leaves Update.exe deleting
+        // itself for a few seconds: that is no longer an installation.
+        std::fs::remove_dir_all(&current).unwrap();
+        assert_eq!(velopack_install_at(&root), None);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_velopack_id_is_never_read_as_a_path() {
+        for id in ["", " ", r"..\Windows", r"C:\Windows", "a/b", ".hidden"] {
+            assert_eq!(
+                velopack_install(&serde_json::json!({ "velopack_id": id })),
+                None,
+                "{id}"
+            );
+        }
     }
 
     #[test]
