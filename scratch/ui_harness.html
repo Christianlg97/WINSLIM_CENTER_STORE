@@ -180,15 +180,43 @@
                   msStoreTestParams.has("running-packaged"),
               };
             }
+            // Como el backend: cuatro descargas a la vez y las demás esperando
+            // turno en el orden en que se pidieron. Así una cola de varias
+            // aplicaciones se ve avanzar igual que en la tienda de verdad.
             if (command === "install_app") {
               const appId = args.appEntry?.id;
-              mockTasks = [{ app_id: appId, name: args.appEntry?.name || appId, progress: 100, state: "installing", status: "Instalador abierto", can_pause: false, can_resume: false, can_cancel: true }];
+              const name = args.appEntry?.name || appId;
+              mockTasks = mockTasks
+                .filter((task) => task.app_id !== appId)
+                .concat({ app_id: appId, name, progress: 0, state: "queued", status: "En cola", can_pause: false, can_resume: false, can_cancel: true });
               emitTasks();
-              installTimers.set(appId, setTimeout(() => {
-                mockTasks = [];
+              const tick = setInterval(() => {
+                const index = mockTasks.findIndex((task) => task.app_id === appId);
+                if (index < 0) {
+                  clearInterval(tick);
+                  return;
+                }
+                if (index >= 4 || mockTasks[index].state === "cancelling") return;
+                const task = mockTasks[index];
+                const progress = Math.min(100, task.progress + 9 + Math.round(Math.random() * 9));
+                const downloaded = progress >= 100;
+                mockTasks[index] = {
+                  ...task,
+                  progress,
+                  state: downloaded ? "installing" : "downloading",
+                  status: downloaded ? "Instalando en segundo plano…" : `Descargando · ${progress}%`,
+                };
                 emitTasks();
-                listeners["install-finished"]?.({ payload: { ok: true, app_id: appId, changed: true, is_update: false } });
-              }, 5000));
+                if (!downloaded) return;
+                clearInterval(tick);
+                installTimers.set(appId, setTimeout(() => {
+                  installTimers.delete(appId);
+                  mockTasks = mockTasks.filter((entry) => entry.app_id !== appId);
+                  emitTasks();
+                  listeners["install-finished"]?.({ payload: { ok: true, app_id: appId, changed: true, is_update: !!args.forceUpdate } });
+                }, 900));
+              }, 350);
+              installTimers.set(appId, tick);
               return null;
             }
             if (command === "cancel_download") {
@@ -200,7 +228,7 @@
                 : task);
               emitTasks();
               setTimeout(() => {
-                mockTasks = [];
+                mockTasks = mockTasks.filter((task) => task.app_id !== appId);
                 emitTasks();
                 listeners["install-finished"]?.({ payload: { ok: false, app_id: appId, changed: false, is_update: false, cancelled: true, cancellation_kind: "installation", error: "Instalación cancelada por el usuario." } });
               }, 40);

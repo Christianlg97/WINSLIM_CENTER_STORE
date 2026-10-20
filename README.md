@@ -67,6 +67,7 @@ Escribir en la barra superior pregunta a la vez al **catálogo de WinSlimCenter*
 
 ### ⚡ Automatización y Ejecución Inteligente
 - **Actualizar Todo en Paralelo**: Un único botón en *Actualizaciones* lanza a la vez todo lo que tiene versión nueva —primero el catálogo de WinSlimCenter y después la Microsoft Store—, con un diálogo que sigue cada aplicación por separado: su estado, su barra y su línea de progreso, más el total y el recuento de la tanda. Las aplicaciones abiertas se cierran antes para que Windows aplique el paquete en el momento y no la próxima vez que se salga de ellas.
+- **Instalar en Cola**: Marca las aplicaciones que quieras —con el círculo de la esquina de cada tarjeta, con Ctrl+clic o desde su ficha—, en cualquier sección. Una barra al pie de la lista reúne lo elegido; al pulsar *Instalar* se repasa la cola numerada y se instala con el mismo diálogo de *Actualizar todo*: descargas en paralelo, instalaciones una detrás de otra y en el orden en que se eligieron. Escape vacía la selección.
 - **Auto-Launch Post-Instalación**: Al completar con éxito la instalación de una aplicación WinGet, WinSlimCenter inicia automáticamente el programa.
 - **Desinstalación Nativa Ultrarrápida**: Escaneo del registro de Windows (`HKLM`/`HKCU` `Uninstall`) y desinstalación directa sin diálogos redundantes.
 - **Caché en Memoria Thread-Safe**: Verificación de paquetes WinGet optimizada mediante caché temporal de 3 segundos para evitar bloqueos del proceso.

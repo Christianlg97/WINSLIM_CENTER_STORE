@@ -217,6 +217,10 @@ const state = {
   // sitio sin traducir nada. `null` cuando no hay ninguna en marcha ni resumen
   // sin leer.
   bulkUpdate: null,
+  // Las fichas del catálogo marcadas para instalarlas juntas, por id. Un `Set`
+  // conserva el orden en que se eligieron, que es el orden en que entran en la
+  // cola. Dura lo que la sesión: elegir es preparar una tanda, no un ajuste.
+  selection: new Set(),
   // La Microsoft Store vive aparte del catálogo: su búsqueda, sus filtros y
   // sus resultados no sobreviven a un reinicio y no tienen por qué.
   msstore: {
@@ -778,7 +782,11 @@ function updateAllButtonHtml() {
         <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
         <path d="M4 20h16" />
       </svg>
-      <span>${running ? "Actualizando todo…" : `Actualizar todo (${pending})`}</span>
+      <span>${
+        running
+          ? state.bulkUpdate.mode === "install" ? "Instalación en cola…" : "Actualizando todo…"
+          : `Actualizar todo (${pending})`
+      }</span>
     </button>`;
 }
 
@@ -1123,9 +1131,13 @@ function cardHtml(app, index, prioritizeIcon = false) {
   const accent = pickAccent(app, index);
   const avatarBg = avatarBackground(app, accent);
   const letter = (app.name || app.id || "A")[0].toUpperCase();
+  const selectable = isQueueable(app);
+  const selected = selectable && state.selection.has(app.id);
   return `
-    <article class="app-card" data-app-id="${escapeHtml(app.id)}" tabindex="0"
+    <article class="app-card${selected ? " is-selected" : ""}" data-app-id="${escapeHtml(app.id)}" tabindex="0"
+      ${selectable ? "data-selectable" : ""}
       aria-label="Ver detalles de ${escapeHtml(app.name)}" style="--card-accent:${accent}">
+      ${selectable ? cardSelectHtml(app, selected) : ""}
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(app, letter, prioritizeIcon && index < 8)}</div>
         <div>
@@ -1147,6 +1159,298 @@ function sectionHtml(title, apps, { prioritizeIcons = false } = {}) {
       </div>
       <div class="grid">${apps.map((a, i) => cardHtml(a, i, prioritizeIcons)).join("")}</div>
     </section>`;
+}
+
+// ---------------------------------------------------------------------------
+// Selección para instalar en cola
+// ---------------------------------------------------------------------------
+//
+// Se van marcando fichas del catálogo —en cualquier sección, con el círculo de
+// su esquina, con Ctrl+clic o desde su ficha— y se instalan todas de una vez
+// con la misma tanda y el mismo diálogo que «Actualizar todo». Abajo aparece
+// una barra con lo elegido; Escape la vacía.
+
+/**
+ * Si la ficha puede entrar en la cola.
+ *
+ * Solo lo que la tienda instala por sí misma y nada más que eso: del catálogo
+ * (un resultado de WinGet o de Chocolatey no tiene tarjeta en él), sin instalar
+ * y sin nada en marcha. «Obtener» lleva a una web oficial y un componente llega
+ * dentro de otra aplicación, así que ninguno de los dos se puede pedir.
+ */
+function isQueueable(app) {
+  if (!app || derived.catalogById.get(app.id) !== app) return false;
+  if (app.source_type === "web" || app.source_type === "component") return false;
+  if (state.busy[app.id] || derived.taskByAppId.has(app.id)) return false;
+  // Una fila de la tanda que aún espera su turno no está ocupada todavía, pero
+  // ya está pedida.
+  if (isBulkUpdateRunning() && state.bulkUpdate.byKey.has(app.id)) return false;
+  return !appStatus(app.id).installed;
+}
+
+/// Saca lo que ha dejado de poder pedirse: lo que se instaló por otro camino,
+/// lo que ya está en marcha o lo que el catálogo recargado ya no trae.
+function pruneSelection() {
+  for (const id of state.selection) {
+    if (!isQueueable(findApp(id))) state.selection.delete(id);
+  }
+}
+
+function cardSelectHtml(app, selected) {
+  return `
+    <button type="button" class="card-select" data-select="${escapeHtml(app.id)}"
+      ${cardSelectAttributes(app, selected)}>
+      <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
+        stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M5 12.5l4.5 4.5L19 7.5" />
+      </svg>
+    </button>`;
+}
+
+function cardSelectAttributes(app, selected) {
+  const name = escapeHtml(app.name);
+  return selected
+    ? `aria-pressed="true" aria-label="Quitar ${name} de la cola de instalación" title="Quitar de la cola"`
+    : `aria-pressed="false" aria-label="Añadir ${name} a la cola de instalación" title="Añadir a la cola de instalación"`;
+}
+
+/**
+ * Pone una tarjeta ya dibujada al día con la selección.
+ *
+ * El botón se retoca en su sitio en vez de rehacerse: quien lo acaba de pulsar
+ * con el teclado tiene el foco en él y no tiene por qué perderlo.
+ */
+function syncCardSelection(card, app) {
+  const selectable = isQueueable(app);
+  const selected = selectable && state.selection.has(app.id);
+  card.toggleAttribute("data-selectable", selectable);
+  card.classList.toggle("is-selected", selected);
+  const toggle = card.querySelector(":scope > .card-select");
+  if (!selectable) {
+    toggle?.remove();
+    return;
+  }
+  if (!toggle) {
+    card.insertAdjacentHTML("afterbegin", cardSelectHtml(app, selected));
+    return;
+  }
+  if (toggle.getAttribute("aria-pressed") === String(selected)) return;
+  const name = app.name || app.id;
+  toggle.setAttribute("aria-pressed", String(selected));
+  toggle.setAttribute(
+    "aria-label",
+    selected ? `Quitar ${name} de la cola de instalación` : `Añadir ${name} a la cola de instalación`,
+  );
+  toggle.title = selected ? "Quitar de la cola" : "Añadir a la cola de instalación";
+}
+
+function refreshSelectionUi() {
+  pruneSelection();
+  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
+    const app = findApp(card.dataset.appId);
+    if (app) syncCardSelection(card, app);
+  });
+  renderQueueDock();
+}
+
+function toggleSelection(id) {
+  const app = findApp(id);
+  if (!isQueueable(app)) return;
+  if (state.selection.has(id)) state.selection.delete(id);
+  else state.selection.add(id);
+  refreshSelectionUi();
+}
+
+function clearSelection() {
+  if (!state.selection.size) return;
+  state.selection.clear();
+  refreshSelectionUi();
+}
+
+/// La barra vive dentro de `.main`, por encima de la lista y de la barra de
+/// estado: se crea la primera vez que hace falta y se queda.
+function ensureQueueDock() {
+  let dock = document.getElementById("queue-dock");
+  if (dock) return dock;
+  const main = document.querySelector(".main");
+  if (!main) return null;
+  dock = document.createElement("div");
+  dock.id = "queue-dock";
+  dock.className = "queue-dock";
+  dock.setAttribute("role", "region");
+  dock.setAttribute("aria-label", "Cola de instalación");
+  dock.inert = true;
+  dock.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-queue]");
+    if (button?.dataset.queue === "clear") clearSelection();
+    else if (button?.dataset.queue === "install") void installSelection();
+  });
+  main.appendChild(dock);
+  return dock;
+}
+
+/**
+ * La barra de la cola: lo elegido, cuántas son y qué hacer con ellas.
+ *
+ * Al vaciarse se queda con su último contenido mientras se va, para que la
+ * salida no sea un recuadro en blanco deslizándose hacia abajo.
+ */
+function renderQueueDock() {
+  const dock = ensureQueueDock();
+  if (!dock) return;
+  pruneSelection();
+  const apps = [...state.selection].map(findApp).filter(Boolean);
+  const count = apps.length;
+  document.getElementById("content")?.classList.toggle("selection-active", count > 0);
+  dock.classList.toggle("is-visible", count > 0);
+  dock.inert = !count;
+  if (!count) return;
+
+  const running = isBulkUpdateRunning();
+  const signature = `${apps.map((app) => app.id).join(",")}|${running}`;
+  if (dock.dataset.signature === signature) return;
+  dock.dataset.signature = signature;
+
+  // Las cuatro últimas elegidas, la más reciente a la derecha y por encima: la
+  // que se acaba de marcar se ve llegar. Lo que no cabe se cuenta delante.
+  const shown = apps.slice(-4);
+  dock.innerHTML = `
+    <div class="queue-dock-stack" aria-hidden="true">
+      ${count > shown.length ? `<span class="queue-dock-more">+${count - shown.length}</span>` : ""}
+      ${shown
+        .map((app, index) => {
+          const accent = pickAccent(app, index);
+          // A la vista desde el primer momento y como mucho cuatro: sin espera
+          // perezosa, que dejaría la letra en lugar del icono al aparecer.
+          return `<span class="card-avatar queue-dock-avatar" style="background:${avatarBackground(app, accent)}">${renderAvatar(app, (app.name || "?")[0].toUpperCase(), true)}</span>`;
+        })
+        .join("")}
+    </div>
+    <div class="queue-dock-copy">
+      <strong>${count} ${count === 1 ? "aplicación seleccionada" : "aplicaciones seleccionadas"}</strong>
+      <small>${
+        running
+          ? "Hay una tanda en marcha: podrás instalar éstas cuando termine."
+          : "Se instalarán en cola, en el orden en que las elegiste."
+      }</small>
+    </div>
+    <div class="queue-dock-actions">
+      <button type="button" class="btn ghost" data-queue="clear" title="Quitar todas de la selección (Esc)">Vaciar</button>
+      <button type="button" class="btn primary queue-dock-install" data-queue="install"
+        ${running ? 'aria-busy="true" title="Ver la tanda en marcha"' : ""}>
+        <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 3v11" />
+          <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+          <path d="M4 20h16" />
+        </svg>
+        <span>${running ? "Tanda en marcha…" : `Instalar (${count})`}</span>
+      </button>
+    </div>`;
+}
+
+/// La lista que se repasa antes de confirmar, numerada en el orden de la cola.
+function queueReviewHtml(items) {
+  return `
+    <ol class="queue-review" aria-label="Orden de instalación">
+      ${items
+        .map((item, index) => {
+          const accent = pickAccent(item.app, index);
+          const meta = [item.app.author, item.app.category].filter(Boolean).join(" · ");
+          return `
+        <li class="queue-review-item">
+          <span class="queue-review-index">${index + 1}</span>
+          <span class="card-avatar queue-review-avatar" style="background:${avatarBackground(item.app, accent)}">${renderAvatar(item.app, (item.name || "?")[0].toUpperCase(), index < 8)}</span>
+          <span class="queue-review-copy">
+            <strong>${escapeHtml(item.name)}</strong>
+            ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
+          </span>
+        </li>`;
+        })
+        .join("")}
+    </ol>`;
+}
+
+/**
+ * «Instalar» en la barra de la cola: repasa lo elegido y lo manda a la tanda.
+ *
+ * Lo que una instalación suelta preguntaría se resuelve aquí de una vez. Una
+ * aplicación publicada en varias ediciones lleva la que se eligió antes o, si
+ * nunca se eligió, la recomendada; el diálogo dice cuál, porque con Thorium
+ * equivocarse hacia arriba es un navegador que no arranca. Y si alguna dejó
+ * datos de una instalación anterior en la carpeta de la tienda, se pregunta
+ * qué hacer con ellos, igual que al actualizar todo.
+ */
+async function installSelection() {
+  if (isBulkUpdateRunning()) {
+    showBulkUpdateModal();
+    return;
+  }
+  pruneSelection();
+  const apps = [...state.selection].map(findApp).filter(Boolean);
+  if (!apps.length) {
+    renderQueueDock();
+    return;
+  }
+  const items = apps.map((app) => ({
+    key: app.id,
+    kind: "catalog",
+    appId: app.id,
+    app,
+    name: app.name,
+    from: "",
+    to: "",
+  }));
+
+  try {
+    await Promise.all(items.map(async (item) => {
+      item.portableInfo = await invoke("portable_data_info", { appId: item.appId, forUpdate: true });
+    }));
+  } catch (error) {
+    showAlertModal("No se pudieron comprobar los datos", String(error));
+    return;
+  }
+  const portables = items.filter((item) => item.portableInfo);
+  const editions = items
+    .filter((item) => item.app.variants?.options?.length)
+    .map((item) => {
+      const wanted = state.settings?.variants?.[item.appId] || item.app.variants.default;
+      const option =
+        item.app.variants.options.find((candidate) => candidate.id === wanted) ||
+        item.app.variants.options[0];
+      return `${item.name}: ${option?.name || wanted}`;
+    });
+  const count = items.length;
+
+  showConfirmModal({
+    title: `Instalar ${count} ${count === 1 ? "aplicación" : "aplicaciones"}`,
+    subtitle: "Cola de instalación",
+    message:
+      "Se instalarán en este orden. Las descargas corren en paralelo y las instalaciones " +
+      "se aplican una detrás de otra; si algún instalador abre su propio asistente, " +
+      "síguelo cuando aparezca." +
+      (editions.length
+        ? `\n\nEdición que se instalará — ${editions.join(" · ")}. Si necesitas otra, ` +
+          "instálala por separado desde su ficha."
+        : "") +
+      (portables.length
+        ? `\n\nPortables: ${portables.map((item) => item.name).join(", ")}.` +
+          portableDataMessage(portables[0].portableInfo)
+        : ""),
+    details: queueReviewHtml(items),
+    choices: portables.length ? portableDataChoices(portables[0].portableInfo) : null,
+    confirmText: `Instalar en cola (${count})`,
+    confirmVariant: "primary",
+    onConfirm: (picked) => {
+      for (const item of portables) item.portableData = picked;
+      // La selección se convierte en la tanda: lo que queda en pantalla ya no
+      // es una lista por decidir sino una instalación en marcha.
+      state.selection.clear();
+      const started = startBulkUpdate(items, "install");
+      refreshSelectionUi();
+      return started;
+    },
+  });
 }
 
 function projectHeroHtml() {
@@ -3010,6 +3314,8 @@ function renderContentNow() {
   // filtrar ni recuento de aplicaciones que dar.
   if (state.section === MSSTORE_SECTION) {
     renderMsStoreNow();
+    // Lo elegido en el catálogo sigue elegido aquí: la cola no es de una sección.
+    renderQueueDock();
     return;
   }
 
@@ -3150,6 +3456,7 @@ function renderContentNow() {
   // clientHeight immediately after replacing the DOM, which forced a complete
   // synchronous layout of every card.
   content.scrollTop = restoreTo;
+  renderQueueDock();
 }
 
 function updateVisibleAppActions(appIds) {
@@ -3161,7 +3468,10 @@ function updateVisibleAppActions(appIds) {
     const app = findApp(id);
     const actions = card.querySelector(".card-actions");
     if (app && actions) actions.innerHTML = actionButtons(app, "card");
+    // Lo que acaba de ponerse en marcha deja de poder elegirse, y al revés.
+    if (app) syncCardSelection(card, app);
   });
+  if (state.selection.size) renderQueueDock();
 }
 
 function updateVisibleAppStatuses(appIds) {
@@ -3176,7 +3486,9 @@ function updateVisibleAppStatuses(appIds) {
     const actions = card.querySelector(".card-actions");
     if (meta) meta.innerHTML = cardMetaHtml(app);
     if (actions) actions.innerHTML = actionButtons(app, "card");
+    syncCardSelection(card, app);
   });
+  if (state.selection.size) renderQueueDock();
 }
 
 let shellDelegationBound = false;
@@ -3358,6 +3670,12 @@ function bindShellDelegation() {
       return;
     }
 
+    const selectToggle = event.target.closest("[data-select]");
+    if (selectToggle) {
+      toggleSelection(selectToggle.dataset.select);
+      return;
+    }
+
     const action = event.target.closest("[data-install], [data-update], [data-uninstall], [data-launch]");
     if (action) {
       if (action.dataset.install) void installApp(action.dataset.install, false);
@@ -3368,7 +3686,15 @@ function bindShellDelegation() {
     }
 
     const card = event.target.closest(".app-card[data-app-id]");
-    if (card && !event.target.closest("button")) openAppModal(card.dataset.appId);
+    if (card && !event.target.closest("button")) {
+      // Ctrl+clic marca sin abrir la ficha: el gesto de siempre para elegir
+      // varias cosas de una lista sin perderla de vista.
+      if ((event.ctrlKey || event.metaKey) && card.hasAttribute("data-selectable")) {
+        toggleSelection(card.dataset.appId);
+      } else {
+        openAppModal(card.dataset.appId);
+      }
+    }
   });
 
   content.addEventListener("keydown", (event) => {
@@ -3450,7 +3776,13 @@ function openAppModal(id) {
 
   let actionBtnsHtml = "";
   if (!st.installed) {
-    actionBtnsHtml = `<button type="button" class="btn primary" id="modal-app-install">${app.source_type === "web" ? "Obtener" : "Instalar"}</button>`;
+    // Quien está leyendo la ficha puede querer dejarla para la cola en vez de
+    // instalarla ahora mismo.
+    const queued = state.selection.has(id);
+    const queueBtn = isQueueable(app)
+      ? `<button type="button" class="btn ghost" id="modal-app-queue">${queued ? "Quitar de la cola" : "Añadir a la cola"}</button>`
+      : "";
+    actionBtnsHtml = `${queueBtn}<button type="button" class="btn primary" id="modal-app-install">${app.source_type === "web" ? "Obtener" : "Instalar"}</button>`;
   } else {
     actionBtnsHtml = `
       ${st.update_available
@@ -3484,6 +3816,9 @@ function openAppModal(id) {
 
   const btnInst = document.getElementById("modal-app-install");
   if (btnInst) btnInst.onclick = () => { closeModal(); installApp(id, false); };
+
+  const btnQueue = document.getElementById("modal-app-queue");
+  if (btnQueue) btnQueue.onclick = () => { closeModal(); toggleSelection(id); };
 
   const btnLaunch = document.getElementById("modal-app-launch");
   if (btnLaunch) btnLaunch.onclick = () => { closeModal(); launchApp(id); };
@@ -4042,9 +4377,19 @@ document.addEventListener("keydown", (event) => {
     }
     return;
   }
-  if (event.key === "Escape" && !modalLocked && !document.getElementById("modal-backdrop").classList.contains("hidden")) {
+  const modalOpen = !document.getElementById("modal-backdrop").classList.contains("hidden");
+  if (event.key === "Escape" && !modalLocked && modalOpen) {
     event.preventDefault();
     closeModal();
+  } else if (
+    event.key === "Escape" && !modalOpen && state.selection.size &&
+    !event.target.closest?.("input, textarea")
+  ) {
+    // Sin diálogo abierto, Escape deshace la selección: es lo que se espera de
+    // él delante de una lista con cosas marcadas. En el buscador no, que allí
+    // se está escribiendo.
+    event.preventDefault();
+    clearSelection();
   }
 });
 
@@ -4260,6 +4605,21 @@ const BULK_STATE_LABELS = {
   cancelled: "Cancelada",
 };
 
+/// La etiqueta de un estado según lo que haga la tanda: lo que termina bien al
+/// actualizar queda «Actualizada»; en la cola de instalación, «Instalada».
+function bulkStateLabel(key) {
+  if (state.bulkUpdate?.mode === "install") {
+    if (key === "done") return "Instalada";
+    if (key === "current") return "Ya instalada";
+  }
+  return BULK_STATE_LABELS[key] || key;
+}
+
+/// El verbo de la tanda en marcha, para los títulos.
+function bulkVerb() {
+  return state.bulkUpdate?.mode === "install" ? "Instalando" : "Actualizando";
+}
+
 function isBulkItemFinal(item) {
   return BULK_FINAL_STATES.has(item?.state);
 }
@@ -4373,9 +4733,15 @@ async function updateEverything() {
  * Cada `invoke` vuelve en cuanto el backend ha apuntado la tarea, así que
  * esperarlas en fila no serializa el trabajo: sólo fija el orden en que entran
  * en la cola de descargas, que es justo lo que se quiere.
+ *
+ * `mode` es «update» para «Actualizar todo» e «install» para la cola de lo
+ * seleccionado: la maquinaria es la misma, cambia lo que se le pide al backend
+ * y cómo se cuenta.
  */
-async function startBulkUpdate(items) {
+async function startBulkUpdate(items, mode = "update") {
+  const installing = mode === "install";
   const bulk = {
+    mode,
     items: items.map((item) => ({
       ...item,
       state: "pending",
@@ -4401,6 +4767,7 @@ async function startBulkUpdate(items) {
   showBulkUpdateModal();
   renderContent();
   clientLog("info", "bulk-update", {
+    mode,
     total: bulk.items.length,
     catalog: bulk.items.filter((item) => item.kind === "catalog").length,
     msstore: bulk.items.filter((item) => item.kind === "msstore").length,
@@ -4414,16 +4781,17 @@ async function startBulkUpdate(items) {
     try {
       item.dispatching = true;
       if (item.kind === "catalog") {
-        state.busy[item.appId] = "updating";
+        state.busy[item.appId] = installing ? "installing" : "updating";
         state.finished.delete(item.appId);
         await invoke("install_app", {
           appEntry: item.app,
-          forceUpdate: true,
+          forceUpdate: !installing,
           // La edición elegida en su día se respeta: actualizar es reinstalar
           // la misma, nunca cambiar de programa por el camino.
           variant: state.settings?.variants?.[item.appId] || item.app.variants?.default || null,
           portableData: item.portableData || null,
-          closeRunning: true,
+          // Lo que aún no está instalado no puede estar abierto.
+          closeRunning: !installing,
         });
       } else {
         state.msstore.installing[item.productId] = "update";
@@ -4489,10 +4857,15 @@ function settleBulkUpdate() {
 
   const done = bulk.items.filter((item) => item.state === "done").length;
   const failed = bulk.items.filter((item) => item.state === "error").length;
+  const installing = bulk.mode === "install";
   setTransientStatus(
     failed
-      ? `Actualización múltiple terminada · ${done} al día, ${failed} con error`
-      : `${done} ${done === 1 ? "aplicación actualizada" : "aplicaciones actualizadas"}`,
+      ? installing
+        ? `Instalación en cola terminada · ${done} ${done === 1 ? "instalada" : "instaladas"}, ${failed} con error`
+        : `Actualización múltiple terminada · ${done} al día, ${failed} con error`
+      : installing
+        ? `${done} ${done === 1 ? "aplicación instalada" : "aplicaciones instaladas"}`
+        : `${done} ${done === 1 ? "aplicación actualizada" : "aplicaciones actualizadas"}`,
     failed ? "var(--red)" : "var(--green)",
     7000,
   );
@@ -4561,7 +4934,7 @@ function showBulkUpdateModal() {
           <small>WinSlimCenter</small>
           <!-- Sin id propio: openModal le pone el suyo al primer h2 para
                nombrar el diálogo, y se lo pisaría. -->
-          <h2 data-role="title">Actualizando ${bulk.items.length} ${
+          <h2 data-role="title">${bulkVerb()} ${bulk.items.length} ${
             bulk.items.length === 1 ? "aplicación" : "aplicaciones"
           }</h2>
         </div>
@@ -4632,7 +5005,7 @@ function updateBulkUpdateModal() {
     if (row.dataset.state !== nextState) {
       row.dataset.state = nextState;
       const state_ = row.querySelector('[data-role="state"]');
-      if (state_) state_.textContent = BULK_STATE_LABELS[nextState] || nextState;
+      if (state_) state_.textContent = bulkStateLabel(nextState);
     }
     const value = Math.max(0, Math.min(100, Math.round(Number(item.progress) || 0)));
     if (row.dataset.progress !== String(value)) {
@@ -4669,20 +5042,21 @@ function updateBulkUpdateModal() {
   const tally = document.getElementById("bulk-operation-tally");
   if (tally) tally.textContent = `${settled.length} / ${total}`;
 
+  const installing = bulk.mode === "install";
   const title = list.querySelector('h2[data-role="title"]');
   if (title) {
     title.textContent = bulk.finished
       ? failed || cancelled
-        ? "Actualización múltiple terminada"
-        : "Todo actualizado"
-      : `Actualizando ${total} ${total === 1 ? "aplicación" : "aplicaciones"}`;
+        ? installing ? "Instalación en cola terminada" : "Actualización múltiple terminada"
+        : installing ? "Todo instalado" : "Todo actualizado"
+      : `${bulkVerb()} ${total} ${total === 1 ? "aplicación" : "aplicaciones"}`;
   }
 
   const lead = document.getElementById("bulk-operation-lead");
   if (lead) {
     if (bulk.finished) {
       lead.textContent = [
-        `${done} al día`,
+        installing ? `${done} ${done === 1 ? "instalada" : "instaladas"}` : `${done} al día`,
         failed ? `${failed} con error` : "",
         cancelled ? `${cancelled} ${cancelled === 1 ? "cancelada" : "canceladas"}` : "",
       ]
@@ -6103,6 +6477,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // que le pasó se cuenta en su fila, y el recuento de lo instalado se pone
     // al día una sola vez cuando terminan todas, no una vez por cada una.
     if (state.bulkUpdate?.byKey.has(app_id)) {
+      const installing = state.bulkUpdate.mode === "install";
       finishBulkItem(
         app_id,
         ok ? (changed || pending_restart ? "done" : "current") : cancelled ? "cancelled" : "error",
@@ -6110,8 +6485,8 @@ window.addEventListener("DOMContentLoaded", async () => {
           ? pending_restart
             ? "Descargada e instalada · ciérrala y vuelve a abrirla para aplicarla"
             : changed
-              ? "Actualizada correctamente"
-              : "Ya estaba en su última versión"
+              ? installing ? "Instalada correctamente" : "Actualizada correctamente"
+              : installing ? "Ya estaba instalada" : "Ya estaba en su última versión"
           : cancelled
             ? "Cancelada"
             : String(error || "Error desconocido"),

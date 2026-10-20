@@ -86,6 +86,55 @@ async function updaterFailure() {
   assert.equal(vm.runInContext('storeUpdateRunning', ctx), false);
 }
 
+async function queuedInstall() {
+  const requests = [];
+  const ctx = vm.createContext({
+    state: { busy: {}, finished: new Set(), settings: { variants: { thorium: 'sse3' } }, msstore: { installing: {}, updateFamilyByProduct: {} } },
+    BULK_STATE_LABELS: {}, Date, Map, Set,
+    hideShellBusy() {}, showBulkUpdateModal() {}, renderContent() {}, clientLog() {},
+    updateBulkUpdateModal() {}, updateVisibleAppActions() {}, settleBulkUpdate() {},
+    isBulkItemFinal: i => ['done', 'current', 'error', 'cancelled'].includes(i.state),
+    invoke: async (name, args) => { requests.push({ name, args }); },
+    invokeDownloadAction: async () => {},
+  });
+  load(ctx, ['startBulkUpdate']);
+  await ctx.startBulkUpdate([
+    { key: 'steam', appId: 'steam', name: 'Steam', kind: 'catalog', app: { id: 'steam' } },
+    { key: 'thorium', appId: 'thorium', name: 'Thorium', kind: 'catalog', app: { id: 'thorium', variants: { default: 'avx2' } } },
+  ], 'install');
+  assert.equal(ctx.state.bulkUpdate.mode, 'install');
+  assert.deepEqual(requests.map(r => r.args.appEntry.id), ['steam', 'thorium'], 'the queue keeps the order chosen');
+  for (const { args } of requests) {
+    assert.equal(args.forceUpdate, false, 'a queued install is not an update');
+    assert.equal(args.closeRunning, false, 'nothing uninstalled can be running');
+  }
+  assert.equal(requests[1].args.variant, 'sse3', 'the remembered build is installed');
+  assert.equal(ctx.state.busy.steam, 'installing');
+}
+
+function queueEligibility() {
+  const catalog = [
+    { id: 'steam', source_type: 'wget' },
+    { id: 'epic', source_type: 'wget' },
+    { id: 'office', source_type: 'web' },
+    { id: 'word', source_type: 'component' },
+    { id: 'installed', source_type: 'winget' },
+    { id: 'queued', source_type: 'wget' },
+  ];
+  const ctx = vm.createContext({
+    Map, Set,
+    state: {
+      busy: { epic: 'installing' },
+      statuses: { installed: { installed: true } },
+      bulkUpdate: { finished: false, byKey: new Map([['queued', {}]]) },
+    },
+    derived: { catalogById: new Map(catalog.map(app => [app.id, app])), taskByAppId: new Map() },
+  });
+  load(ctx, ['isQueueable', 'isBulkUpdateRunning', 'appStatus']);
+  assert.deepEqual(catalog.filter(app => ctx.isQueueable(app)).map(app => app.id), ['steam']);
+  assert.equal(ctx.isQueueable({ id: 'winget-demo', source_type: 'winget' }), false, 'repository results have no catalog card');
+}
+
 function restoredRepositories() {
   const external = { id: 'winget-demo', name: 'Demo', winget_id: 'Vendor.Demo' };
   const ctx = vm.createContext({
@@ -109,5 +158,7 @@ function restoredRepositories() {
   await portableUpdate('delete', true);
   await updaterFailure();
   restoredRepositories();
-  console.log('Review regressions: cancellation, portable choices, repository restore and self-update errors passed.');
+  await queuedInstall();
+  queueEligibility();
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and install queue passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
