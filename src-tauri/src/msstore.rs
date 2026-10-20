@@ -651,7 +651,14 @@ fn client() -> Result<&'static reqwest::Client, String> {
                 .user_agent(MICROSOFT_USER_AGENT)
                 .add_root_certificate(microsoft_update_root()?)
                 .connect_timeout(Duration::from_secs(10))
-                .pool_idle_timeout(Duration::from_secs(90))
+                // Una conexión que alguien cerró por el camino sin avisar no se
+                // reutiliza: se descubre con un ping y se descarta antes de
+                // mandarle la siguiente consulta, que se quedaría esperando.
+                .pool_idle_timeout(Duration::from_secs(30))
+                .tcp_keepalive(Duration::from_secs(15))
+                .http2_keep_alive_interval(Duration::from_secs(10))
+                .http2_keep_alive_timeout(Duration::from_secs(5))
+                .http2_keep_alive_while_idle(true)
                 .build()
                 .map_err(|error| error.to_string())
         })
@@ -678,18 +685,59 @@ fn describe(error: &dyn std::error::Error) -> String {
     text
 }
 
-async fn get_json(url: &str, what: &str) -> Result<Value, String> {
-    let request = client()?.get(url).header("accept", "application/json").send();
-    let response = tokio::time::timeout(API_TIMEOUT, request)
-        .await
-        .map_err(|_| format!("La Microsoft Store no contestó a tiempo al {what}."))?
-        .map_err(|error| format!("No se pudo {what}: {}", describe(&error)))?;
+/// Una consulta tarda de más a partir de aquí, y el registro lo dice.
+const SLOW_REQUEST: Duration = Duration::from_secs(4);
 
-    let status = response.status();
-    let body = response
-        .text()
-        .await
-        .map_err(|error| format!("Respuesta ilegible al {what}: {error}"))?;
+/// Una consulta a Microsoft, de principio a fin: cabeceras y cuerpo.
+///
+/// El plazo cubría sólo la llegada de las cabeceras. Una respuesta que se
+/// quedaba a medias —una conexión reutilizada que alguien cortó por el camino—
+/// tenía a la comprobación de actualizaciones esperando hasta minuto y medio
+/// sin un error que contar ni una línea en el registro. Ahora cada intento
+/// tiene la mitad del plazo para terminar entero y, si se cuelga o pierde la
+/// conexión, se repite una vez: el segundo abre otra y suele contestar en
+/// milisegundos. Todo lo que pasa por aquí son consultas, nunca cambios, así
+/// que repetirlas no tiene consecuencias.
+async fn exchange(
+    service: &str,
+    what: &str,
+    request: impl Fn() -> Result<reqwest::RequestBuilder, String>,
+) -> Result<(reqwest::StatusCode, String), String> {
+    const ATTEMPTS: u32 = 2;
+    let mut failure = String::new();
+    for attempt in 1..=ATTEMPTS {
+        let started = Instant::now();
+        let builder = request()?;
+        let outcome = tokio::time::timeout(API_TIMEOUT / ATTEMPTS, async {
+            let response = builder.send().await?;
+            let status = response.status();
+            Ok::<_, reqwest::Error>((status, response.text().await?))
+        })
+        .await;
+        let elapsed = started.elapsed();
+        if elapsed >= SLOW_REQUEST {
+            crate::logger::warn(
+                "msstore",
+                format!(
+                    "Consulta lenta al {what}: intento {attempt}, {} ms",
+                    elapsed.as_millis()
+                ),
+            );
+        }
+        match outcome {
+            Ok(Ok(answer)) => return Ok(answer),
+            Ok(Err(error)) => failure = format!("No se pudo {what}: {}", describe(&error)),
+            Err(_) => failure = format!("{service} no contestó a tiempo al {what}."),
+        }
+    }
+    Err(failure)
+}
+
+async fn get_json(url: &str, what: &str) -> Result<Value, String> {
+    let (status, body) = exchange("La Microsoft Store", what, || {
+        Ok(client()?.get(url).header("accept", "application/json"))
+    })
+    .await?;
     if !status.is_success() {
         return Err(format!(
             "La Microsoft Store respondió {} al {what}.",
@@ -700,22 +748,14 @@ async fn get_json(url: &str, what: &str) -> Result<Value, String> {
 }
 
 async fn post_soap(url: &str, body: String, what: &str) -> Result<String, String> {
-    let request = client()?
-        .post(url)
-        .header("accept", "*/*")
-        .header("content-type", "application/soap+xml")
-        .body(body)
-        .send();
-    let response = tokio::time::timeout(API_TIMEOUT, request)
-        .await
-        .map_err(|_| format!("El servicio de entrega no contestó a tiempo al {what}."))?
-        .map_err(|error| format!("No se pudo {what}: {}", describe(&error)))?;
-
-    let status = response.status();
-    let text = response
-        .text()
-        .await
-        .map_err(|error| format!("Respuesta ilegible al {what}: {error}"))?;
+    let (status, text) = exchange("El servicio de entrega", what, || {
+        Ok(client()?
+            .post(url)
+            .header("accept", "*/*")
+            .header("content-type", "application/soap+xml")
+            .body(body.clone()))
+    })
+    .await?;
     if !status.is_success() {
         return Err(format!(
             "El servicio de entrega respondió {} al {what}.",
@@ -1138,8 +1178,29 @@ async fn cookie() -> Result<String, String> {
     Ok(encrypted)
 }
 
+/// Las categorías ya conocidas, por producto. Un producto no cambia de categoría,
+/// y sin esto cada comprobación de actualizaciones volvía a preguntarla para
+/// cada aplicación instalada en cuanto caducaba la lista de paquetes.
+static CATEGORIES: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+
 /// La categoría de Windows Update que corresponde a un producto de la tienda.
 async fn category_of(product_id: &str) -> Result<String, String> {
+    if let Some(category) = CATEGORIES
+        .lock()
+        .as_ref()
+        .and_then(|known| known.get(product_id).cloned())
+    {
+        return Ok(category);
+    }
+    let category = fetch_category(product_id).await?;
+    CATEGORIES
+        .lock()
+        .get_or_insert_with(HashMap::new)
+        .insert(product_id.to_string(), category.clone());
+    Ok(category)
+}
+
+async fn fetch_category(product_id: &str) -> Result<String, String> {
     let response = get_json(
         &category_url(product_id),
         "identificar el paquete del producto",
@@ -2307,6 +2368,10 @@ fn start_menu_names() -> HashMap<String, (String, String)> {
 #[cfg(windows)]
 fn scan_installed_apps() -> Vec<InstalledApp> {
     const SCAN_TIMEOUT: Duration = Duration::from_secs(45);
+    // Los nombres del menú Inicio salen de otro PowerShell que no depende de
+    // éste. Pedidos a la vez cuestan lo que el más lento, no la suma de los dos,
+    // y el arranque los esperaba uno detrás de otro.
+    let names_task = std::thread::spawn(start_menu_names);
     // `Version` es un objeto de .NET: sin convertirlo a texto, `ConvertTo-Json`
     // devuelve sus cuatro números por separado y aquí llegaría vacío.
     let script = "Get-AppxPackage -PackageTypeFilter Main,Bundle | Where-Object { $_.SignatureKind -eq 'Store' -and \
@@ -2356,7 +2421,7 @@ ConvertTo-Json -Compress";
         Value::Array(items) => items,
         other => vec![other],
     };
-    let names = start_menu_names();
+    let names = names_task.join().unwrap_or_default();
 
     let rows = rows
         .into_iter()
@@ -2711,10 +2776,25 @@ pub struct UpdateReport {
 /// Cada aplicación cuesta dos viajes al servicio de entrega, así que van de
 /// cuatro en cuatro: en serie una biblioteca corriente tardaría medio minuto, y
 /// todas a la vez es más de lo que ese servicio agradece.
-pub async fn scan_updates(families: Vec<String>, ring: &str, arch: &str) -> Vec<UpdateReport> {
+///
+/// `on_progress` recibe cuántas van y cuántas son, para que la interfaz pueda
+/// decir «7 de 17» en vez de un «consultando» sin final a la vista.
+pub async fn scan_updates(
+    families: Vec<String>,
+    ring: &str,
+    arch: &str,
+    on_progress: impl Fn(usize, usize) + Send + Sync,
+) -> Vec<UpdateReport> {
     use futures_util::StreamExt;
 
-    let installed = installed_apps();
+    // Lo instalado puede costar un PowerShell si su caché ha caducado: fuera
+    // de los hilos que atienden las consultas de red.
+    let installed = tokio::task::spawn_blocking(installed_apps)
+        .await
+        .unwrap_or_default();
+    let total = families.len();
+    let mut done = 0;
+    on_progress(done, total);
     let ring = normalize_ring(ring).to_string();
     let arch = arch.to_string();
 
@@ -2776,6 +2856,10 @@ pub async fn scan_updates(families: Vec<String>, ring: &str, arch: &str) -> Vec<
         }
     }))
     .buffer_unordered(4)
+    .inspect(|_| {
+        done += 1;
+        on_progress(done, total);
+    })
     .collect()
     .await
 }

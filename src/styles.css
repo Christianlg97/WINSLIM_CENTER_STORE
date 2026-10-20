@@ -297,45 +297,68 @@ textarea {
   background: var(--bg-sidebar);
   border-right: 1px solid var(--border);
   overflow: auto;
-  padding: 18px 0 16px;
+  padding: 16px 0;
 }
 
-.sb-head {
+/* Una sola barra de desplazamiento para toda la tienda —menú, catálogo,
+   ventanas, notas de versión—: una píldora en los grises de la interfaz sobre un
+   carril invisible, que se aclara al pasar por encima y toma el acento al
+   arrastrarla. La de serie, con sus flechas, ocupaba 16 px de un menú de 230 y
+   se encajaba mal dentro de las ventanas, como en «Acerca de». */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-light) 30%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(in srgb, var(--text-light) 55%, transparent);
+  border-width: 2px;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: var(--accent);
+}
+
+/* El título de cada grupo, con una línea fina que lo separa del siguiente sin
+   cerrar la columna. */
+.sb-label {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 0 16px 10px;
-}
-
-.sb-head .brand-mark {
-  width: 48px;
-  height: 48px;
-  border-radius: 14px;
-  font-size: 18px;
-  color: #fff;
-}
-
-.sb-head strong {
-  display: block;
+  margin: 20px 22px 8px;
   font-family: var(--font-display);
-  font-size: 14px;
-}
-
-.sb-head span {
-  color: var(--text-light);
   font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  color: var(--text-medium);
 }
 
-.sb-label {
-  margin: 8px 20px 4px;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--text-light);
+.sb-label:first-child {
+  margin-top: 2px;
+}
+
+.sb-label::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, var(--border), transparent);
 }
 
 .nav-btn,
 .action-btn {
+  position: relative;
   display: flex;
   align-items: center;
   width: calc(100% - 20px);
@@ -349,26 +372,55 @@ textarea {
   cursor: pointer;
   text-align: left;
   gap: 10px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   transition: background 0.15s, color 0.15s;
 }
 
+/* Los mismos grises que los botones de la cabecera: reposo, encima y elegido. */
 .nav-btn:hover,
 .action-btn:hover {
-  background: color-mix(in srgb, var(--accent) 18%, var(--bg-sidebar) 82%);
-  color: var(--accent);
+  background: var(--bg-sb-hover);
+  color: var(--text-dark);
 }
 
+/* La categoría abierta: el gris de «elegido» de la interfaz, el texto en blanco
+   y una píldora corta del acento a la izquierda, como marca Windows 11 la
+   selección. La barra de 4 px que ocupaba todo el alto chocaba con las
+   esquinas redondeadas y teñía la fila entera. */
 .nav-btn.active {
-  background: color-mix(in srgb, var(--accent) 28%, var(--bg-sidebar) 72%);
-  color: var(--accent);
+  background: var(--bg-sb-active);
+  color: var(--text-dark);
   font-weight: 700;
-  box-shadow: inset 4px 0 0 var(--accent);
 }
 
+.nav-btn.active::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--accent);
+  transform: translateY(-50%);
+}
+
+/* Una línea siempre: una etiqueta partida en dos desalinea la columna entera. */
+.nav-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* El emoji manda sobre el texto: más grande que la etiqueta y en una columna
+   fija, para que todas las etiquetas empiecen en la misma vertical. */
 .nav-ico {
-  width: 1.4em;
+  flex-shrink: 0;
+  width: 22px;
+  font-size: 17px;
+  line-height: 1;
   text-align: center;
 }
 
@@ -384,30 +436,20 @@ textarea {
   box-shadow: 0 0 10px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-/* Fills the height left under the page title so the card lands in the optical
-   centre of the view. Without it the card sat at the top with a large void
-   underneath, because #content is a plain scrolling block. */
-.empty-updates-wrap {
-  min-height: calc(100% - 48px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
-
+/* «Actualizaciones» sin nada pendiente: un panel a lo ancho en el sitio de la
+   barra que sale cuando sí las hay —logotipo con su tic, el texto y la acción a
+   la derecha—, con el brillo de la tarjeta original detrás del logotipo. La
+   tarjeta estrecha centrada en todo el alto dejaba más hueco que contenido. */
 .empty-updates-card {
   position: relative;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: center;
-  text-align: center;
-  max-width: 540px;
-  width: 100%;
-  margin: 0 auto;
-  padding: 36px 28px;
-  border-radius: 20px;
-  background: linear-gradient(145deg, var(--bg-card) 0%, var(--bg-app) 60%, var(--bg-sidebar) 100%);
-  border: 1px solid color-mix(in srgb, var(--accent) 25%, var(--border) 75%);
+  gap: 20px;
+  padding: 20px 22px;
+  border-radius: 18px;
+  background: linear-gradient(145deg, var(--bg-card) 0%, var(--bg-app) 70%, var(--bg-sidebar) 100%);
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border) 78%);
   box-shadow: var(--shadow);
   overflow: hidden;
   animation: fadeUp 0.35s ease;
@@ -416,40 +458,33 @@ textarea {
 .empty-updates-card::before {
   content: "";
   position: absolute;
-  top: -60px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 320px;
-  height: 220px;
-  background: radial-gradient(circle, color-mix(in srgb, var(--green) 18%, transparent) 0%, transparent 70%);
+  top: 50%;
+  left: 54px;
+  width: 260px;
+  height: 200px;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, color-mix(in srgb, var(--green) 16%, transparent) 0%, transparent 70%);
   pointer-events: none;
 }
 
-.empty-updates-hero {
+.empty-updates-badge-container,
+.empty-updates-copy,
+.empty-updates-action {
   position: relative;
   z-index: 1;
-  max-width: 480px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.empty-updates-badge-container {
-  position: relative;
-  margin-bottom: 20px;
 }
 
 .empty-updates-logo-wrapper {
-  width: 88px;
-  height: 88px;
-  border-radius: 24px;
+  width: 64px;
+  height: 64px;
+  border-radius: 18px;
   background: #181818;
   border: 1px solid var(--border);
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-  padding: 12px;
+  padding: 9px;
 }
 
 .empty-updates-logo-wrapper img {
@@ -460,14 +495,14 @@ textarea {
 
 .empty-updates-check-badge {
   position: absolute;
-  bottom: -4px;
-  right: -6px;
-  width: 32px;
-  height: 32px;
+  bottom: -5px;
+  right: -7px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   background: var(--green);
   color: #0c0c0c;
-  font-size: 18px;
+  font-size: 14px;
   font-weight: 900;
   display: flex;
   align-items: center;
@@ -476,19 +511,38 @@ textarea {
   border: 2px solid #181818;
 }
 
-.empty-updates-hero h2 {
-  margin: 0 0 8px;
+.empty-updates-copy {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  min-width: 0;
+}
+
+.empty-updates-copy h2 {
+  margin: 0;
   font-family: var(--font-display);
-  font-size: 22px;
+  font-size: 18px;
   font-weight: 700;
   color: var(--text-dark);
 }
 
-.empty-updates-hero p {
-  margin: 0 0 20px;
-  font-size: 13px;
+.empty-updates-copy p {
+  margin: 0;
+  max-width: 620px;
+  font-size: 12.5px;
   color: var(--text-medium);
   line-height: 1.5;
+}
+
+/* Con poco ancho, la acción baja a su propia fila bajo el texto. */
+@media (max-width: 860px) {
+  .empty-updates-card {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .empty-updates-action {
+    grid-column: 2;
+  }
 }
 
 /* The card's single call to action, so it is given more presence than a card
@@ -566,12 +620,6 @@ textarea {
    la misma, sólo se evita el hueco de línea base que dejaría el SVG. */
 .empty-updates-search-badge svg {
   display: block;
-}
-
-.empty-updates-hint {
-  margin: 12px 0 18px !important;
-  font-size: 12px !important;
-  color: var(--text-medium);
 }
 
 .updates-toolbar {
@@ -657,11 +705,12 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 6px 16px;
+  margin-top: 6px;
+  padding: 4px 12px;
   border-radius: 999px;
   background: rgba(32, 32, 32, 0.85);
   border: 1px solid var(--border);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 600;
   color: var(--green);
 }
@@ -769,8 +818,12 @@ textarea {
   min-width: 0;
 }
 
+/* Compacto: la portada presenta la tienda, no tapa el catálogo. Con la altura
+   que daba el contenido —210 px de mínimo, logo de 112 y un lema que en los
+   largos se partía en dos líneas— ocupaba un tercio de la ventana. */
 .project-hero {
-  min-height: 210px;
+  min-height: 160px;
+  padding: 20px 24px;
   background:
     radial-gradient(circle at 82% 28%, rgba(255, 255, 255, 0.08), transparent 28%),
     linear-gradient(135deg, #292929 0%, #202020 54%, #171717 100%);
@@ -786,10 +839,10 @@ textarea {
 }
 
 .project-hero-logo {
-  width: 112px;
-  height: 112px;
-  padding: 10px;
-  border-radius: 28px;
+  width: 92px;
+  height: 92px;
+  padding: 8px;
+  border-radius: 24px;
   flex-shrink: 0;
   background: #ffffff;
   border: 1px solid rgba(255, 255, 255, 0.24);
@@ -801,11 +854,11 @@ textarea {
   height: 100%;
   display: block;
   box-sizing: border-box;
-  padding: 8px;
+  padding: 7px;
   object-fit: contain;
   background: #25262b;
   border: 1px solid rgba(255, 255, 255, 0.12);
-  border-radius: 22px;
+  border-radius: 18px;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.035);
 }
 
@@ -814,7 +867,7 @@ textarea {
 }
 
 .project-kicker {
-  margin-bottom: 7px;
+  margin-bottom: 5px;
   color: var(--text-light);
   font-size: 10px;
   font-weight: 800;
@@ -822,16 +875,19 @@ textarea {
 }
 
 .project-hero h2 {
-  font-size: clamp(30px, 3vw, 42px);
+  font-size: clamp(26px, 2.5vw, 34px);
   letter-spacing: -0.035em;
 }
 
+/* Si un lema largo no cabe, se reparte en dos líneas parejas en vez de dejar
+   una palabra sola abajo. */
 .project-slogan {
-  margin: 7px 0 0;
+  margin: 5px 0 0;
   color: #ffffff;
   font-family: var(--font-display);
-  font-size: clamp(16px, 1.8vw, 22px);
+  font-size: clamp(15px, 1.45vw, 18px);
   line-height: 1.25;
+  text-wrap: balance;
 }
 
 .project-hero .desc {
@@ -841,10 +897,10 @@ textarea {
 .project-hero-mark {
   position: absolute;
   right: 70px;
-  top: 8px;
+  top: 6px;
   color: rgba(255, 255, 255, 0.028);
   font-family: var(--font-display);
-  font-size: 190px;
+  font-size: 160px;
   font-weight: 900;
   line-height: 1;
   pointer-events: none;
@@ -920,7 +976,6 @@ textarea {
   margin: 0 0 14px;
   padding: 3px 1px 8px;
   overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 .console-filter {
@@ -1062,22 +1117,31 @@ textarea {
      when the name is long enough to push it onto a row of its own — "NVIDIA
      Control Panel" against "NVIDIA App". `row-gap` only ever applies between
      rows, so the extra distance appears in the wrapped case and nowhere else. */
-  column-gap: 6px;
-  row-gap: 5px;
+  column-gap: 8px;
+  row-gap: 7px;
   font-size: 13px;
   font-family: var(--font-display);
 }
 
+/* Autor y versión: un punto más claros y separados de lo de arriba. Con un
+   nombre largo el distintivo baja a su propia fila y esta línea quedaba pegada
+   debajo de él. */
 .card-top small {
-  color: var(--text-medium);
-  font-size: 11px;
+  display: block;
+  margin-top: 4px;
+  color: color-mix(in srgb, var(--text-dark) 55%, var(--text-medium) 45%);
+  font-size: 11.5px;
+  font-weight: 500;
 }
 
+/* Entre el gris del autor y el blanco del nombre: se lee de un vistazo sin
+   competir con el título. En 11 px y el gris más apagado se perdía sobre la
+   tarjeta. */
 .card-desc {
   margin: 0;
-  color: var(--text-light);
-  font-size: 11px;
-  line-height: 1.45;
+  color: color-mix(in srgb, var(--text-medium) 82%, var(--text-light) 18%);
+  font-size: 12px;
+  line-height: 1.5;
   display: -webkit-box;
   line-clamp: 3;
   -webkit-line-clamp: 3;
@@ -1605,9 +1669,18 @@ textarea {
    rounded corners. Pressing "Buscar actualizaciones" adds a line, and that was
    enough to push the buttons past the bottom edge with no way to reach them.
    The list of facts gives up the room instead, and the buttons stay put. */
+/* Algo más ancha que el resto de ventanas para que cada dato quepa en una
+   línea: a 540 px se partían casi todos, la lista crecía más que la ventana y
+   aparecía una barra de desplazamiento pegada a las tarjetas. */
 .modal.modal-about {
   display: flex;
   flex-direction: column;
+  width: min(620px, calc(100vw - 48px));
+}
+
+/* El brillo, detrás del logotipo y no en el centro. */
+.modal.modal-about::before {
+  left: 92px;
 }
 
 .about-dialog {
@@ -1615,10 +1688,8 @@ textarea {
   z-index: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
   gap: 14px;
   min-height: 0;
-  text-align: center;
   animation: fadeUp 0.35s ease;
 }
 
@@ -1628,15 +1699,25 @@ textarea {
   flex-shrink: 0;
 }
 
+/* Logotipo y nombre en una sola fila: la cabecera apilada se llevaba casi un
+   tercio del alto de la ventana. */
+.about-head {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 2px 4px 2px;
+}
+
 .about-logo {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 88px;
-  height: 88px;
-  padding: 12px;
+  flex-shrink: 0;
+  width: 64px;
+  height: 64px;
+  padding: 9px;
   border: 1px solid var(--border);
-  border-radius: 24px;
+  border-radius: 18px;
   background: #181818;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
 }
@@ -1645,6 +1726,11 @@ textarea {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+
+.about-title {
+  display: grid;
+  gap: 3px;
 }
 
 .about-name {
@@ -1656,7 +1742,7 @@ textarea {
 }
 
 .about-version {
-  margin: -10px 0 0;
+  margin: 0;
   color: var(--text-light);
   font-size: 12px;
   font-weight: 600;
@@ -1787,7 +1873,7 @@ textarea {
    is allowed to keep. */
 .about-note {
   margin: -4px 0 0;
-  max-width: 320px;
+  padding: 0 4px;
   font-size: 12px;
   line-height: 1.45;
   color: var(--text-medium);
@@ -2024,7 +2110,6 @@ textarea {
 .release-notes-body {
   max-height: min(260px, 34vh);
   overflow-y: auto;
-  scrollbar-width: thin;
   padding: 12px 16px 14px;
   color: var(--text-medium);
   font-size: 12.5px;
@@ -2270,6 +2355,184 @@ textarea {
   }
 }
 
+/* -------------------------------------------------------------------------- */
+/*  Arranque sin pantalla de carga                                             */
+/* -------------------------------------------------------------------------- */
+
+/* El primer segundo, mientras WebView carga el código y dibuja el catálogo: el
+   logo de la tienda sobre su propio fondo, con el anillo de la antigua pantalla
+   de carga, en vez de una ventana vacía. Se desvanece en cuanto la tienda está
+   pintada debajo. Si main.js no llegara a quitarlo, se retira solo para dejar
+   ver la barra de estado con el error. */
+.boot-splash {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 20px;
+  background: var(--bg-app);
+  text-align: center;
+  transition: opacity 360ms var(--ease-out), visibility 0s linear 360ms;
+  animation: bootSplashGiveUp 360ms ease-out 15s forwards;
+}
+
+.boot-splash.done {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.boot-splash .sync-logo-box {
+  margin-bottom: 0;
+  animation: syncCardPop 0.35s var(--ease-out) both;
+}
+
+.boot-splash-copy {
+  display: grid;
+  gap: 4px;
+  animation: fadeUp 0.4s var(--ease-out) 80ms both;
+}
+
+.boot-splash-copy strong {
+  font-family: var(--font-display);
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text-dark);
+  letter-spacing: -0.01em;
+}
+
+.boot-splash-copy span {
+  font-size: 12px;
+  color: var(--text-light);
+}
+
+@keyframes bootSplashGiveUp {
+  to { opacity: 0; visibility: hidden; pointer-events: none; }
+}
+
+/* Mientras el equipo se comprueba por detrás, una línea fina bajo la cabecera
+   lo dice sin tapar nada: la tienda ya está en pantalla y se puede usar. */
+.loading-line {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0;
+  transition: opacity 420ms var(--ease-out);
+}
+
+.loading-line.active {
+  opacity: 1;
+}
+
+.loading-line::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 40%;
+  background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  animation: loadingLineSweep 1.5s var(--ease-out) infinite;
+}
+
+.loading-line:not(.active)::before {
+  animation-play-state: paused;
+}
+
+/* El ancho del destello es el 40 % de la línea: de -100 % a 250 % la cruza
+   entera. */
+@keyframes loadingLineSweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(250%); }
+}
+
+/* Lo que aún no se sabe se dibuja con la silueta de lo que vendrá y el mismo
+   brillo lento de las notas de versión mientras cargan. */
+.btn-skeleton,
+.skeleton-block,
+.skeleton-lines i {
+  display: block;
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0.05));
+  background-size: 200% 100%;
+  animation: releaseNotesShimmer 1.2s ease-in-out infinite;
+}
+
+.btn-skeleton {
+  width: 92px;
+  height: 32px;
+  border-radius: 11px;
+}
+
+.btn-skeleton.hero {
+  width: 112px;
+}
+
+.skeleton-card {
+  pointer-events: none;
+}
+
+.skeleton-lines {
+  display: grid;
+  flex: 1;
+  gap: 8px;
+}
+
+.skeleton-lines i {
+  height: 10px;
+  border-radius: 6px;
+}
+
+.skeleton-lines i:nth-child(1) { width: 62%; }
+.skeleton-lines i:nth-child(2) { width: 38%; }
+.skeleton-desc { flex: 1; }
+.skeleton-desc i:nth-child(1) { width: 94%; }
+.skeleton-desc i:nth-child(2) { width: 72%; }
+
+/* Cuando el equipo contesta, los botones de verdad entran con un fundido corto
+   en vez de aparecer de golpe donde estaban las siluetas. `backwards` y no
+   `both`: al acabar manda otra vez la opacidad propia de cada botón. */
+#content.statuses-revealed .card-actions > .btn {
+  animation: actionReveal 320ms var(--ease-out) backwards;
+}
+
+@keyframes actionReveal {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* «Actualizaciones» mientras se buscan y todavía no hay ninguna que contar. */
+.nav-badge-scan {
+  margin-left: auto;
+  width: 12px;
+  height: 12px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
+  border-top-color: var(--accent);
+  animation: scan-spin 900ms linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-line::before {
+    animation-duration: 3s;
+  }
+  .btn-skeleton,
+  .skeleton-block,
+  .skeleton-lines i,
+  #content.statuses-revealed .card-actions > .btn,
+  .boot-splash .sync-logo-box,
+  .boot-splash-copy {
+    animation: none;
+  }
+  .nav-badge-scan {
+    animation-duration: 2.4s;
+  }
+}
+
 .version-product {
   color: var(--text-light);
   font-size: 11px;
@@ -2440,7 +2703,6 @@ textarea {
 .app-description-text {
   max-height: 210px;
   overflow-y: auto;
-  scrollbar-width: thin;
   /* Un fundido abajo avisa de que el texto sigue, y se va al llegar al final.
      Lo mueve el propio desplazamiento: un texto que cabe no tiene línea de
      tiempo, la animación no se aplica y no se funde nada. */
@@ -3865,7 +4127,6 @@ textarea {
   margin-top: 14px;
   padding-bottom: 6px;
   overflow-x: auto;
-  scrollbar-width: thin;
 }
 
 /* La miniatura es un botón, así que hay que quitarle lo que el navegador le

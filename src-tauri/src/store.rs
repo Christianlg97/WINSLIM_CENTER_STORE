@@ -17,6 +17,12 @@ pub struct Settings {
     /// round, with one the processor cannot run at all.
     #[serde(default)]
     pub variants: HashMap<String, String>,
+    /// The browser the store's web applications open in, as the path of its
+    /// executable. The store's own choice, asked the first time one is
+    /// installed: Windows' default only suggests the first answer and is never
+    /// changed, and on a system without Edge it may name a browser that is gone.
+    #[serde(default)]
+    pub web_browser: Option<String>,
 }
 
 impl Default for Settings {
@@ -25,6 +31,7 @@ impl Default for Settings {
             theme: "plata".into(),
             accent: "#c7ced6".into(),
             variants: HashMap::new(),
+            web_browser: None,
         }
     }
 }
@@ -158,6 +165,41 @@ fn save_repo_entries_at(target: &Path, entries: &HashMap<String, Value>) -> Resu
         let _ = std::fs::remove_file(&temporary);
         e.to_string()
     })
+}
+
+/// Written beside the target and renamed over it, so a session that ends in the
+/// middle of the write leaves the previous file whole instead of a truncated one
+/// that would read as empty. Compact, because nobody edits these by hand.
+pub fn save_json_atomic<T: Serialize>(target: &Path, data: &T) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let bytes = serde_json::to_vec(data).map_err(|e| e.to_string())?;
+    let temporary = target.with_extension(format!("{}.tmp", std::process::id()));
+    std::fs::write(&temporary, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, target).map_err(|e| {
+        let _ = std::fs::remove_file(&temporary);
+        e.to_string()
+    })
+}
+
+/// What the last complete scan committed, kept for the next start-up.
+///
+/// Only a head start: the window opens with what the previous session knew and
+/// the scan that follows corrects whatever changed since. A missing or
+/// unreadable file costs a slower first answer, never a wrong one.
+fn status_snapshot_path() -> std::path::PathBuf {
+    paths::app_dir().join("status-snapshot.json")
+}
+
+pub fn load_status_snapshot() -> HashMap<String, crate::detect::AppStatus> {
+    load_json(&status_snapshot_path(), HashMap::new())
+}
+
+pub fn save_status_snapshot(
+    statuses: &HashMap<String, crate::detect::AppStatus>,
+) -> Result<(), String> {
+    save_json_atomic(&status_snapshot_path(), statuses)
 }
 
 pub fn load_settings() -> Settings {
@@ -399,6 +441,7 @@ mod tests {
             theme: "midnight".into(),
             accent: "#38bdf8".into(),
             variants: HashMap::new(),
+            web_browser: None,
         };
         let migrated = migrate_settings(legacy);
         assert_eq!(migrated.theme, "plata");

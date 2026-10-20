@@ -62,6 +62,10 @@ pub struct AppState {
     pub repo_entries: Mutex<HashMap<String, Value>>,
     pub installed: Mutex<HashMap<String, InstalledInfo>>,
     pub statuses: Mutex<HashMap<String, AppStatus>>,
+    /// Applications whose state nothing has answered for yet: neither the quick
+    /// start-up pass nor the previous session's snapshot. The interface shows
+    /// them as being checked until the first complete scan empties this.
+    pub status_pending: Mutex<HashSet<String>>,
     pub settings: Mutex<Settings>,
     pub downloads: SharedDownloads,
 }
@@ -338,6 +342,74 @@ fn scan_detection_sources(
     })
 }
 
+/// Opens the window with what the previous session last knew.
+///
+/// The quick start-up pass only answers for what the store can confirm without
+/// asking Windows: its own installations, web-app shortcuts, components and
+/// Velopack manifests. Everything else reads "not installed" until the full
+/// scan returns, which on a cold disk is seconds. The last committed scan fills
+/// those gaps; the ids nothing can answer for yet are returned, so the
+/// interface shows them as being checked instead of offering to install them.
+fn seed_statuses_from_snapshot(
+    catalog: &[Value],
+    statuses: &mut HashMap<String, AppStatus>,
+    snapshot: &HashMap<String, AppStatus>,
+) -> HashSet<String> {
+    let mut pending = HashSet::new();
+    for entry in catalog {
+        let Some(id) = entry.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(current) = statuses.get_mut(id) else {
+            continue;
+        };
+        let confirmed = current.installed
+            || matches!(
+                entry.get("source_type").and_then(Value::as_str),
+                Some("component" | "webapp")
+            );
+        match snapshot.get(id) {
+            Some(previous) if confirmed => {
+                // Same installation as last time: what the last update check
+                // said about it still stands until the next one answers.
+                if previous.installed && current.installed && previous.version == current.version {
+                    current.update_available = previous.update_available;
+                    current.latest_version = previous.latest_version.clone();
+                    current.pending_restart = previous.pending_restart;
+                }
+            }
+            // Not there last time either; the quick pass already says so, with
+            // the catalog's current version rather than last session's.
+            Some(previous) if !previous.installed => {}
+            // `installed.json` is the whole truth about the store's own
+            // installations, and it no longer lists this one: whatever is
+            // there now, only the scan can tell.
+            Some(previous) if previous.origin != "center" => *current = previous.clone(),
+            _ if confirmed => {}
+            _ => {
+                pending.insert(id.to_string());
+            }
+        }
+    }
+    pending
+}
+
+static STATUS_SNAPSHOT_WRITE: Mutex<()> = Mutex::new(());
+
+/// Saves what the next start-up opens with. The map is read inside the write
+/// lock, so whichever of two writers goes last writes the newest statuses
+/// rather than the ones it happened to capture first.
+fn persist_status_snapshot(state: &AppState) {
+    let _write = STATUS_SNAPSHOT_WRITE.lock();
+    let statuses = state.statuses.lock().clone();
+    if let Err(error) = store::save_status_snapshot(&statuses) {
+        logger::debug(
+            "status",
+            format!("No se pudo guardar la instantánea de estados: {error}"),
+        );
+    }
+}
+
 fn preserve_update_metadata(
     previous: &HashMap<String, AppStatus>,
     rebuilt: &mut HashMap<String, AppStatus>,
@@ -481,6 +553,10 @@ fn rebuild_statuses_with_progress(state: &AppState, app: Option<&AppHandle>) {
             Ordering::Release,
         );
         drop(_source);
+        // Every application has a real answer now.
+        state.status_pending.lock().clear();
+        persist_status_snapshot(state);
+        installer::persist_launch_cache();
         logger::info(
             "status",
             format!(
@@ -819,11 +895,13 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
     let statuses = state.statuses.lock().clone();
     let settings = state.settings.lock().clone();
     let tasks = state.downloads.lock().snapshots();
+    let status_pending = state.status_pending.lock().iter().cloned().collect::<Vec<_>>();
     Ok(serde_json::json!({
         "catalog": catalog,
         "repo_entries": state.repo_entries.lock().values().cloned().collect::<Vec<_>>(),
         "installed": installed,
         "statuses": statuses,
+        "status_pending": status_pending,
         "settings": settings,
         "tasks": tasks,
         "app_version": env!("CARGO_PKG_VERSION"),
@@ -1018,7 +1096,12 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
     // This command belongs to the appearance dialog, which knows nothing about
     // which build of an application was installed. Storing its payload whole
     // would forget every one of those choices each time the theme changed.
-    s.variants = state.settings.lock().variants.clone();
+    // Nor about the browser chosen for web applications.
+    {
+        let current = state.settings.lock();
+        s.variants = current.variants.clone();
+        s.web_browser = current.web_browser.clone();
+    }
     store::save_settings(&s)?;
     *state.settings.lock() = s;
     Ok(())
@@ -2032,6 +2115,96 @@ fn remove_component_shortcuts(state: &AppState, suite_id: &str) {
     }
 }
 
+/// The entry, carrying the browser the store's web applications use.
+///
+/// Written over whatever the entry brought, like the portable data policy: it
+/// is the user's choice, and an editable catalog must not be able to point a
+/// shortcut at some other executable.
+fn with_web_browser(mut entry: Value, state: &AppState) -> Value {
+    let browser = state.settings.lock().web_browser.clone();
+    if let Some(fields) = entry.as_object_mut() {
+        fields.insert(
+            "_web_browser".into(),
+            browser.map(Value::String).unwrap_or(Value::Null),
+        );
+    }
+    entry
+}
+
+/// What the catalog itself found among its browsers, which may be portable
+/// copies Windows was never told about.
+fn catalog_browsers(state: &AppState) -> Vec<(String, PathBuf)> {
+    let catalog = state.catalog.lock().clone();
+    let statuses = state.statuses.lock();
+    catalog
+        .iter()
+        .filter(|entry| entry.get("section").and_then(Value::as_str) == Some("Navegadores"))
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(Value::as_str)?;
+            let status = statuses.get(id).filter(|status| status.installed)?;
+            let path = PathBuf::from(&status.install_path);
+            webapp::is_known_browser(&path).then(|| {
+                let name = entry.get("name").and_then(Value::as_str).unwrap_or(id);
+                (name.to_string(), path)
+            })
+        })
+        .collect()
+}
+
+#[derive(Serialize)]
+struct WebBrowsers {
+    browsers: Vec<webapp::BrowserChoice>,
+    /// The store's choice, while that browser is still installed.
+    selected: Option<String>,
+}
+
+/// The browsers installed, and which one the store's web applications use.
+#[tauri::command]
+async fn web_browsers(app: AppHandle) -> Result<WebBrowsers, String> {
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let browsers = webapp::installed_browsers(catalog_browsers(&state));
+        let selected = state
+            .settings
+            .lock()
+            .web_browser
+            .clone()
+            .filter(|path| webapp::browser_at(path.as_str()).is_some());
+        WebBrowsers { browsers, selected }
+    })
+    .await
+    .map_err(|error| format!("No se pudieron buscar los navegadores: {error}"))
+}
+
+/// Remembers the browser the store's web applications open in. Only one the
+/// store itself found installed is accepted; Windows' default is not touched.
+#[tauri::command]
+async fn set_web_browser(app: AppHandle, path: String) -> Result<(), String> {
+    async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let chosen = webapp::installed_browsers(catalog_browsers(&state))
+            .into_iter()
+            .find(|browser| webapp::same_path(&browser.path, &path))
+            .ok_or("Ese navegador ya no está instalado en el equipo.")?;
+        let settings = {
+            let mut settings = state.settings.lock();
+            settings.web_browser = Some(chosen.path.clone());
+            settings.clone()
+        };
+        store::save_settings(&settings)?;
+        logger::info(
+            "webapp",
+            format!(
+                "Navegador de las aplicaciones web: {} ({}, modo aplicación={})",
+                chosen.name, chosen.path, chosen.app_mode
+            ),
+        );
+        Ok(())
+    })
+    .await
+    .map_err(|error| format!("No se pudo guardar el navegador: {error}"))?
+}
+
 fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String> {
     logger::info("launch", format!("Solicitud de apertura: app_id={app_id}"));
     let catalog_entry = state
@@ -2046,7 +2219,7 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
         .as_ref()
         .filter(|entry| entry.get("source_type").and_then(Value::as_str) == Some("webapp"))
     {
-        return webapp::launch(entry);
+        return webapp::launch(&with_web_browser(entry.clone(), state));
     }
 
     let preferred_executable = catalog_entry
@@ -2335,8 +2508,15 @@ async fn msstore_installed() -> Result<Vec<msstore::InstalledApp>, String> {
 /// Sin `families` mira todas las instaladas; con ellas, sólo esas — que es lo
 /// que hace falta tras una búsqueda, donde como mucho una o dos de las que
 /// aparecen están puestas.
+#[derive(Clone, Serialize)]
+struct MsStoreScanProgress {
+    done: usize,
+    total: usize,
+}
+
 #[tauri::command]
 async fn msstore_check_updates(
+    app: AppHandle,
     ring: Option<String>,
     arch: Option<String>,
     families: Option<Vec<String>>,
@@ -2364,14 +2544,21 @@ async fn msstore_check_updates(
             families.len()
         ),
     );
-    let reports = msstore::scan_updates(families, &ring, &arch).await;
+    let started = std::time::Instant::now();
+    let reports = msstore::scan_updates(families, &ring, &arch, |done, total| {
+        let _ = app.emit("msstore-scan-progress", MsStoreScanProgress { done, total });
+    })
+    .await;
     let pending = reports
         .iter()
         .filter(|report| report.update_available)
         .count();
     logger::info(
         "msstore",
-        format!("Actualizaciones pendientes en la Microsoft Store: {pending}"),
+        format!(
+            "Actualizaciones pendientes en la Microsoft Store: {pending}, duración={} ms",
+            started.elapsed().as_millis()
+        ),
     );
     Ok(reports)
 }
@@ -3056,7 +3243,10 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
 }
 
 #[tauri::command]
-async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, AppStatus>, String> {
+async fn check_updates(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<HashMap<String, AppStatus>, String> {
     let request = UPDATE_CHECK_REQUESTED.fetch_add(1, Ordering::AcqRel) + 1;
     let _single_flight = UPDATE_CHECK_LOCK.lock().await;
     let source_generation = STATUS_SOURCE_GENERATION.load(Ordering::Acquire);
@@ -3081,6 +3271,8 @@ async fn check_updates(state: State<'_, AppState>) -> Result<HashMap<String, App
             UPDATE_CHECK_REQUESTED.load(Ordering::Acquire),
             Ordering::Release,
         );
+        // The updates it found are part of what the next start-up shows.
+        async_runtime::spawn_blocking(move || persist_status_snapshot(&app.state::<AppState>()));
     }
     result
 }
@@ -3382,6 +3574,7 @@ async fn install_app(
     app_entry.as_object_mut().ok_or("Ficha de aplicación no válida")?.insert(
         "_portable_data_policy".into(), portable_data.map(Value::String).unwrap_or(Value::Null),
     );
+    let app_entry = with_web_browser(app_entry, &state);
     let settings_to_save = if let Some(chosen) = app_entry.get("variant").and_then(Value::as_str) {
         let mut settings = state.settings.lock();
         if settings.variants.get(&app_id).map(String::as_str) != Some(chosen) {
@@ -4081,14 +4274,19 @@ pub fn run() {
                     detection_catalog.push(entry.clone());
                 }
             }
-            let statuses = detect::build_statuses(&detection_catalog, &installed, &[], &[], "");
+            let mut statuses = detect::build_statuses(&detection_catalog, &installed, &[], &[], "");
+            let snapshot = store::load_status_snapshot();
+            let status_pending =
+                seed_statuses_from_snapshot(&detection_catalog, &mut statuses, &snapshot);
             logger::info(
                 "startup",
                 format!(
-                    "Carga inicial rápida: catálogo={}, instaladas_centro={}, estados_provisionales={}, duración={} ms",
+                    "Carga inicial rápida: catálogo={}, instaladas_centro={}, estados_provisionales={}, instantánea={}, pendientes={}, duración={} ms",
                     catalog.len(),
                     installed.len(),
                     statuses.len(),
+                    snapshot.len(),
+                    status_pending.len(),
                     setup_started.elapsed().as_millis()
                 ),
             );
@@ -4114,6 +4312,7 @@ pub fn run() {
                 repo_entries: Mutex::new(repo_entries),
                 installed: Mutex::new(installed),
                 statuses: Mutex::new(statuses),
+                status_pending: Mutex::new(status_pending),
                 settings: Mutex::new(settings),
                 downloads: Arc::new(Mutex::new(download::DownloadManager::new())),
             });
@@ -4161,6 +4360,8 @@ pub fn run() {
             winget_search,
             choco_search,
             choco_status,
+            web_browsers,
+            set_web_browser,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
@@ -4218,6 +4419,55 @@ mod tests {
         preserve_update_metadata(&previous, &mut rebuilt);
         assert!(!rebuilt["demo"].update_available);
         assert_eq!(rebuilt["demo"].latest_version, None);
+    }
+
+    #[test]
+    fn start_up_opens_with_the_last_snapshot_and_flags_what_nobody_answered_for() {
+        let not_installed = AppStatus {
+            installed: false,
+            origin: "none".into(),
+            can_uninstall: false,
+            ..test_status("latest", false, None)
+        };
+        let center = AppStatus {
+            origin: "center".into(),
+            ..test_status("1.0", false, None)
+        };
+        let catalog = ["system", "center", "gone", "absent", "new", "web"]
+            .map(|id| serde_json::json!({ "id": id, "source_type": if id == "web" { "webapp" } else { "direct" } }));
+        let mut statuses = HashMap::from([
+            ("system".to_string(), not_installed.clone()),
+            ("center".to_string(), center.clone()),
+            ("gone".to_string(), not_installed.clone()),
+            ("absent".to_string(), not_installed.clone()),
+            ("new".to_string(), not_installed.clone()),
+            ("web".to_string(), not_installed.clone()),
+        ]);
+        let snapshot = HashMap::from([
+            // Windows had it last time: shown as installed straight away.
+            ("system".to_string(), test_status("3.1", true, Some("3.2"))),
+            // The store's own installation, unchanged: keeps its update notice.
+            ("center".to_string(), AppStatus { update_available: true, latest_version: Some("1.1".into()), ..center.clone() }),
+            // The store installed it, but installed.json no longer lists it.
+            ("gone".to_string(), center.clone()),
+            // Not there last time either.
+            ("absent".to_string(), not_installed.clone()),
+        ]);
+
+        let pending = seed_statuses_from_snapshot(&catalog, &mut statuses, &snapshot);
+
+        assert!(statuses["system"].installed);
+        assert_eq!(statuses["system"].version, "3.1");
+        assert!(statuses["system"].update_available);
+        assert!(statuses["center"].update_available);
+        assert_eq!(statuses["center"].latest_version.as_deref(), Some("1.1"));
+        assert!(!statuses["gone"].installed);
+        assert!(!statuses["absent"].installed);
+        // A web app's shortcut is the whole answer, snapshot or not.
+        assert_eq!(
+            pending,
+            HashSet::from(["gone".to_string(), "new".to_string()])
+        );
     }
 
     #[test]

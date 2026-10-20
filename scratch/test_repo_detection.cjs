@@ -14,7 +14,7 @@ const context = vm.createContext({
 });
 vm.runInContext('function appStatus(id) { return state.statuses[id] || {}; }', context);
 for (const name of ['repoAppId', 'repoAppShape', 'repoCatalogEntry', 'repoPackageByAppId',
-  'installedRepoApp', 'actionButtons', 'repoCardHtml', 'findApp']) {
+  'installedRepoApp', 'isStatusPending', 'actionButtons', 'versionLabel', 'repoCardHtml', 'findApp']) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, name);
   const end = source.indexOf('\n}', start) + 2;

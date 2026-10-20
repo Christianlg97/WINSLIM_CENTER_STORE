@@ -31,8 +31,7 @@ pub fn url_of(entry: &Value) -> Option<String> {
     allowed.then(|| url.to_string())
 }
 
-/// The browser Windows opens `https://` links with, and whether it understands
-/// Chromium's `--app` switch.
+/// A browser, and whether it understands Chromium's `--app` switch.
 ///
 /// The switch is what separates a window that looks like an application from a
 /// tab among twenty others. Firefox has no equivalent, so there the shortcut
@@ -42,53 +41,223 @@ pub struct Browser {
     pub app_mode: bool,
 }
 
+/// Every Chromium build accepts `--app`; the list is of the ones a user is
+/// likely to have, and anything unknown is treated as if it did not, which
+/// costs a tab and never a broken shortcut.
+const APP_MODE_BROWSERS: [&str; 10] = [
+    "chrome.exe",
+    "msedge.exe",
+    "brave.exe",
+    "vivaldi.exe",
+    "opera.exe",
+    "launcher.exe",
+    "thorium.exe",
+    "chromium.exe",
+    "slimjet.exe",
+    "helium.exe",
+];
+
+/// Browsers without the switch, still perfectly good at opening a site.
+const TAB_BROWSERS: [&str; 7] = [
+    "firefox.exe",
+    "librewolf.exe",
+    "waterfox.exe",
+    "floorp.exe",
+    "zen.exe",
+    "palemoon.exe",
+    "mercury.exe",
+];
+
+fn executable_name(path: &Path) -> String {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+}
+
+/// Whether the executable is one of the browsers this module knows by name.
+///
+/// What the catalog detects as installed is checked against this before it is
+/// offered: Edge's entry matches `msedgewebview2.exe`, the engine other programs
+/// draw their windows with, and that is not something to open a site in.
+pub fn is_known_browser(path: &Path) -> bool {
+    let name = executable_name(path);
+    APP_MODE_BROWSERS.contains(&name.as_str()) || TAB_BROWSERS.contains(&name.as_str())
+}
+
+/// The browser at `path`, if there is still an executable there.
+pub fn browser_at(path: impl Into<PathBuf>) -> Option<Browser> {
+    let path = path.into();
+    let is_executable = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("exe"));
+    if !is_executable || !path.is_file() {
+        return None;
+    }
+    let app_mode = APP_MODE_BROWSERS.contains(&executable_name(&path).as_str());
+    Some(Browser { path, app_mode })
+}
+
+/// The browser Windows opens `https://` links with, when it still exists.
+///
+/// A trimmed Windows can keep naming Edge long after Edge is gone, which is why
+/// this is only ever a suggestion and never the store's answer by itself.
 #[cfg(windows)]
 pub fn default_browser() -> Option<Browser> {
     use winreg::enums::*;
     use winreg::RegKey;
 
-    let choice = RegKey::predef(HKEY_CURRENT_USER)
-        .open_subkey(
-            r"SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\https\UserChoice",
-        )
+    let associations = RegKey::predef(HKEY_CURRENT_USER)
+        .open_subkey(r"SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\https")
         .ok()?;
-    let prog_id: String = choice.get_value("ProgId").ok()?;
+    // Recent builds of Windows 11 write the choice under a second name.
+    let prog_id: String = ["UserChoiceLatest", "UserChoice"]
+        .iter()
+        .filter_map(|name| associations.open_subkey(name).ok())
+        .find_map(|choice| choice.get_value("ProgId").ok())?;
     let command: String = RegKey::predef(HKEY_CLASSES_ROOT)
         .open_subkey(format!(r"{prog_id}\shell\open\command"))
         .ok()?
         .get_value("")
         .ok()?;
     let (path, _) = crate::installer::split_registered_command(&command).ok()?;
-    if !path.is_file() {
-        return None;
-    }
-    let executable = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    // Every Chromium build accepts `--app`; the list is of the ones a user is
-    // likely to have made default, and anything unknown is treated as if it did
-    // not, which costs a tab and never a broken shortcut.
-    let app_mode = [
-        "chrome.exe",
-        "msedge.exe",
-        "brave.exe",
-        "vivaldi.exe",
-        "opera.exe",
-        "launcher.exe",
-        "thorium.exe",
-        "chromium.exe",
-        "slimjet.exe",
-        "helium.exe",
-    ]
-    .contains(&executable.as_str());
-    Some(Browser { path, app_mode })
+    browser_at(path)
 }
 
 #[cfg(not(windows))]
 pub fn default_browser() -> Option<Browser> {
     None
+}
+
+/// The browsers that registered themselves with Windows, by the name they gave.
+///
+/// `StartMenuInternet` is where every browser installer announces itself so
+/// that Settings can offer it as the default; the per-user key holds the ones
+/// installed without administrator rights.
+#[cfg(windows)]
+fn registered_browsers() -> Vec<(String, PathBuf)> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+
+    let mut found = Vec::new();
+    for (root, path) in [
+        (HKEY_CURRENT_USER, r"SOFTWARE\Clients\StartMenuInternet"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\Clients\StartMenuInternet"),
+        (HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Clients\StartMenuInternet"),
+    ] {
+        let Ok(clients) = RegKey::predef(root).open_subkey(path) else {
+            continue;
+        };
+        for key_name in clients.enum_keys().filter_map(Result::ok) {
+            // Internet Explorer stays registered on systems that no longer
+            // have it, and could not open a site as an application anyway.
+            if key_name.eq_ignore_ascii_case("IEXPLORE.EXE") {
+                continue;
+            }
+            let Ok(client) = clients.open_subkey(&key_name) else {
+                continue;
+            };
+            let Ok(command) = client
+                .open_subkey(r"shell\open\command")
+                .and_then(|key| key.get_value::<String, _>(""))
+            else {
+                continue;
+            };
+            let Ok((executable, _)) = crate::installer::split_registered_command(&command) else {
+                continue;
+            };
+            // The display name; a `@dll,-id` resource reference reads as
+            // nothing to a person, and the key name is better than that.
+            let name = client
+                .get_value::<String, _>("")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty() && !value.starts_with('@'))
+                .unwrap_or(key_name);
+            found.push((name, executable));
+        }
+    }
+    found
+}
+
+#[cfg(not(windows))]
+fn registered_browsers() -> Vec<(String, PathBuf)> {
+    Vec::new()
+}
+
+/// A browser the user can pick for the store's web applications.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct BrowserChoice {
+    pub name: String,
+    pub path: String,
+    pub app_mode: bool,
+    /// The one Windows opens links with, offered first.
+    pub windows_default: bool,
+}
+
+pub fn same_path(left: &str, right: &str) -> bool {
+    let normalize = |value: &str| value.trim().replace('/', "\\").to_lowercase();
+    normalize(left) == normalize(right)
+}
+
+/// Every browser installed: the ones registered with Windows and the ones the
+/// catalog found (`catalog`, by name), which may be portable and registered
+/// nowhere. Windows' default goes first; the rest in alphabetical order.
+pub fn installed_browsers(catalog: Vec<(String, PathBuf)>) -> Vec<BrowserChoice> {
+    let windows_default = default_browser().map(|browser| browser.path);
+    let mut choices: Vec<BrowserChoice> = Vec::new();
+    let default_candidate = windows_default.clone().map(|path| {
+        let name = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Navegador")
+            .to_string();
+        (name, path)
+    });
+    for (name, path) in registered_browsers()
+        .into_iter()
+        .chain(catalog)
+        .chain(default_candidate)
+    {
+        let Some(browser) = browser_at(path) else {
+            continue;
+        };
+        let path = browser.path.to_string_lossy().to_string();
+        if choices.iter().any(|choice| same_path(&choice.path, &path)) {
+            continue;
+        }
+        choices.push(BrowserChoice {
+            windows_default: windows_default
+                .as_ref()
+                .is_some_and(|default| same_path(&default.to_string_lossy(), &path)),
+            name,
+            path,
+            app_mode: browser.app_mode,
+        });
+    }
+    choices.sort_by(|left, right| {
+        right
+            .windows_default
+            .cmp(&left.windows_default)
+            .then_with(|| left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+    });
+    choices
+}
+
+/// The browser an operation on `entry` uses: the one the store was told to
+/// use, carried in `_web_browser`, and only without one Windows' default.
+fn browser_for(entry: &Value) -> Result<Browser, String> {
+    entry
+        .get("_web_browser")
+        .and_then(Value::as_str)
+        .and_then(browser_at)
+        .or_else(default_browser)
+        .ok_or_else(|| {
+            "No hay un navegador elegido para las aplicaciones web y el predeterminado de \
+             Windows no existe. Elige uno al instalar la aplicación."
+                .to_string()
+        })
 }
 
 /// The arguments that open `url` the best way this browser can.
@@ -226,8 +395,7 @@ pub async fn install(entry: &Value) -> Result<crate::store::InstalledInfo, Strin
     let name = entry.get("name").and_then(Value::as_str).unwrap_or(app_id);
     let url = url_of(entry)
         .ok_or("La entrada necesita un 'web_url' que empiece por http:// o https://")?;
-    let browser = default_browser()
-        .ok_or("Windows no indica cuál es el navegador predeterminado del usuario")?;
+    let browser = browser_for(entry)?;
 
     let directory = install_dir(app_id);
     tokio::fs::create_dir_all(&directory)
@@ -335,8 +503,7 @@ pub fn launch(entry: &Value) -> Result<String, String> {
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("La aplicación");
-    let browser =
-        default_browser().ok_or("Windows no indica cuál es el navegador predeterminado")?;
+    let browser = browser_for(entry)?;
     let arguments = arguments_for(&browser, &url);
     crate::logger::info(
         "launch",
@@ -374,6 +541,48 @@ mod tests {
             let entry = serde_json::json!({ "web_url": malo });
             assert!(url_of(&entry).is_none(), "no debería aceptarse: {malo}");
         }
+    }
+
+    #[test]
+    fn the_store_uses_the_browser_it_was_given_and_never_a_webview() {
+        let root = std::env::temp_dir().join(format!("winslimcenter-navegadores-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let thorium = root.join("thorium.exe");
+        let firefox = root.join("firefox.exe");
+        std::fs::write(&thorium, b"MZ").unwrap();
+        std::fs::write(&firefox, b"MZ").unwrap();
+
+        // El motor con el que otros programas dibujan sus ventanas no es un
+        // navegador, aunque el catálogo lo tome por Edge.
+        assert!(is_known_browser(&thorium));
+        assert!(!is_known_browser(Path::new(
+            r"C:\Program Files (x86)\Microsoft\EdgeWebView\Application\155.0\msedgewebview2.exe"
+        )));
+
+        // Lo que eligió el usuario manda sobre lo que diga Windows.
+        let entry = serde_json::json!({ "_web_browser": thorium.to_string_lossy() });
+        let browser = browser_for(&entry).unwrap();
+        assert_eq!(browser.path, thorium);
+        assert!(browser.app_mode);
+        assert!(!browser_at(firefox.as_path()).unwrap().app_mode);
+        assert!(browser_at(root.join("brave.exe")).is_none(), "lo que no está no es un navegador");
+
+        // Repetidos y desaparecidos fuera; el resto en orden alfabético.
+        let root_text = root.to_string_lossy().to_string();
+        let choices = installed_browsers(vec![
+            ("Thorium".into(), thorium.clone()),
+            ("Thorium otra vez".into(), thorium.clone()),
+            ("Firefox".into(), firefox.clone()),
+            ("Fantasma".into(), root.join("brave.exe")),
+        ]);
+        let ours = choices
+            .iter()
+            .filter(|choice| choice.path.starts_with(&root_text))
+            .map(|choice| choice.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ours, ["Firefox", "Thorium"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

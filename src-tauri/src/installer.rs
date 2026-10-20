@@ -4354,7 +4354,99 @@ static LAUNCH_CACHE: OnceLock<parking_lot::Mutex<HashMap<LaunchCacheKey, LaunchC
 const LAUNCH_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn launch_cache() -> &'static parking_lot::Mutex<HashMap<LaunchCacheKey, LaunchCacheEntry>> {
-    LAUNCH_CACHE.get_or_init(|| parking_lot::Mutex::new(HashMap::new()))
+    LAUNCH_CACHE.get_or_init(|| parking_lot::Mutex::new(load_launch_cache()))
+}
+
+/// Where the previous session found each program's executable.
+///
+/// Resolving one walks the whole installation and reads the header of every
+/// executable in it. On a disk Windows has not cached yet — the first start-up
+/// after a while — that took five to ten seconds over a library of games, and
+/// the start-up scan waited for all of it. The answers are kept on disk and
+/// trusted only under the conditions the in-memory cache already demands: the
+/// same build of the store, the folder unchanged since, the executable still
+/// there. Anything else is resolved again from scratch.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredLaunchCache {
+    version: String,
+    entries: Vec<StoredLaunch>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredLaunch {
+    root: PathBuf,
+    preferred: Option<String>,
+    root_modified_ns: Option<u64>,
+    resolved: PathBuf,
+}
+
+fn launch_cache_path() -> PathBuf {
+    paths::app_dir().join("launch-cache.json")
+}
+
+fn load_launch_cache() -> HashMap<LaunchCacheKey, LaunchCacheEntry> {
+    let stored: Option<StoredLaunchCache> = crate::store::load_json(&launch_cache_path(), None);
+    // Another build may rank executables differently, so its answers are not
+    // this build's answers.
+    let Some(stored) = stored.filter(|stored| stored.version == env!("CARGO_PKG_VERSION")) else {
+        return HashMap::new();
+    };
+    let loaded_at = std::time::Instant::now();
+    stored
+        .entries
+        .into_iter()
+        .take(512)
+        .map(|entry| {
+            (
+                LaunchCacheKey {
+                    root: entry.root,
+                    preferred: entry.preferred,
+                },
+                LaunchCacheEntry {
+                    root_modified: entry
+                        .root_modified_ns
+                        .map(|nanos| std::time::UNIX_EPOCH + std::time::Duration::from_nanos(nanos)),
+                    resolved: entry.resolved,
+                    stored_at: loaded_at,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Keeps what this session resolved for the next start-up. Called after a
+/// complete status scan, which is when the cache holds every installed program.
+pub fn persist_launch_cache() {
+    let entries = launch_cache()
+        .lock()
+        .iter()
+        .filter(|(_, entry)| entry.stored_at.elapsed() < LAUNCH_CACHE_TTL)
+        .map(|(key, entry)| StoredLaunch {
+            root: key.root.clone(),
+            preferred: key.preferred.clone(),
+            root_modified_ns: entry
+                .root_modified
+                .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|elapsed| elapsed.as_nanos() as u64),
+            resolved: entry.resolved.clone(),
+        })
+        .collect::<Vec<_>>();
+    // Checked outside the lock: a program uninstalled since leaves an entry
+    // nothing will ever look up again, and it should not travel forever.
+    let entries = entries
+        .into_iter()
+        .filter(|entry| entry.resolved.is_file())
+        .collect::<Vec<_>>();
+    let stored = StoredLaunchCache {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        entries,
+    };
+    if let Err(error) = crate::store::save_json_atomic(&launch_cache_path(), &stored) {
+        crate::logger::debug(
+            "status",
+            format!("No se pudo guardar la caché de ejecutables: {error}"),
+        );
+    }
 }
 
 pub fn resolve_launchable_path(

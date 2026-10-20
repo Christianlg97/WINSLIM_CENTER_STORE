@@ -37,6 +37,14 @@
         { family: "Contoso.Notes_abc", full_name: "Contoso.Notes_3.10.0_x64__abc", name: "Contoso.Notes", display_name: "Contoso Notes", version: "3.10.0", install_location: "C:\\Program Files\\WindowsApps\\Contoso.Notes_3.10.0_x64__abc", can_uninstall: true, launch_target: "shell:AppsFolder\\Contoso.Notes_abc!App" },
         { family: "Contoso.Legacy_xyz", full_name: "Contoso.Legacy_1.0.0_x64__xyz", name: "Contoso.Legacy", display_name: "Contoso Legacy", version: "1.0.0", install_location: "C:\\Program Files\\WindowsApps\\Contoso.Legacy_1.0.0_x64__xyz", can_uninstall: false, launch_target: null },
       ];
+      // Navegadores de este equipo de mentira, para las aplicaciones web.
+      // ?no-browsers simula un equipo sin ninguno y ?web-browser=RUTA uno que
+      // ya tiene elegido el de la tienda.
+      const harnessBrowsers = [
+        { name: "Thorium", path: "C:\\Program Files\\Thorium\\Application\\thorium.exe", app_mode: true, windows_default: false },
+        { name: "Mozilla Firefox", path: "C:\\Program Files\\Mozilla Firefox\\firefox.exe", app_mode: false, windows_default: false },
+      ];
+      let harnessWebBrowser = msStoreTestParams.get("web-browser") || null;
       const msStorePublished = {
         "Contoso.Notes_abc": msStoreTestParams.get("ms-published") || "3.14.2",
         "Contoso.Legacy_xyz": "1.0.0",
@@ -67,10 +75,22 @@
       // ?installed-update=steam da por instalada esa aplicación del catálogo con
       // una versión vieja, que es lo que hace falta para que aparezca en
       // «Actualizaciones» y se pueda pulsar su botón.
+      // ?installed=id1,id2 las da por instaladas y al día, con versión «latest»
+      // como las deja la tienda, que es el caso del distintivo «Ya instalado».
       function mockStatuses() {
+        const statuses = {};
+        for (const id of (msStoreTestParams.get("installed") || "").split(",").filter(Boolean)) {
+          statuses[id] = {
+            installed: true, version: "latest", origin: "center",
+            install_path: "C:\\Apps\\" + id + "\\app.exe", install_location: "C:\\Apps\\" + id,
+            update_available: false, latest_version: null, pending_restart: false,
+            can_uninstall: true, can_launch: true,
+          };
+        }
         const appId = msStoreTestParams.get("installed-update");
-        if (!appId) return {};
+        if (!appId) return statuses;
         return {
+          ...statuses,
           [appId]: {
             installed: true,
             version: "1.0.0",
@@ -103,12 +123,35 @@
                 : null;
             }
             if (command === "open_portable_backups") return null;
+            if (command === "web_browsers") {
+              return msStoreTestParams.has("no-browsers")
+                ? { browsers: [], selected: null }
+                : { browsers: harnessBrowsers, selected: harnessWebBrowser };
+            }
+            if (command === "set_web_browser") {
+              harnessWebBrowser = args.path;
+              return null;
+            }
             if (command === "uninstall_app") return "Aplicación desinstalada.";
             if (command === "get_bootstrap") {
-              return { catalog: await catalog(), app_version: "0.1.3", installed: {}, statuses: mockStatuses(), settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
+              const apps = await catalog();
+              const statuses = mockStatuses();
+              // ?pending simula el primer arranque, sin instantánea de la sesión
+              // anterior: de lo que no instaló la tienda no se sabe nada hasta
+              // que conteste el escaneo.
+              const status_pending = msStoreTestParams.has("pending")
+                ? apps.map((app) => app.id).filter((id) => !statuses[id])
+                : [];
+              return { catalog: apps, app_version: "0.1.3", installed: {}, statuses, status_pending, settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
             }
             if (command === "reload_catalog") return catalog();
-            if (command === "refresh_statuses" || command === "check_updates") return mockStatuses();
+            if (command === "refresh_statuses" || command === "check_updates") {
+              // ?scan-delay=MS y ?updates-delay=MS alargan cada paso, para ver la
+              // tienda mientras el arranque comprueba el equipo por detrás.
+              const delay = Number(msStoreTestParams.get(command === "refresh_statuses" ? "scan-delay" : "updates-delay") || 0);
+              if (delay) await new Promise((resolve) => setTimeout(resolve, delay));
+              return mockStatuses();
+            }
             if (command === "get_tasks") return mockTasks;
             if (command === "get_templates") return [];
             if (command === "save_catalog") return "apps.test.json";
@@ -393,6 +436,10 @@
     </script>
   </head>
   <body>
+    <div class="boot-splash" id="boot-splash" role="status" aria-label="Iniciando WinSlimCenter">
+      <div class="sync-logo-box" aria-hidden="true"><div class="sync-logo-ring"></div><div class="sync-logo-wrapper"><img src="/src/assets/winslim-center-logo.png" alt="" /></div></div>
+      <div class="boot-splash-copy" aria-hidden="true"><strong>WinSlimCenter</strong><span>Preparando la tienda…</span></div>
+    </div>
     <div id="app">
       <header class="topbar">
         <div class="brand"><span class="brand-mark"><img src="/src/assets/winslim-center-logo.png" alt="" /></span><span class="brand-name">WinSlimCenter</span><span class="brand-sub">App Store</span></div>
@@ -403,7 +450,7 @@
           <button type="button" class="about-btn" id="btn-about" aria-label="Acerca de WinSlimCenter">i</button>
         </div>
       </header>
-      <div class="shell"><aside class="sidebar" id="sidebar"></aside><main class="main"><div class="scroll" id="content"></div></main></div>
+      <div class="shell"><div class="loading-line" id="loading-line" aria-hidden="true"></div><aside class="sidebar" id="sidebar"></aside><main class="main"><div class="scroll" id="content"></div></main></div>
       <footer class="status-bar">
         <div class="status-message" role="status" aria-live="polite">
           <span class="status-dot" id="status-dot" aria-hidden="true"></span>

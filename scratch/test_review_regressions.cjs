@@ -130,9 +130,58 @@ function queueEligibility() {
     },
     derived: { catalogById: new Map(catalog.map(app => [app.id, app])), taskByAppId: new Map() },
   });
-  load(ctx, ['isQueueable', 'isBulkUpdateRunning', 'appStatus']);
+  load(ctx, ['isQueueable', 'isBulkUpdateRunning', 'appStatus', 'isStatusPending']);
   assert.deepEqual(catalog.filter(app => ctx.isQueueable(app)).map(app => app.id), ['steam']);
   assert.equal(ctx.isQueueable({ id: 'winget-demo', source_type: 'winget' }), false, 'repository results have no catalog card');
+  ctx.state.verifyingStatuses = true;
+  ctx.state.statusPending = new Set(['steam']);
+  assert.equal(ctx.isQueueable(catalog[0]), false, 'nothing is queued before the machine has answered for it');
+}
+
+// Arranque sin pantalla de carga: lo que nadie sabía espera con una silueta, y
+// lo que se pulsa durante el escaneo se decide con su respuesta.
+async function startupVerification() {
+  const app = { id: 'steam', name: 'Steam', source_type: 'wget' };
+  const ran = [];
+  let answer;
+  const ctx = vm.createContext({
+    Map, Set,
+    state: { busy: {}, statuses: { steam: { installed: false } }, verifyingStatuses: true, statusPending: new Set(['steam']) },
+    derived: { taskByAppId: new Map() },
+    escapeHtml: String,
+    findApp: () => app,
+    updateVisibleAppActions() {}, renderContent() {},
+    installApp: (id, update) => ran.push(update ? `update:${id}` : `install:${id}`),
+    uninstallApp: id => ran.push(`uninstall:${id}`),
+    launchApp: id => ran.push(`launch:${id}`),
+  });
+  vm.runInContext('let statusVerification = null;', ctx);
+  load(ctx, ['isStatusPending', 'appStatus', 'actionButtons', 'runAppAction', 'afterStatusesVerified']);
+  assert.match(ctx.actionButtons(app), /btn-skeleton/, 'an unanswered card shows a placeholder, not Install');
+  assert.doesNotMatch(ctx.actionButtons(app), /data-install=/);
+
+  // Seeded from the previous session: offered, but held until the scan says.
+  ctx.state.statusPending = new Set();
+  assert.match(ctx.actionButtons(app), /data-install="steam"/);
+  vm.runInContext('statusVerification = new Promise(resolve => { globalThis.__answer = resolve; });', ctx);
+  answer = ctx.__answer;
+  const button = { disabled: false, textContent: 'Instalar', setAttribute() {}, isConnected: false };
+  const click = ctx.afterStatusesVerified('install', 'steam', button);
+  assert.equal(button.disabled, true);
+  assert.equal(ran.length, 0, 'nothing runs before the scan answers');
+  // The scan finds it already installed: Install no longer applies.
+  ctx.state.statuses.steam = { installed: true, can_launch: true };
+  answer({});
+  await click;
+  assert.deepEqual(ran, [], 'an action the scan disproved is dropped');
+
+  // Still offered after the answer: it runs.
+  vm.runInContext('statusVerification = Promise.resolve({});', ctx);
+  await ctx.afterStatusesVerified('launch', 'steam');
+  assert.deepEqual(ran, ['launch:steam']);
+  vm.runInContext('statusVerification = null;', ctx);
+  await ctx.afterStatusesVerified('uninstall', 'steam');
+  assert.deepEqual(ran, ['launch:steam', 'uninstall:steam']);
 }
 
 function restoredRepositories() {
@@ -150,7 +199,140 @@ function restoredRepositories() {
   assert.equal(ctx.knownApps().length, 1, 'curated packages must not be duplicated');
 }
 
+// «Buscar actualizaciones» durante la consulta del arranque espera a ésa en vez
+// de repetir las mismas consultas a la Microsoft Store después.
+async function msStoreScanReuse() {
+  const runs = [];
+  const ctx = vm.createContext({
+    state: { msstore: { ring: 'Retail', arch: 'auto', scanning: false } },
+    renderContent() {}, renderSidebar() {},
+    runMsStoreUpdatesScan: options => new Promise(resolve => runs.push({ options, resolve })),
+  });
+  vm.runInContext('let msStoreScanInFlight = null; let msStoreFullScanInFlight = null;', ctx);
+  load(ctx, ['scanMsStoreUpdates']);
+  const startup = ctx.scanMsStoreUpdates({ quiet: true });
+  await Promise.resolve();
+  const button = ctx.scanMsStoreUpdates({ quiet: true });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runs.length, 1, 'a full scan in flight is reused, not queued again');
+  runs[0].resolve();
+  await Promise.all([startup, button]);
+  assert.equal(runs.length, 1);
+  assert.equal(ctx.state.msstore.scanning, false);
+
+  // A different channel is a different question: it waits its turn and runs.
+  const first = ctx.scanMsStoreUpdates({ quiet: true });
+  ctx.state.msstore.ring = 'RP';
+  const other = ctx.scanMsStoreUpdates({ quiet: true });
+  await new Promise(resolve => setImmediate(resolve));
+  runs[1].resolve();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(runs.length, 3, 'another channel is checked after the running scan');
+  runs[2].resolve();
+  await Promise.all([first, other]);
+  // And a check of a few families is never answered by a full one.
+  const subset = ctx.scanMsStoreUpdates({ quiet: true, families: ['Demo_abc'] });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(runs[3].options.families, ['Demo_abc']);
+  runs[3].resolve();
+  await subset;
+}
+
+// Las aplicaciones web preguntan una vez con qué navegador abrirse, lo recuerdan
+// y, sin ninguno instalado, lo dicen en lugar de fallar.
+async function webBrowserChoice() {
+  const thorium = 'C:\\Program Files\\Thorium\\Application\\thorium.exe';
+  const firefox = 'C:\\Program Files\\Mozilla Firefox\\firefox.exe';
+  let setup = {
+    browsers: [
+      { name: 'Thorium', path: thorium, app_mode: true, windows_default: true },
+      { name: 'Mozilla Firefox', path: firefox, app_mode: false, windows_default: false },
+    ],
+    selected: null,
+  };
+  const modals = [];
+  const saved = [];
+  const ctx = vm.createContext({
+    state: {},
+    invoke: async (name, args) => {
+      if (name === 'web_browsers') return setup;
+      if (name === 'set_web_browser') saved.push(args.path);
+    },
+    showConfirmModal: options => modals.push(options),
+    showAlertModal() {}, renderSidebar() {}, renderContent() {}, clientLog() {},
+  });
+  load(ctx, ['webBrowserSetup', 'webBrowserChoices', 'showNoBrowserModal', 'rememberWebBrowser', 'ensureWebBrowser']);
+
+  assert.equal(ctx.webBrowserChoices(setup).selected, thorium, "Windows' default is the suggestion");
+  assert.equal(ctx.webBrowserChoices({ ...setup, selected: firefox }).selected, firefox, 'the store choice wins');
+
+  const asked = ctx.ensureWebBrowser();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(modals.length, 1, 'asked the first time');
+  await modals[0].onConfirm(firefox);
+  assert.equal(await asked, true);
+  assert.deepEqual(saved, [firefox]);
+
+  setup = { ...setup, selected: firefox };
+  assert.equal(await ctx.ensureWebBrowser(), true);
+  assert.equal(modals.length, 1, 'remembered: not asked again');
+
+  setup = { browsers: [], selected: null };
+  assert.equal(await ctx.ensureWebBrowser(), false);
+  assert.equal(modals[1].title, 'No hay ningún navegador');
+}
+
+// Cada cifra cuenta lo que se ve: ni los componentes de una suite que no está
+// instalada ni, dos veces, un paquete de WinGet que el catálogo ya tiene.
+function visibleCounters() {
+  const catalog = [
+    { id: 'steam', source_type: 'wget' },
+    { id: 'demo', source_type: 'winget', winget_id: 'Vendor.Demo' },
+    { id: 'word', source_type: 'component', component_of: 'microsoft_365' },
+  ];
+  const ctx = vm.createContext({
+    state: {
+      catalog,
+      repoEntries: [{ id: 'winget-vendor.demo', winget_id: 'Vendor.Demo' }],
+      statuses: {
+        steam: { installed: true, update_available: true },
+        demo: { installed: true, update_available: true },
+        'winget-vendor.demo': { installed: true, update_available: true },
+        word: { installed: false },
+      },
+    },
+    msStoreUpdatesList: () => [{ family: 'Contoso.Notes_abc' }],
+  });
+  load(ctx, ['appStatus', 'componentVisible', 'knownApps', 'visibleCatalogCount', 'visibleKnownApps', 'installedCount', 'updatesCount']);
+  assert.equal(ctx.visibleCatalogCount(), 2, 'a suite component is not shown, so it is not counted');
+  assert.equal(ctx.installedCount(), 2, 'the WinGet duplicate of a catalog entry counts once');
+  assert.equal(ctx.updatesCount(), 3, 'two from the catalog and one from the Microsoft Store');
+  ctx.state.statuses.word = { installed: true };
+  assert.equal(ctx.visibleCatalogCount(), 3, 'shown once its suite is installed');
+}
+
+// Ni «vlatest» ni «vv2.0»: la última versión se dice con palabras y un número
+// lleva su «v» una sola vez.
+function versionLabels() {
+  const ctx = vm.createContext({});
+  load(ctx, ['versionLabel']);
+  assert.equal(ctx.versionLabel('latest'), 'Última versión');
+  assert.equal(ctx.versionLabel(''), 'Última versión');
+  assert.equal(ctx.versionLabel(undefined), 'Última versión');
+  assert.equal(ctx.versionLabel('2.39'), 'v2.39');
+  assert.equal(ctx.versionLabel('v2.0'), 'v2.0');
+  assert.equal(ctx.versionLabel('V3.1'), 'v3.1');
+  assert.equal(ctx.versionLabel('nightly'), 'Nightly');
+  assert.equal(ctx.versionLabel('LTS'), 'LTS');
+  assert.equal(ctx.versionLabel('Unknown', ''), '', 'WinGet without a version says nothing');
+  assert.equal(ctx.versionLabel('latest', 'versión desconocida'), 'versión desconocida');
+}
+
 (async () => {
+  versionLabels();
+  visibleCounters();
+  await msStoreScanReuse();
+  await webBrowserChoice();
   await cancellation('catalog');
   await cancellation('msstore');
   await cancellation('catalog', true);
@@ -160,5 +342,6 @@ function restoredRepositories() {
   restoredRepositories();
   await queuedInstall();
   queueEligibility();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and install queue passed.');
+  await startupVerification();
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors, install queue, start-up verification, Microsoft Store scan reuse, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -329,7 +329,9 @@ fn system_launch_candidates(app: &SystemApp) -> Vec<PathBuf> {
     candidates
 }
 
-#[derive(Debug, Clone, Serialize)]
+// Deserialize is for `store::load_status_snapshot`: the next start-up opens
+// with what the last scan committed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppStatus {
     pub installed: bool,
     pub version: String,
@@ -720,6 +722,22 @@ fn an_excluded_sibling_explains(
         .any(|excluded| excluded >= quality)
 }
 
+/// Whether the record is the WebView2 runtime and the entry does not ask for it
+/// by name.
+///
+/// Every copy of Windows 10 and 11 carries the runtime, and its name holds the
+/// whole of "Microsoft Edge" in each language it is published in — "Microsoft
+/// Edge WebView2 Runtime", "WebView2 Runtime de Microsoft Edge" — so on a system
+/// without Edge the store took it for the browser: the card offered to open
+/// `msedgewebview2.exe`, the engine other programs draw their windows with, and
+/// to uninstall it. Its name changes with the language, which rules out an
+/// exclusion list in the catalog; the word WebView does not.
+fn is_webview_runtime_of_another_entry(display_name: &str, candidates: &[&str]) -> bool {
+    let mentions_webview =
+        |name: &str| words(name).iter().any(|word| word.starts_with("webview"));
+    mentions_webview(display_name) && !candidates.iter().any(|candidate| mentions_webview(candidate))
+}
+
 /// Picks the registry entry that best matches the catalog names.
 ///
 /// Windows routinely registers the same product several times (per-user and
@@ -739,6 +757,7 @@ pub fn match_system_app(
     }
     system
         .iter()
+        .filter(|app| !is_webview_runtime_of_another_entry(&app.display_name, &candidates))
         .filter_map(|app| {
             candidates
                 .iter()
@@ -2212,6 +2231,41 @@ mod tests {
 
         let system = vec![system_app("Rockstar Games Launcher", Some("b.exe"))];
         assert!(match_system_app("Rockstar Games Launcher", &[], &[], &system).is_some());
+    }
+
+    #[test]
+    fn the_webview2_runtime_is_not_microsoft_edge() {
+        let edge = serde_json::json!({
+            "id": "microsoft_edge",
+            "name": "Microsoft Edge",
+            "source_type": "winget",
+            "winget_id": "Microsoft.Edge",
+        });
+        // Un Windows sin Edge: lo único con «Microsoft Edge» en el nombre es el
+        // motor WebView2, en español o en inglés.
+        for runtime in ["WebView2 Runtime de Microsoft Edge", "Microsoft Edge WebView2 Runtime"] {
+            let system = vec![system_app(runtime, Some("setup.exe --uninstall --msedgewebview"))];
+            assert!(
+                match_system_app("Microsoft Edge", &[], &[], &system).is_none(),
+                "{runtime} no es Edge"
+            );
+            let statuses = build_statuses(&[edge.clone()], &HashMap::new(), &system, &[], "");
+            assert!(!statuses["microsoft_edge"].installed, "{runtime}");
+            // Una ficha que lo nombra sí lo reconoce.
+            assert!(match_system_app(runtime, &[], &[], &system).is_some());
+        }
+
+        // Con Edge instalado, responde su propio registro.
+        let system = vec![
+            system_app("WebView2 Runtime de Microsoft Edge", Some("setup.exe --msedgewebview")),
+            system_app("Microsoft Edge", Some("setup.exe --uninstall --msedge")),
+        ];
+        assert_eq!(
+            match_system_app("Microsoft Edge", &[], &[], &system)
+                .unwrap()
+                .display_name,
+            "Microsoft Edge"
+        );
     }
 
     #[test]

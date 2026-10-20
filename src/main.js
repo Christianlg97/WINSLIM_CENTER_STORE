@@ -14,8 +14,10 @@ const NAV = [
   { id: "multimedia", label: "Multimedia", icon: "🎬", filter: "Multimedia" },
   { id: "product", label: "Productividad", icon: "📝", filter: "Productividad" },
   { id: "social", label: "Social y Comunicación", icon: "💬", filter: "Social y Comunicación" },
-  { id: "installed", label: "Mis aplicaciones", icon: "✅", filter: "__INSTALLED__" },
   { id: "msstore", label: "Microsoft Store", icon: "🛍️", filter: "__MSSTORE__" },
+  // Lo que hay en este equipo, no en el catálogo: va en el grupo «Local» de la
+  // barra lateral, junto al directorio de aplicaciones.
+  { id: "installed", label: "Aplicaciones instaladas", icon: "✅", filter: "__INSTALLED__", group: "local" },
 ];
 
 /**
@@ -211,6 +213,13 @@ const state = {
   projectSlogan: chooseProjectSlogan(),
   scanningUpdates: false,
   lastUpdateScan: null,
+  // Mientras el primer escaneo completo del equipo está en marcha. Las fichas de
+  // `statusPending` son aquellas de las que nadie ha contestado todavía —ni la
+  // pasada rápida del arranque ni la instantánea de la sesión anterior— y se
+  // dibujan como «comprobando» en vez de ofrecer instalar algo que quizá ya
+  // está puesto.
+  verifyingStatuses: false,
+  statusPending: new Set(),
   // «Actualizar todo», mientras dura. Cada fila se sigue por el mismo
   // identificador con el que el backend nombra su tarea —el id del catálogo, o
   // `msstore:PRODUCTO`—, así que los eventos de progreso y de fin caen en su
@@ -289,8 +298,6 @@ const derived = {
   iconCandidatesById: new Map(),
   iconSignaturesById: new Map(),
   consoleNames: [],
-  installedCount: 0,
-  updatesCount: 0,
   // Los paquetes de WinGet y de Chocolatey que esta sesión ha mandado
   // instalar. No son catálogo —no salen en ninguna lista ni se guardan— pero
   // durante su instalación el resto de la tienda tiene que poder encontrarlos
@@ -384,14 +391,6 @@ function replaceStatuses(statuses) {
     if (!!previous[id]?.update_available !== !!next[id]?.update_available) updatesChanged = true;
   }
   state.statuses = next;
-  let installed = 0;
-  let updates = 0;
-  for (const status of Object.values(state.statuses)) {
-    if (status?.installed) installed += 1;
-    if (status?.update_available) updates += 1;
-  }
-  derived.installedCount = installed;
-  derived.updatesCount = updates;
   return { ids: changedIds, installedChanged, updatesChanged };
 }
 
@@ -686,7 +685,7 @@ function idleStatusSummary() {
   const updates = updatesCount();
   return updates
     ? `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`
-    : `Todo al día · ${state.catalog.length} aplicaciones`;
+    : `Todo al día · ${visibleCatalogCount()} aplicaciones`;
 }
 
 function setTransientStatus(text, color, durationMs = 5000) {
@@ -716,6 +715,26 @@ function renderAppVersion() {
   // Blank until the backend answers, rather than a number invented here that
   // could disagree with the build actually running.
   if (version) version.textContent = state.appVersion ? `v${state.appVersion}` : "";
+}
+
+/// La respuesta del primer escaneo del equipo, mientras se espera.
+let statusVerification = null;
+
+/// Para las tandas: se arman con lo que el equipo tiene de verdad, no con lo
+/// que recordaba la sesión anterior.
+async function untilStatusesVerified() {
+  const verification = statusVerification;
+  if (!verification) return;
+  setStatus("Comprobando el equipo antes de empezar…", "var(--accent)");
+  await verification.catch(() => {});
+}
+
+function isStatusPending(id) {
+  return state.verifyingStatuses && state.statusPending.has(id);
+}
+
+function hasPendingStatuses() {
+  return state.verifyingStatuses && state.statusPending.size > 0;
 }
 
 function appStatus(id) {
@@ -802,82 +821,76 @@ function lastScanLabel() {
   return `Última comprobación · ${time}`;
 }
 
-/**
- * La tarjeta de «Actualizaciones» cuando no queda nada pendiente. Ocupa el
- * hueco de la lista y lleva dentro el botón de volver a comprobar, que es lo
- * único que se puede hacer desde ahí.
- */
-function updatesUpToDateCardHtml() {
-  const scanning = state.scanningUpdates;
+/// El logotipo de la tienda con su distintivo: un tic, o la lupa de una
+/// búsqueda sin coincidencias.
+function emptyUpdatesBadgeHtml(mark, extraClass = "") {
   return `
-    <div class="empty-updates-wrap">
-      <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
-        <div class="empty-updates-hero">
-          <div class="empty-updates-badge-container">
-            <div class="empty-updates-logo-wrapper">
-              <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
-            </div>
-            <div class="empty-updates-check-badge">✓</div>
-          </div>
-          <h2>Todo tu software está al día</h2>
-          <p>WinSlimCenter ha verificado el catálogo de tus aplicaciones instaladas y no hay actualizaciones pendientes en este momento.</p>
-          ${scanUpdatesButtonHtml({ hero: true })}
-          <p class="empty-updates-hint">${
-            scanning
-              ? "Comparando las versiones instaladas con WinGet y con la Microsoft Store."
-              : "Consulta WinGet y la Microsoft Store en busca de versiones nuevas de tus aplicaciones instaladas."
-          }</p>
-          <div class="empty-updates-status">
-            <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
-          </div>
-        </div>
+    <div class="empty-updates-badge-container" aria-hidden="true">
+      <div class="empty-updates-logo-wrapper">
+        <img src="assets/winslim-center-logo.png" width="904" height="904" alt="" />
       </div>
+      <div class="empty-updates-check-badge ${extraClass}">${mark}</div>
     </div>`;
 }
 
 /**
- * La misma tarjeta cuando sí hay actualizaciones pendientes pero ninguna casa
- * con lo escrito en la barra. Misma silueta para que la sección no cambie de
- * cara al escribir: sólo cambian el distintivo, el texto y la acción, que aquí
- * es vaciar la búsqueda para volver a verlas todas.
+ * «Actualizaciones» cuando no queda nada pendiente: un panel a lo ancho, arriba
+ * y en el mismo sitio que la barra que aparece cuando sí las hay, con el botón
+ * de volver a comprobar a la derecha. Una tarjeta estrecha centrada en todo el
+ * alto de la sección dejaba más hueco que contenido.
+ */
+function updatesUpToDateCardHtml() {
+  return `
+    <div class="empty-updates-card" aria-label="Sin actualizaciones pendientes">
+      ${emptyUpdatesBadgeHtml("✓")}
+      <div class="empty-updates-copy">
+        <h2>Todo tu software está al día</h2>
+        <p>WinSlimCenter ha comparado tus aplicaciones instaladas con WinGet y con la Microsoft Store, y no hay versiones nuevas pendientes.</p>
+        <div class="empty-updates-status">
+          <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
+        </div>
+      </div>
+      <div class="empty-updates-action">${scanUpdatesButtonHtml({ hero: true })}</div>
+    </div>`;
+}
+
+/**
+ * El mismo panel cuando sí hay actualizaciones pendientes pero ninguna casa con
+ * lo escrito en la barra. Misma silueta para que la sección no cambie de cara
+ * al escribir: sólo cambian el distintivo, el texto y la acción, que aquí es
+ * vaciar la búsqueda para volver a verlas todas.
  */
 function updatesSearchMissCardHtml(query) {
   const pending = updatesCount();
   const pendingLabel = `${pending} ${pending === 1 ? "actualización pendiente" : "actualizaciones pendientes"}`;
+  const lens = `
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-4-4" />
+    </svg>`;
   return `
-    <div class="empty-updates-wrap">
-      <div class="empty-updates-card empty-updates-search-miss" aria-label="Ninguna actualización coincide con la búsqueda">
-        <div class="empty-updates-hero">
-          <div class="empty-updates-badge-container">
-            <div class="empty-updates-logo-wrapper">
-              <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
-            </div>
-            <div class="empty-updates-check-badge empty-updates-search-badge" aria-hidden="true">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="11" cy="11" r="7" />
-                <path d="m20 20-4-4" />
-              </svg>
-            </div>
-          </div>
-          <h2>Sin actualizaciones para «${escapeHtml(query)}»</h2>
-          <p>Tienes ${pendingLabel}, pero ninguna de las aplicaciones con versión nueva coincide con ese criterio de búsqueda.</p>
-          <button type="button" class="btn primary empty-updates-clear" id="btn-clear-search"
-            title="Vaciar la barra de búsqueda y volver a ver todas las actualizaciones pendientes">
-            <svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
-              stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <rect x="3" y="3" width="7" height="7" rx="1.5" />
-              <rect x="14" y="3" width="7" height="7" rx="1.5" />
-              <rect x="3" y="14" width="7" height="7" rx="1.5" />
-              <rect x="14" y="14" width="7" height="7" rx="1.5" />
-            </svg>
-            <span>${pending === 1 ? "Ver la actualización pendiente" : `Ver las ${pending} actualizaciones`}</span>
-          </button>
-          <p class="empty-updates-hint">Prueba con otro nombre de aplicación o vacía la barra de búsqueda para verlas todas.</p>
-          <div class="empty-updates-status">
-            <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
-          </div>
+    <div class="empty-updates-card empty-updates-search-miss" aria-label="Ninguna actualización coincide con la búsqueda">
+      ${emptyUpdatesBadgeHtml(lens, "empty-updates-search-badge")}
+      <div class="empty-updates-copy">
+        <h2>Sin actualizaciones para «${escapeHtml(query)}»</h2>
+        <p>Tienes ${pendingLabel}, pero ninguna coincide con esa búsqueda. Prueba con otro nombre o vacía la barra para verlas todas.</p>
+        <div class="empty-updates-status">
+          <span class="pulse-dot"></span> ${escapeHtml(lastScanLabel())}
         </div>
+      </div>
+      <div class="empty-updates-action">
+        <button type="button" class="btn primary empty-updates-clear" id="btn-clear-search"
+          title="Vaciar la barra de búsqueda y volver a ver todas las actualizaciones pendientes">
+          <svg class="btn-svg-icon" width="16" height="16" viewBox="0 0 24 24" fill="none"
+            stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="3" y="3" width="7" height="7" rx="1.5" />
+            <rect x="14" y="3" width="7" height="7" rx="1.5" />
+            <rect x="3" y="14" width="7" height="7" rx="1.5" />
+            <rect x="14" y="14" width="7" height="7" rx="1.5" />
+          </svg>
+          <span>${pending === 1 ? "Ver la actualización pendiente" : `Ver las ${pending} actualizaciones`}</span>
+        </button>
       </div>
     </div>`;
 }
@@ -889,6 +902,19 @@ function updatesSearchMissCardHtml(query) {
  * taken into account, and only then does the backend ask WinGet — otherwise the
  * scan would compare against a stale list of installed packages.
  */
+/// Mientras «Buscar actualizaciones» espera a la Microsoft Store con la barra
+/// de estado a la vista.
+let msStoreProgressVisible = false;
+
+/// «7 de 17» en vez de un «consultando» sin final a la vista. El avance llega
+/// de cualquier consulta completa en marcha, también de la que empezó el
+/// arranque y que ésta reutiliza.
+function reportMsStoreScanProgress({ done = 0, total = 0 } = {}) {
+  if (!msStoreProgressVisible || !total) return;
+  setStatus(`Consultando la Microsoft Store… ${done} de ${total}`, "var(--accent)");
+  setProgress(85 + Math.round((14 * done) / total));
+}
+
 async function scanForUpdates() {
   if (state.scanningUpdates) return;
   state.scanningUpdates = true;
@@ -908,6 +934,7 @@ async function scanForUpdates() {
     // tarda lo suyo y un fallo suyo no puede invalidar lo que ya dijo WinGet.
     setStatus("Consultando la Microsoft Store...", "var(--accent)");
     setProgress(85);
+    msStoreProgressVisible = true;
     await ensureMsStoreInstalled({ force: true });
     await scanMsStoreUpdates({ quiet: true });
     const updates = updatesCount();
@@ -924,6 +951,7 @@ async function scanForUpdates() {
     setTransientStatus(`No se pudo comprobar las actualizaciones: ${error}`, "var(--red)", 8000);
     clientLog("warn", "updates-scan", String(error?.stack || error));
   } finally {
+    msStoreProgressVisible = false;
     state.scanningUpdates = false;
     suppressShellBusy = false;
     hideShellBusy();
@@ -933,15 +961,32 @@ async function scanForUpdates() {
   }
 }
 
+// Todas las cifras salen de las mismas fichas que se dibujan, nunca del mapa de
+// estados en bruto ni del catálogo entero. Ese mapa trae también los
+// componentes de una suite, que sólo se enseñan con ella instalada, y, por
+// duplicado, los paquetes de WinGet que el catálogo ya tiene con otro
+// identificador: la barra de estado decía 279 aplicaciones donde «Inicio»
+// enseñaba 275, y el globo de «Actualizaciones» podía contar una que la sección
+// no lista.
+
+/// Las fichas del catálogo que la tienda enseña.
+function visibleCatalogCount() {
+  return state.catalog.filter(componentVisible).length;
+}
+
+function visibleKnownApps(predicate) {
+  return knownApps().filter((app) => componentVisible(app) && predicate(appStatus(app.id))).length;
+}
+
 function installedCount() {
-  return derived.installedCount;
+  return visibleKnownApps((status) => status.installed);
 }
 
 /// Las actualizaciones pendientes son las del catálogo y las de la Microsoft
 /// Store: el usuario ve una sola sección y una sola cifra, porque para él es
 /// una sola cosa.
 function updatesCount() {
-  return derived.updatesCount + msStoreUpdatesList().length;
+  return visibleKnownApps((status) => status.update_available) + msStoreUpdatesList().length;
 }
 
 function sectionFilter(app) {
@@ -1016,28 +1061,36 @@ function renderSidebar() {
   });
 }
 
+/// La cifra de «Actualizaciones», o un giro discreto mientras se buscan y aún
+/// no hay ninguna que contar.
+function updatesNavBadgeHtml() {
+  const count = updatesCount();
+  if (count > 0) return `<span class="nav-badge-count">${count}</span>`;
+  if (state.scanningUpdates) {
+    return `<span class="nav-badge-scan" role="status" aria-label="Buscando actualizaciones"></span>`;
+  }
+  return "";
+}
+
 function renderSidebarNow() {
   const el = document.getElementById("sidebar");
   el.innerHTML = `
-    <div class="sb-head">
-      <span class="brand-mark"><img src="assets/winslim-center-logo.png" width="904" height="904" alt="" /></span>
-      <div>
-        <strong>Biblioteca</strong>
-        <span>${installedCount()} instaladas</span>
-      </div>
-    </div>
-    <div class="sb-label">SECCIONES</div>
-    ${NAV.map(
-      (n) => `
-      <button type="button" class="nav-btn ${state.section === n.id ? "active" : ""}" data-nav="${n.id}">
-        <span class="nav-ico">${n.icon}</span>${escapeHtml(n.label)}
-        ${n.id === "updates" && updatesCount() > 0 ? `<span class="nav-badge-count">${updatesCount()}</span>` : ""}
-      </button>`
-    ).join("")}
-    <div class="sb-label">ACCIONES</div>
-    <button type="button" class="action-btn" data-action="theme">🎨  Apariencia</button>
-    <button type="button" class="action-btn" data-action="folder">📁  Directorio local</button>
+    <div class="sb-label">CATEGORÍAS</div>
+    ${NAV.filter((n) => n.group !== "local").map(navButtonHtml).join("")}
+    <div class="sb-label">LOCAL</div>
+    ${NAV.filter((n) => n.group === "local").map(navButtonHtml).join("")}
+    <button type="button" class="action-btn" data-action="folder">
+      <span class="nav-ico">📁</span><span class="nav-label">Directorio local</span>
+    </button>
   `;
+}
+
+function navButtonHtml(n) {
+  return `
+    <button type="button" class="nav-btn ${state.section === n.id ? "active" : ""}" data-nav="${n.id}">
+      <span class="nav-ico">${n.icon}</span><span class="nav-label">${escapeHtml(n.label)}</span>
+      ${n.id === "updates" ? updatesNavBadgeHtml() : ""}
+    </button>`;
 }
 
 function actionButtons(app, variant = "card") {
@@ -1059,6 +1112,13 @@ function actionButtons(app, variant = "card") {
     }[operation] || "Procesando…";
     const cls = variant === "hero" ? "btn soft" : "btn secondary";
     return `<button type="button" class="${cls}" disabled aria-busy="true">${label}</button>`;
+  }
+
+  // Sin respuesta del equipo todavía: un hueco con la forma del botón que
+  // vendrá, como hacen las tiendas mientras cargan, y no un «Instalar» que
+  // podría ser mentira.
+  if (isStatusPending(app.id)) {
+    return `<span class="btn-skeleton${variant === "hero" ? " hero" : ""}" role="status" aria-label="Comprobando si está instalada"></span>`;
   }
 
   // Un componente llega dentro de otra aplicación: no se instala ni se
@@ -1092,20 +1152,20 @@ function actionButtons(app, variant = "card") {
 
 function updateVersionBadge(st, modal = false) {
   if (st.pending_restart) {
-    const latest = String(st.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
+    const latest = versionLabel(st.latest_version, "la versión nueva");
     const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
-    return `<span class="${cls}" title="La versión nueva ya está instalada; Windows la aplicará al cerrar la aplicación">Instalada v${escapeHtml(latest)} · ciérrala para aplicarla</span>`;
+    return `<span class="${cls}" title="La versión nueva ya está instalada; Windows la aplicará al cerrar la aplicación">Instalada ${escapeHtml(latest)} · ciérrala para aplicarla</span>`;
   }
   if (!st.update_available) return "";
-  const current = String(st.version || "desconocida").replace(/^v(?=\d)/i, "");
-  const latest = String(st.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
+  const current = versionLabel(st.version, "versión desconocida");
+  const latest = versionLabel(st.latest_version, "la más reciente");
   const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
-  return `<span class="${cls}" title="Versión instalada y versión disponible">Actualización · v${escapeHtml(current)} → v${escapeHtml(latest)}</span>`;
+  return `<span class="${cls}" title="Versión instalada y versión disponible">Actualización · ${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
 }
 
 function cardMetaHtml(app) {
   const st = appStatus(app.id);
-  const version = st.installed ? st.version : app.version || "1.0";
+  const version = st.installed ? st.version : app.version;
   // Shown for anything installed, whoever installed it: the plain "en el
   // sistema" text only appeared for programs Windows had registered, so the
   // ones the store put there itself showed nothing at all.
@@ -1123,7 +1183,7 @@ function cardMetaHtml(app) {
           : "";
   return `
     <strong>${escapeHtml(app.name)}${origin}</strong>
-    <small>${escapeHtml(app.author || "—")}  ·  v${escapeHtml(version)}</small>
+    <small>${escapeHtml(app.author || "—")}  ·  ${escapeHtml(versionLabel(version))}</small>
     ${updateVersionBadge(st)}`;
 }
 
@@ -1147,6 +1207,27 @@ function cardHtml(app, index, prioritizeIcon = false) {
       <p class="card-desc">${escapeHtml(app.description || "")}</p>
       <div class="card-actions">${actionButtons(app, "card")}</div>
     </article>`;
+}
+
+/// Tarjetas vacías con la silueta de las de verdad, para lo que todavía se está
+/// buscando. Sin texto que leer: el título de la sección dice qué pasa.
+function skeletonSectionHtml(title, count) {
+  const card = `
+    <div class="app-card skeleton-card" aria-hidden="true">
+      <div class="card-top">
+        <div class="card-avatar skeleton-block"></div>
+        <div class="skeleton-lines"><i></i><i></i></div>
+      </div>
+      <div class="skeleton-lines skeleton-desc"><i></i><i></i></div>
+      <div class="card-actions"><span class="btn-skeleton"></span></div>
+    </div>`;
+  return `
+    <section class="section" aria-busy="true">
+      <div class="section-head">
+        <h3>${escapeHtml(title)}</h3>
+      </div>
+      <div class="grid">${card.repeat(count)}</div>
+    </section>`;
 }
 
 function sectionHtml(title, apps, { prioritizeIcons = false } = {}) {
@@ -1182,6 +1263,8 @@ function isQueueable(app) {
   if (!app || derived.catalogById.get(app.id) !== app) return false;
   if (app.source_type === "web" || app.source_type === "component") return false;
   if (state.busy[app.id] || derived.taskByAppId.has(app.id)) return false;
+  // Hasta que el equipo conteste no se sabe si hay algo que instalar.
+  if (isStatusPending(app.id)) return false;
   // Una fila de la tanda que aún espera su turno no está ocupada todavía, pero
   // ya está pedida.
   if (isBulkUpdateRunning() && state.bulkUpdate.byKey.has(app.id)) return false;
@@ -1386,11 +1469,18 @@ async function installSelection() {
     showBulkUpdateModal();
     return;
   }
+  await untilStatusesVerified();
   pruneSelection();
-  const apps = [...state.selection].map(findApp).filter(Boolean);
+  let apps = [...state.selection].map(findApp).filter(Boolean);
   if (!apps.length) {
     renderQueueDock();
     return;
+  }
+  // Las aplicaciones web de la tanda necesitan el navegador de la tienda antes
+  // de empezar. Sin él se quedan fuera y el resto sigue adelante.
+  if (apps.some((app) => app.source_type === "webapp") && !(await ensureWebBrowser())) {
+    apps = apps.filter((app) => app.source_type !== "webapp");
+    if (!apps.length) return;
   }
   const items = apps.map((app) => ({
     key: app.id,
@@ -1651,6 +1741,8 @@ async function ensureMsStoreInstalled({ force = false } = {}) {
 
 /** La comprobación de la tienda que está en marcha, para poder esperarla. */
 let msStoreScanInFlight = null;
+/** La completa —todas las instaladas— y con qué canal se pidió. */
+let msStoreFullScanInFlight = null;
 
 /**
  * Pregunta al canal elegido qué versión publica de cada aplicación.
@@ -1661,17 +1753,30 @@ let msStoreScanInFlight = null;
  * las demás.
  */
 async function scanMsStoreUpdates(options = {}) {
-  // Se encadena en vez de descartarse. Pulsar «Buscar actualizaciones» mientras
-  // el arranque todavía está preguntando a la tienda dejaba esa mitad sin
-  // hacer, y el botón terminaba contestando «no hay nada» por lo que aún no
-  // había mirado nadie.
   const store = state.msstore;
+  // Una comprobación completa ya en marcha con el mismo canal y arquitectura
+  // contesta lo mismo que otra lanzada ahora, así que se espera a ésa. Encadenar
+  // una segunda hacía que «Buscar actualizaciones» pulsado durante la del
+  // arranque esperase a que terminara y después repitiese las diecisiete
+  // consultas.
+  const full = !options.families;
+  const running = msStoreFullScanInFlight;
+  if (full && running && (running.ring ?? store.ring) === store.ring && running.arch === store.arch) {
+    if (!options.quiet) renderContent();
+    await running.scan.catch(() => {});
+    return;
+  }
+  // Lo demás se encadena en vez de descartarse. Pulsar «Buscar actualizaciones»
+  // mientras se consultaban sólo unas pocas dejaba el resto sin hacer, y el
+  // botón terminaba contestando «no hay nada» por lo que aún no había mirado
+  // nadie.
   const previous = msStoreScanInFlight;
   const scan = (async () => {
     if (previous) await previous;
     return runMsStoreUpdatesScan(options);
   })();
   msStoreScanInFlight = scan;
+  if (full) msStoreFullScanInFlight = { scan, ring: store.ring, arch: store.arch };
   // La marca de ocupado la lleva el encadenado y no cada consulta: si la
   // pusiera cada una, entre la que acaba y la que espera se apagaría, y el
   // botón parpadearía disponible sin estarlo.
@@ -1680,6 +1785,7 @@ async function scanMsStoreUpdates(options = {}) {
   try {
     await scan;
   } finally {
+    if (msStoreFullScanInFlight?.scan === scan) msStoreFullScanInFlight = null;
     if (msStoreScanInFlight === scan) {
       msStoreScanInFlight = null;
       store.scanning = false;
@@ -1850,12 +1956,12 @@ function msStoreHeroHtml() {
 function msStoreVersionBadge(app, { modal = false } = {}) {
   const report = msStoreUpdateOf(app.family);
   if (!report?.update_available) return "";
-  const current = String(app.version || "desconocida").replace(/^v(?=\d)/i, "");
-  const latest = String(report.latest_version || "más reciente").replace(/^v(?=\d)/i, "");
+  const current = versionLabel(app.version, "versión desconocida");
+  const latest = versionLabel(report.latest_version, "la más reciente");
   const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
   return `<span class="${cls}" title="Versión instalada y versión publicada en el canal ${escapeHtml(
     msStoreRingLabel()
-  )}">Actualización · v${escapeHtml(current)} → v${escapeHtml(latest)}</span>`;
+  )}">Actualización · ${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
 }
 
 function msStoreOriginTag(app) {
@@ -1919,7 +2025,7 @@ function msStoreCardHtml(product, index) {
       ? `<span class="origin-tag ms-kind-tag">${escapeHtml(kind)}</span>`
       : "";
   const meta = installed
-    ? `${escapeHtml(product.publisher || "Microsoft Store")}  ·  v${escapeHtml(installed.version)}`
+    ? `${escapeHtml(product.publisher || "Microsoft Store")}  ·  ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}`
     : `${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis`;
 
   let actions;
@@ -1974,7 +2080,7 @@ function msStoreInstalledCardHtml(app, index) {
           <strong>${escapeHtml(shape.name)}
             ${msStoreOriginTag(app)}
           </strong>
-          <small>Microsoft Store  ·  v${escapeHtml(app.version || "—")}</small>
+          <small>Microsoft Store  ·  ${escapeHtml(versionLabel(app.version, "versión desconocida"))}</small>
           ${msStoreVersionBadge(app)}
         </div>
       </div>
@@ -2021,7 +2127,7 @@ let inlineMsStoreTimer = null;
 
 /// Dónde tiene sentido colgar los resultados de la Microsoft Store.
 ///
-/// En su propia sección sobra, que ya tiene buscador. En «Mis aplicaciones» y
+/// En su propia sección sobra, que ya tiene buscador. En «Aplicaciones instaladas» y
 /// en «Actualizaciones» también: ahí ya hay un bloque titulado Microsoft Store
 /// que habla de lo que el equipo tiene puesto, y un segundo con el mismo
 /// título ofreciendo cosas que instalar sólo confundiría.
@@ -2231,7 +2337,7 @@ const REPO_INLINE_LIMIT = 6;
 const repoInlineTimers = {};
 
 /// Dónde tiene sentido colgar los repositorios: donde se está buscando algo que
-/// instalar. En «Mis aplicaciones» y «Actualizaciones» se mira lo que ya está
+/// instalar. En «Aplicaciones instaladas» y «Actualizaciones» se mira lo que ya está
 /// puesto, y en la sección de la Microsoft Store se está en otra tienda.
 function repoInlineFits() {
   return !["installed", "updates", MSSTORE_SECTION].includes(state.section);
@@ -2400,7 +2506,9 @@ function repoCardHtml(repoId, pkg, index) {
   const letter = (pkg.name || pkg.key || "?")[0].toUpperCase();
   const busy = state.busy[appId];
   const installedApp = installedRepoApp(repoId, pkg);
-  const meta = [pkg.publisher, pkg.version ? `v${pkg.version}` : ""]
+  // Sin versión que enseñar —WinGet contesta «Unknown» a menudo— no se dice
+  // nada antes que «vUnknown».
+  const meta = [pkg.publisher, versionLabel(pkg.version, "")]
     .filter(Boolean)
     .join("  ·  ");
 
@@ -2569,7 +2677,7 @@ function msStoreMatchesSearch(app, query) {
   return `${app.display_name} ${app.name} ${app.family}`.toLocaleLowerCase("es-ES").includes(query);
 }
 
-/// La subsección de «Mis aplicaciones» con lo que vino de la Microsoft Store.
+/// La subsección de «Aplicaciones instaladas» con lo que vino de la Microsoft Store.
 function msStoreInstalledSectionHtml(query) {
   const apps = state.msstore.installed.filter((app) => msStoreMatchesSearch(app, query));
   if (!apps.length) return "";
@@ -2904,7 +3012,7 @@ function closeShotViewer() {
 /**
  * El producto detrás de un identificador, esté o no en los resultados.
  *
- * Una tarjeta de «Mis aplicaciones» conoce su producto pero nunca pasó por una
+ * Una tarjeta de «Aplicaciones instaladas» conoce su producto pero nunca pasó por una
  * búsqueda, así que la ficha se pide igual que cuando se pega su enlace.
  */
 async function msStoreResolveProduct(productId) {
@@ -2953,7 +3061,7 @@ async function openMsStoreModal(productId) {
           <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
           ${
             installed
-              ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Instalada · v${escapeHtml(installed.version)}</div>
+              ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Instalada · ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}</div>
                  ${report?.update_available ? `<div>${msStoreVersionBadge(installed, { modal: true })}</div>` : ""}`
               : ""
           }
@@ -3389,6 +3497,12 @@ function renderContentNow() {
     html += sectionHtml(label, apps, { prioritizeIcons: true });
   }
 
+  // Mientras el primer escaneo no ha contestado, «Aplicaciones instaladas» puede estar
+  // a medias: lo que falta se anuncia con tarjetas fantasma en vez de dar la
+  // lista por terminada o decir que no hay nada.
+  const checkingInstalled = state.section === "installed" && hasPendingStatuses();
+  if (checkingInstalled) html += skeletonSectionHtml("Buscando en el equipo…", apps.length ? 3 : 6);
+
   // Lo que vino de la Microsoft Store vive en el mismo sitio que el resto: es
   // software instalado en el equipo y no tiene por qué estar en otra pantalla.
   // Va en su propio bloque porque de él se saben cosas distintas.
@@ -3414,7 +3528,7 @@ function renderContentNow() {
         .join("")
     : "";
 
-  if (!apps.length && !storeSection) {
+  if (!apps.length && !storeSection && !checkingInstalled) {
     if (state.section === "updates") {
       // Con actualizaciones pendientes y un texto arriba que no casa con
       // ninguna, lo que falta son coincidencias, no actualizaciones: decir
@@ -3489,6 +3603,39 @@ function updateVisibleAppStatuses(appIds) {
     syncCardSelection(card, app);
   });
   if (state.selection.size) renderQueueDock();
+}
+
+const APP_ACTION_KINDS = ["install", "update", "uninstall", "launch"];
+
+function runAppAction(kind, id, options = {}) {
+  if (kind === "install") return installApp(id, false, options);
+  if (kind === "update") return installApp(id, true);
+  if (kind === "uninstall") return uninstallApp(id);
+  return launchApp(id);
+}
+
+/**
+ * Lo que se pulsa mientras el primer escaneo del equipo sigue en marcha espera
+ * a su respuesta. La tarjeta enseña lo que sabía la sesión anterior, y un
+ * «Instalar» sobre algo que ya está puesto —o un «Abrir» sobre algo que ya no
+ * está— no debe ejecutarse a ciegas. Si después la acción sigue teniendo
+ * sentido, se hace; si no, la tarjeta ya enseña la buena.
+ */
+async function afterStatusesVerified(kind, id, button = null, options = {}) {
+  const verification = statusVerification;
+  if (!verification) return runAppAction(kind, id, options);
+  if (button) {
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    button.textContent = "Comprobando…";
+  }
+  await verification.catch(() => {});
+  const app = findApp(id);
+  const stillOffered = !!app && actionButtons(app).includes(`data-${kind}="${escapeHtml(id)}"`);
+  updateVisibleAppActions(new Set([id]));
+  // Las tarjetas de WinGet y Chocolatey no se redibujan por identificador.
+  if (button?.isConnected && !button.closest(".app-card[data-app-id]")) renderContent();
+  if (stillOffered) return runAppAction(kind, id, options);
 }
 
 let shellDelegationBound = false;
@@ -3678,10 +3825,10 @@ function bindShellDelegation() {
 
     const action = event.target.closest("[data-install], [data-update], [data-uninstall], [data-launch]");
     if (action) {
-      if (action.dataset.install) void installApp(action.dataset.install, false);
-      else if (action.dataset.update) void installApp(action.dataset.update, true);
-      else if (action.dataset.uninstall) void uninstallApp(action.dataset.uninstall);
-      else if (action.dataset.launch) void launchApp(action.dataset.launch);
+      const kind = APP_ACTION_KINDS.find((name) => action.dataset[name]);
+      // Mayús al instalar vuelve a preguntar con qué navegador se abren las
+      // aplicaciones web de la tienda.
+      if (kind) void afterStatusesVerified(kind, action.dataset[kind], action, { chooseBrowser: event.shiftKey });
       return;
     }
 
@@ -3747,12 +3894,19 @@ function appDetailMetaHtml(parts) {
     .join("")}</p>`;
 }
 
-// «latest» es lo que dice el catálogo cuando la versión la decide el origen al
-// instalar; para quien lee la ficha, eso es la última, no «vlatest».
-function appDetailVersionLabel(version) {
-  const text = String(version || "").trim();
-  if (!/\d/.test(text)) return "Última versión";
-  return /^v/i.test(text) ? text : `v${text}`;
+// Cómo se enseña una versión, en cualquier sitio de la tienda. «latest» es lo
+// que dice el catálogo cuando la versión la decide el origen al instalar: para
+// quien lee, eso es la última versión, no «vlatest». Un número lleva su «v» una
+// sola vez —WinGet y GitHub a veces la traen puesta— y una etiqueta como
+// «nightly» o «LTS» se enseña tal cual. `unknown` es lo que se dice cuando no
+// hay número: «Última versión» para lo que se va a instalar, y otra cosa en una
+// comparación, donde «Última versión → v2.0» no tendría sentido.
+function versionLabel(version, unknown = "Última versión") {
+  const text = String(version ?? "").trim();
+  if (!text || /^(latest|lastest|unknown|desconocida)$/i.test(text)) return unknown;
+  if (/^v\d/i.test(text)) return `v${text.slice(1)}`;
+  if (/^\d/.test(text)) return `v${text}`;
+  return text[0].toUpperCase() + text.slice(1);
 }
 
 function openAppModal(id) {
@@ -3775,7 +3929,10 @@ function openAppModal(id) {
     : "";
 
   let actionBtnsHtml = "";
-  if (!st.installed) {
+  if (isStatusPending(id)) {
+    // Se vuelve a dibujar en cuanto el equipo conteste.
+    actionBtnsHtml = `<button type="button" class="btn primary" disabled aria-busy="true">Comprobando…</button>`;
+  } else if (!st.installed) {
     // Quien está leyendo la ficha puede querer dejarla para la cola en vez de
     // instalarla ahora mismo.
     const queued = state.selection.has(id);
@@ -3793,14 +3950,14 @@ function openAppModal(id) {
   }
 
   openModal(`
-    <div class="confirm-dialog app-detail-modal">
+    <div class="confirm-dialog app-detail-modal" data-app-id="${escapeHtml(id)}">
       <div class="confirm-dialog-header app-detail-header">
         <div class="card-avatar app-detail-avatar" style="background:${avatarBg};">
           ${avatar}
         </div>
         <div class="app-detail-heading">
           <h2 class="confirm-dialog-title app-detail-title">${escapeHtml(app.name)}</h2>
-          ${appDetailMetaHtml([`Por ${app.author || "—"}`, appDetailVersionLabel(version), app.category])}
+          ${appDetailMetaHtml([`Por ${app.author || "—"}`, versionLabel(version), app.category])}
           ${installedBanner ? `<div>${installedBanner}</div>` : ""}
         </div>
       </div>
@@ -3815,19 +3972,31 @@ function openAppModal(id) {
   document.getElementById("modal-app-close").onclick = closeModal;
 
   const btnInst = document.getElementById("modal-app-install");
-  if (btnInst) btnInst.onclick = () => { closeModal(); installApp(id, false); };
+  if (btnInst) {
+    btnInst.onclick = (event) => {
+      closeModal();
+      void afterStatusesVerified("install", id, null, { chooseBrowser: event.shiftKey });
+    };
+  }
 
   const btnQueue = document.getElementById("modal-app-queue");
   if (btnQueue) btnQueue.onclick = () => { closeModal(); toggleSelection(id); };
 
   const btnLaunch = document.getElementById("modal-app-launch");
-  if (btnLaunch) btnLaunch.onclick = () => { closeModal(); launchApp(id); };
+  if (btnLaunch) btnLaunch.onclick = () => { closeModal(); void afterStatusesVerified("launch", id); };
 
   const btnUpdate = document.getElementById("modal-app-update");
-  if (btnUpdate) btnUpdate.onclick = () => { closeModal(); installApp(id, true); };
+  if (btnUpdate) btnUpdate.onclick = () => { closeModal(); void afterStatusesVerified("update", id); };
 
   const btnUninstall = document.getElementById("modal-app-uninstall");
-  if (btnUninstall) btnUninstall.onclick = () => { closeModal(); uninstallApp(id); };
+  if (btnUninstall) btnUninstall.onclick = () => { closeModal(); void afterStatusesVerified("uninstall", id); };
+}
+
+/// La ficha abierta que esperaba al escaneo, para volver a dibujarla con la
+/// respuesta en cuanto llegue.
+function appModalAwaitingStatus() {
+  const open = document.querySelector("#modal .app-detail-modal[data-app-id]");
+  return open && isStatusPending(open.dataset.appId) ? open.dataset.appId : null;
 }
 
 /// La aplicación detrás de un identificador.
@@ -3863,7 +4032,98 @@ function portableDataMessage(info) {
   return info ? `\n\nEs una aplicación portable. Elige qué hacer con sus datos. Las copias se guardan en: ${info.backup_root}` : "";
 }
 
-async function installApp(id, isUpdate = false) {
+/**
+ * El navegador con el que la tienda abre sus aplicaciones web.
+ *
+ * Es una elección de la tienda y sólo de ella: el predeterminado de Windows no
+ * se toca, y en un Windows aligerado puede incluso nombrar un Edge que ya no
+ * existe. Se pregunta la primera vez y se recuerda; con Mayús pulsada al
+ * instalar se vuelve a preguntar.
+ */
+async function webBrowserSetup() {
+  try {
+    return (await invoke("web_browsers")) || { browsers: [], selected: null };
+  } catch (error) {
+    void clientLog("warn", "web-browsers", String(error?.stack || error));
+    return { browsers: [], selected: null };
+  }
+}
+
+function webBrowserChoices({ browsers, selected }) {
+  return {
+    label: "Navegador de las aplicaciones web",
+    hint:
+      "Solo para WinSlimCenter: el navegador predeterminado de Windows no cambia. " +
+      "Para elegir otro más adelante, mantén pulsada Mayús al pulsar «Instalar».",
+    selected: selected || browsers.find((browser) => browser.windows_default)?.path || browsers[0]?.path,
+    options: browsers.map((browser) => ({
+      id: browser.path,
+      name: browser.name,
+      description: [
+        browser.app_mode
+          ? "Se abre en una ventana propia, como una aplicación"
+          : "Se abre como una pestaña normal",
+        browser.windows_default ? "predeterminado de Windows" : "",
+        browser.path === selected ? "el que usa ahora la tienda" : "",
+      ].filter(Boolean).join(" · "),
+    })),
+  };
+}
+
+function showNoBrowserModal() {
+  showConfirmModal({
+    title: "No hay ningún navegador",
+    message:
+      "Las aplicaciones web se abren en un navegador y no se ha encontrado ninguno instalado " +
+      "en el equipo. Instala uno desde la categoría Navegadores y vuelve a intentarlo.",
+    confirmText: "Ver navegadores",
+    onConfirm: () => {
+      state.section = "browsers";
+      state.consoleFilter = "all";
+      renderSidebar();
+      renderContent();
+    },
+  });
+}
+
+/// Guarda la elección. Devuelve si se pudo, y si no lo dice.
+async function rememberWebBrowser(path) {
+  try {
+    await invoke("set_web_browser", { path });
+    return true;
+  } catch (error) {
+    showAlertModal("No se pudo usar ese navegador", String(error));
+    return false;
+  }
+}
+
+/**
+ * Para lo que no pasa por el diálogo de «Instalar» —la cola y «Abrir»—: si la
+ * tienda aún no tiene navegador, lo pregunta en un diálogo propio. Contesta si
+ * se puede seguir.
+ */
+async function ensureWebBrowser() {
+  const setup = await webBrowserSetup();
+  if (setup.selected) return true;
+  if (!setup.browsers.length) {
+    showNoBrowserModal();
+    return false;
+  }
+  return new Promise((resolve) => {
+    showConfirmModal({
+      title: "Navegador para las aplicaciones web",
+      message:
+        "Las aplicaciones web se instalan como un acceso directo que abre el sitio con el " +
+        "navegador que elijas.",
+      choices: webBrowserChoices(setup),
+      confirmText: "Usar este navegador",
+      onCancel: () => resolve(false),
+      onConfirm: async (picked) => resolve(await rememberWebBrowser(picked)),
+    });
+  });
+}
+
+async function installApp(id, isUpdate = false, { chooseBrowser = false } = {}) {
   const app = findApp(id);
   if (!app) return;
   if (app.source_type === "web") {
@@ -3895,6 +4155,19 @@ async function installApp(id, isUpdate = false) {
     return;
   }
 
+  // Una aplicación web se abre con el navegador que eligió el usuario para la
+  // tienda. Si aún no hay ninguno elegido —o se pidió cambiarlo con Mayús—, la
+  // pregunta va en el mismo diálogo de instalar, en lugar de fallar después.
+  let browserSetup = null;
+  if (app.source_type === "webapp" && !isUpdate) {
+    browserSetup = await webBrowserSetup();
+    if (!browserSetup.browsers.length) {
+      showNoBrowserModal();
+      return;
+    }
+    if (browserSetup.selected && !chooseBrowser) browserSetup = null;
+  }
+
   // Asked even when the app does not look installed: the backend refuses to
   // replace a non-empty folder without this choice, whatever the status says.
   let portableInfo = null;
@@ -3910,7 +4183,8 @@ async function installApp(id, isUpdate = false) {
   // An update never asks: it reinstalls the build already chosen, because
   // changing it is changing the program.
   const remembered = state.settings?.variants?.[id];
-  const choices = portableInfo ? portableDataChoices(portableInfo) :
+  const choices = browserSetup ? webBrowserChoices(browserSetup) :
+    portableInfo ? portableDataChoices(portableInfo) :
     app.variants && !isUpdate
       ? { ...app.variants, selected: remembered || app.variants.default }
       : null;
@@ -3971,7 +4245,6 @@ async function installApp(id, isUpdate = false) {
   const notesRepo =
     isUpdate && app.source_type === "github_release" && app.github_repo ? app.github_repo : null;
   const target = isUpdate ? String(st.latest_version || "").trim() : "";
-  const withV = (version) => (/^\d/.test(version) ? `v${version}` : version);
 
   showConfirmModal({
     title,
@@ -3981,14 +4254,15 @@ async function installApp(id, isUpdate = false) {
     app,
     subtitle:
       target && st.version
-        ? `${app.author ? `${app.author} · ` : ""}${withV(st.version)} → ${withV(target)}`
+        ? `${app.author ? `${app.author} · ` : ""}${versionLabel(st.version, "versión desconocida")} → ${versionLabel(target, "la más reciente")}`
         : null,
     details: notesRepo ? releaseNotesShell() : "",
     confirmText: isUpdate ? "Actualizar" : "Instalar",
     confirmVariant: "primary",
     choices,
     onConfirm: async (picked) => {
-      const selection = portableInfo ? { portableData: picked } : { variant: picked };
+      if (browserSetup && !(await rememberWebBrowser(picked))) return;
+      const selection = browserSetup ? {} : portableInfo ? { portableData: picked } : { variant: picked };
       const blocker = await blockerProbe;
       if (blocker) {
         showRunningAppModal({
@@ -4185,6 +4459,9 @@ async function uninstallApp(id) {
 
 async function launchApp(id) {
   const app = findApp(id);
+  // Una aplicación web se abre con el navegador de la tienda; si nunca se
+  // eligió, se pregunta ahora en vez de fallar.
+  if (app?.source_type === "webapp" && !(await ensureWebBrowser())) return;
   state.busy[id] = "launching";
   updateVisibleAppActions(new Set([id]));
   try {
@@ -4683,6 +4960,7 @@ async function updateEverything() {
     showBulkUpdateModal();
     return;
   }
+  await untilStatusesVerified();
   const items = pendingUpdateItems();
   if (!items.length) {
     showAlertModal(
@@ -4969,11 +5247,9 @@ function bulkRowHtml(item, index) {
   const accent = pickAccent(item.app, index);
   const avatarBg = avatarBackground(item.app, accent);
   const letter = (item.name || "?")[0].toUpperCase();
-  const from = String(item.from || "").replace(/^v(?=\d)/i, "");
-  const to = String(item.to || "").replace(/^v(?=\d)/i, "");
   const versions =
-    from && to
-      ? `<span class="bulk-row-versions">v${escapeHtml(from)} → v${escapeHtml(to)}</span>`
+    item.from && item.to
+      ? `<span class="bulk-row-versions">${escapeHtml(versionLabel(item.from, "versión desconocida"))} → ${escapeHtml(versionLabel(item.to, "la más reciente"))}</span>`
       : "";
   return `
     <article class="bulk-row" data-bulk-key="${escapeHtml(item.key)}" style="--card-accent:${accent}">
@@ -5160,7 +5436,7 @@ function showConfirmModal({ title, message, app, subtitle = null, details = "", 
   const avatar = app ? renderAvatar(app, app.name?.[0] || "?", true) : "";
   const accent = app ? pickAccent(app, 0) : "var(--accent)";
   const avatarBg = app ? avatarBackground(app, accent) : accent;
-  const sub = subtitle ?? (app ? `${app.author || ""} ${app.version ? "· v" + app.version : ""}` : "");
+  const sub = subtitle ?? (app ? [app.author, versionLabel(app.version)].filter(Boolean).join(" · ") : "");
 
   openModal(`
     <div class="confirm-dialog">
@@ -5413,7 +5689,7 @@ async function reloadCatalog() {
   try {
     replaceCatalog((await invoke("reload_catalog")) || []);
     hydrateResolvedIcons();
-    setStatus(`Catálogo recargado: ${state.catalog.length} apps`, "var(--green)");
+    setStatus(`Catálogo recargado: ${visibleCatalogCount()} aplicaciones`, "var(--green)");
     renderSidebar();
     renderContent();
   } catch (error) {
@@ -5443,8 +5719,10 @@ let suppressShellBusy = false;
 
 function showShellBusy() {
   // The full sync screen already covers everything, card included. Two veils
-  // over one another would only darken the window twice.
-  if (shellBusyOverlay || syncModalOverlay || suppressShellBusy) return;
+  // over one another would only darken the window twice. The start-up check
+  // reports through the cards it has not answered for yet and the loading
+  // line, and the store stays usable underneath.
+  if (shellBusyOverlay || syncModalOverlay || suppressShellBusy || state.verifyingStatuses) return;
   const shell = document.querySelector(".shell");
   if (!shell) return;
   shellBusyOverlay = document.createElement("div");
@@ -5589,55 +5867,135 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   }
 }
 
-async function finishStartupInBackground() {
-  showSyncModal("Iniciando WinSlimCenter", "Analizando el equipo y preparando la tienda...");
-  updateSyncModal(20, "Escaneando aplicaciones instaladas y registro...");
-  try {
-    // Preguntar a Windows qué paquetes de la tienda tiene puestos es cuestión
-    // de milisegundos y no sale a la red, así que entra en el arranque: sin
-    // ello «Mis aplicaciones» empezaría media.
-    await ensureMsStoreInstalled({ force: true });
-    const detectedChanges = replaceStatuses((await invoke("refresh_statuses")) || state.statuses);
-    reconcileStatusChanges(detectedChanges);
+/// Retira la pantalla de arranque de `index.html`. Dos fotogramas: en el
+/// primero se dibuja la tienda debajo y en el segundo ya está en pantalla, así
+/// que el fundido descubre el catálogo entero y no una ventana a medio pintar.
+function dismissBootSplash() {
+  const splash = document.getElementById("boot-splash");
+  if (!splash || splash.classList.contains("done")) return;
+  void afterFirstPaint().then(() => {
+    splash.classList.add("done");
+    setTimeout(() => splash.remove(), 400);
+  });
+}
 
-    updateSyncModal(80, "Comprobando actualizaciones disponibles...");
-    setStatus("Comprobando versiones y actualizaciones disponibles...", "var(--accent)");
-    setProgress(80);
-    
-    try {
-      const updateChanges = replaceStatuses((await invoke("check_updates")) || state.statuses);
-      state.lastUpdateScan = new Date();
-      reconcileStatusChanges(updateChanges);
-      const updates = updatesCount();
-      updateSyncModal(100, "¡Tienda lista y optimizada!");
-      await new Promise(r => setTimeout(r, 350));
-      
-      if (updates) {
-        setStatus(
-          `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
-          "var(--accent)",
-        );
-      } else {
-        setTransientStatus("Comprobación del sistema completada.", "var(--green)", 4000);
-      }
-    } catch (error) {
-      setStatus("Aplicaciones detectadas · No se pudieron comprobar todas las actualizaciones", "var(--text-medium)");
-      clientLog("warn", "startup-updates", String(error?.stack || error));
+/// La línea fina bajo la cabecera que dice «sigo trabajando» sin tapar nada.
+function setLoadingLine(active) {
+  document.getElementById("loading-line")?.classList.toggle("active", active);
+}
+
+const afterFirstPaint = () =>
+  new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+/**
+ * Lo que el arranque comprueba con la tienda ya en pantalla y usable.
+ *
+ * Nada de pantallas de carga: la ventana se abre con lo que sabía la sesión
+ * anterior y esto lo corrige por detrás. Las fichas de las que nadie sabía nada
+ * esperan con un botón fantasma, la línea de arriba dice que se está trabajando
+ * y, cuando el equipo contesta, sólo cambia lo que tenía que cambiar.
+ */
+async function finishStartupInBackground() {
+  // Se crea antes de esperar a que se pinte la ventana: lo que se pulse desde
+  // el primer momento ya tiene a qué esperar.
+  statusVerification = (async () => {
+    // Dos fotogramas para que WebView pinte la tienda completa antes de lanzar
+    // los procesos de Windows, el menú Inicio y WinGet.
+    await afterFirstPaint();
+    // Lo instalado desde la Microsoft Store sale de Windows sin ir a la red y
+    // va a la par que el escaneo, que tarda más: sin ello «Aplicaciones instaladas»
+    // empezaría a medias.
+    const [, statuses] = await Promise.all([
+      ensureMsStoreInstalled({ force: true }),
+      invoke("refresh_statuses"),
+    ]);
+    return statuses;
+  })();
+  setLoadingLine(true);
+  setStatus("Comprobando las aplicaciones del equipo…", "var(--accent)");
+
+  try {
+    const statuses = await statusVerification;
+    const reopenModal = appModalAwaitingStatus();
+    const hadPending = state.statusPending.size > 0;
+    const changes = replaceStatuses(statuses || state.statuses);
+    finishStatusVerification();
+    if (hadPending) {
+      revealVerifiedActions();
+      renderSidebar();
+      renderContent();
+    } else {
+      reconcileStatusChanges(changes);
+      // Lo de la Microsoft Store llega por su lado y sólo se ve aquí.
+      if (state.section === "installed") renderContent();
     }
+    if (reopenModal) openAppModal(reopenModal);
   } catch (error) {
+    finishStatusVerification();
+    renderSidebar();
+    renderContent();
+    setLoadingLine(false);
     setStatus(`La tienda está disponible, pero falló la comprobación del sistema: ${error}`, "var(--red)");
     clientLog("error", "startup-background", String(error?.stack || error));
+    void checkStoreUpdate();
+    return;
+  }
+
+  // Si el usuario ya pidió buscarlas mientras tanto, esa búsqueda es ésta y
+  // ya informa de sí misma.
+  if (state.scanningUpdates) {
+    setLoadingLine(false);
+    void checkStoreUpdate();
+    return;
+  }
+  // Las actualizaciones van después, porque dependen de lo instalado, y ya sin
+  // ninguna ficha esperando: la sección y su cifra lo dicen mientras tanto.
+  state.scanningUpdates = true;
+  renderSidebar();
+  if (state.section === "updates") renderContent();
+  setStatus("Buscando actualizaciones disponibles…", "var(--accent)");
+  try {
+    const updateChanges = replaceStatuses((await invoke("check_updates")) || state.statuses);
+    state.lastUpdateScan = new Date();
+    reconcileStatusChanges(updateChanges);
+    const updates = updatesCount();
+    if (updates) {
+      setStatus(
+        `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
+        "var(--accent)",
+      );
+    } else {
+      setTransientStatus("Comprobación del sistema completada.", "var(--green)", 4000);
+    }
+  } catch (error) {
+    setStatus("Aplicaciones detectadas · No se pudieron comprobar todas las actualizaciones", "var(--text-medium)");
+    clientLog("warn", "startup-updates", String(error?.stack || error));
   } finally {
-    closeSyncModal();
+    state.scanningUpdates = false;
+    setLoadingLine(false);
     setProgress(100);
-    // Only once the start-up screen has let go of the modal, so the two never
-    // fight over it.
+    renderSidebar();
+    if (state.section === "updates") renderContent();
     void checkStoreUpdate();
     // Preguntar al servicio de entrega por cada aplicación de la tienda cuesta
     // dos viajes por aplicación, así que se hace con la tienda ya en pantalla y
     // sin retenerla: cuando conteste, aparecen sus actualizaciones.
     void scanMsStoreUpdates({ quiet: true });
   }
+}
+
+/// Los botones que sustituyen a las siluetas entran con un fundido corto. Sólo
+/// en ese redibujado: en cualquier otro aparecer de golpe es lo correcto.
+function revealVerifiedActions() {
+  const content = document.getElementById("content");
+  content.classList.add("statuses-revealed");
+  setTimeout(() => content.classList.remove("statuses-revealed"), 700);
+}
+
+function finishStatusVerification() {
+  state.verifyingStatuses = false;
+  state.statusPending = new Set();
+  statusVerification = null;
 }
 
 async function refreshInstalledFromBootstrap() {
@@ -5713,14 +6071,18 @@ function aboutPersonHtml(handle, role, url) {
 }
 
 function showAboutModal() {
-  const catalogSize = state.catalog.length;
+  const catalogSize = visibleCatalogCount();
   openModal(`
     <div class="about-dialog">
-      <div class="about-logo">
-        <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
+      <div class="about-head">
+        <div class="about-logo">
+          <img src="assets/winslim-center-logo.png" width="904" height="904" alt="WinSlimCenter" />
+        </div>
+        <div class="about-title">
+          <h2 class="about-name">WinSlimCenter</h2>
+          <p class="about-version">${state.appVersion ? `Versión ${escapeHtml(state.appVersion)}` : "Tienda de aplicaciones"}</p>
+        </div>
       </div>
-      <h2 class="about-name">WinSlimCenter</h2>
-      <p class="about-version">${state.appVersion ? `Versión ${escapeHtml(state.appVersion)}` : "Tienda de aplicaciones"}</p>
       <dl class="about-facts">
         <div class="about-fact people">
           <dt>Desarrollo</dt>
@@ -6226,6 +6588,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       setStatus(event.payload.status || "Actualizando WinSlimCenter…", "var(--accent)");
       setProgress(event.payload.progress || 0);
     }),
+    listen("msstore-scan-progress", (event) => reportMsStoreScanProgress(event.payload)),
     listen("downloads-changed", (event) => dispatchBackendEvent("downloads-changed", event)),
     listen("background-progress", (event) => dispatchBackendEvent("background-progress", event)),
     listen("install-finished", (event) => dispatchBackendEvent("install-finished", event)),
@@ -6241,6 +6604,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   } catch (error) {
     setStatus(`Error al registrar eventos: ${error}`, "var(--red)");
     void clientLog("error", "startup-listeners", String(error?.stack || error));
+    dismissBootSplash();
     return;
   }
 
@@ -6389,7 +6753,7 @@ window.addEventListener("DOMContentLoaded", async () => {
       // su versión dejó de ser cierto en ese mismo instante. Las familias
       // afectadas se conocen por el producto —si vino de una búsqueda— o por lo
       // que ya se había comprobado de él, que es el caso de una actualización
-      // lanzada desde «Mis aplicaciones».
+      // lanzada desde «Aplicaciones instaladas».
       const families = new Set(
         (msStoreProductById(id)?.package_families || []).map((family) => family.toLowerCase()),
       );
@@ -6572,6 +6936,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.installed = data.installed || {};
     replaceRepoEntries(data.repo_entries || []);
     replaceStatuses(data.statuses || {});
+    // El escaneo del equipo empieza en cuanto se pinte la tienda; hasta que
+    // conteste, lo que nadie sabía se dibuja como «comprobando».
+    state.verifyingStatuses = true;
+    state.statusPending = new Set(data.status_pending || []);
     state.settings = data.settings || state.settings;
     replaceTasks(data.tasks || []);
     applyTheme(state.settings.theme, state.settings.accent);
@@ -6579,10 +6947,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     renderSidebar();
     renderContent();
     renderDlPanel();
+    dismissBootSplash();
     setStatus(idleStatusSummary(), "var(--green)");
     clientLog("info", "startup", {
       catalog: state.catalog.length,
       installed: installedCount(),
+      pending: state.statusPending.size,
       tasks: state.tasks.length,
       version: state.appVersion,
     });
@@ -6593,12 +6963,11 @@ window.addEventListener("DOMContentLoaded", async () => {
     // In particular, a queued install-finished must reconcile its committed
     // backend state before the slower global start-up scan is launched.
     await backendEventChain;
-    // Give WebView two frames to display the complete store before starting
-    // the slower Windows/Start Apps/Winget and update scans.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => void finishStartupInBackground());
-    });
+    void finishStartupInBackground();
   } catch (e) {
+    // Sin escaneo en marcha no hay respuesta que esperar.
+    if (!statusVerification) finishStatusVerification();
+    dismissBootSplash();
     setStatus(`Error al iniciar: ${e}`, "var(--red)");
     clientLog("error", "startup", String(e?.stack || e));
     console.error(e);

@@ -8,9 +8,26 @@
     <link rel="preload" href="assets/fonts/ubuntu-regular.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="assets/fonts/ubuntu-medium.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="assets/fonts/ubuntu-bold.woff2" as="font" type="font/woff2" crossorigin />
+    <!-- Antes que la hoja de estilos: el fondo de la tienda, para que la ventana
+         no destelle en blanco mientras se carga. -->
+    <style>html, body { background: #181818; }</style>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
+    <!-- Lo primero que se ve mientras WebView carga el código y dibuja el
+         catálogo. main.js lo desvanece en cuanto la tienda está pintada debajo. -->
+    <div class="boot-splash" id="boot-splash" role="status" aria-label="Iniciando WinSlimCenter">
+      <div class="sync-logo-box" aria-hidden="true">
+        <div class="sync-logo-ring"></div>
+        <div class="sync-logo-wrapper">
+          <img src="assets/winslim-center-logo.png" width="904" height="904" alt="" fetchpriority="high" />
+        </div>
+      </div>
+      <div class="boot-splash-copy" aria-hidden="true">
+        <strong>WinSlimCenter</strong>
+        <span>Preparando la tienda…</span>
+      </div>
+    </div>
     <div id="app">
       <header class="topbar">
         <div class="brand">
@@ -47,6 +64,7 @@
       </header>
 
       <div class="shell">
+        <div class="loading-line" id="loading-line" aria-hidden="true"></div>
         <aside class="sidebar" id="sidebar"></aside>
         <main class="main">
           <div class="scroll" id="content"></div>
