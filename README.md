@@ -20,6 +20,7 @@
 
 ---
 <img width="1201" height="809" alt="image" src="https://github.com/user-attachments/assets/64dd7190-1282-4664-9968-9919d1566ee4" />
+
 ---
 
 ## 📋 Índice
