@@ -134,6 +134,11 @@
               return null;
             }
             if (command === "uninstall_app") return "Aplicación desinstalada.";
+            if (command === "check_connection") {
+              window.__harnessConnectionChecks = (window.__harnessConnectionChecks || 0) + 1;
+              return !msStoreTestParams.has("offline") || window.__harnessOnline === true ||
+                (msStoreTestParams.has("retry-online") && window.__harnessConnectionChecks > 1);
+            }
             if (command === "get_bootstrap") {
               const apps = await catalog();
               const statuses = mockStatuses();
@@ -438,7 +443,11 @@
   </head>
   <body>
     <div class="boot-splash" id="boot-splash" role="status" aria-label="Iniciando WinSlimCenter">
-      <div class="sync-logo-box" aria-hidden="true"><div class="sync-logo-ring"></div><div class="sync-logo-wrapper"><img src="/src/assets/winslim-center-logo.png" alt="" /></div></div>
+      <div class="sync-logo-box" aria-hidden="true"><div class="sync-logo-ring"></div><div class="sync-logo-wrapper"><img src="/src/assets/winslim-center-logo.png" alt="" />
+          <svg class="boot-offline-symbol" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="m2 2 20 20M8.5 16.5a5 5 0 0 1 7 0M2 8.82a15 15 0 0 1 4.17-2.65M10.66 5.05A16 16 0 0 1 22 8.82M5 12.55a11 11 0 0 1 5.17-2.39M16.72 11.06A10.94 10.94 0 0 1 19 12.55" />
+            <circle cx="12" cy="20" r=".8" fill="currentColor" stroke="none" />
+          </svg></div></div>
       <div class="boot-splash-copy" aria-hidden="true"><strong>WinSlimCenter</strong><span>Preparando la tienda…</span></div>
     </div>
     <script>

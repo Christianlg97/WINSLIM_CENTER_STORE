@@ -472,7 +472,51 @@ async function syncFadeCompletesBeforeRemoval() {
   }
 }
 
+async function startupConnectionGate() {
+  const listeners = new Map(), attributes = new Map(), classes = new Set();
+  let click, calls = 0, pending, removed = false;
+  const subtitle = { textContent: 'Preparando la tienda…' };
+  const label = {}, help = {};
+  const button = { disabled: false, querySelector: () => label, focus() {},
+    addEventListener: (name, fn) => { click = fn; } };
+  const panel = { hidden: false, setAttribute() {},
+    querySelector: selector => selector === 'button' ? button : help,
+    remove() { removed = true; } };
+  const copy = { querySelector: () => subtitle, removeAttribute() {} };
+  const splash = { querySelector: () => copy, appendChild() {},
+    classList: { add: (...names) => names.forEach(name => classes.add(name)), remove: (...names) => names.forEach(name => classes.delete(name)) },
+    setAttribute: (name, value) => attributes.set(name, value), removeAttribute: name => attributes.delete(name) };
+  const app = { inert: false }, navigator = { onLine: false };
+  const ctx = vm.createContext({ Promise, String, navigator,
+    document: { getElementById: id => id === 'app' ? app : splash, createElement: () => panel },
+    window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) },
+    invoke: name => { assert.equal(name, 'check_connection'); calls++; return new Promise(resolve => { pending = resolve; }); },
+    clientLog() {},
+  });
+  load(ctx, ['waitForStartupConnection']);
+  let ready = false;
+  const gate = ctx.waitForStartupConnection().then(() => { ready = true; });
+  await Promise.resolve();
+  assert.equal(calls, 0, 'Sin adaptador no hace falta esperar a la red');
+  assert.ok(app.inert); assert.ok(classes.has('is-connection-pending'));
+  assert.ok(classes.has('is-offline')); assert.equal(panel.hidden, false); assert.equal(ready, false);
+  navigator.onLine = true;
+  const retry = click();
+  click(); listeners.get('online')();
+  assert.equal(calls, 1, 'No duplicar peticiones al pulsar repetidamente');
+  assert.ok(button.disabled); pending(false); await retry;
+  assert.equal(button.disabled, false); assert.equal(ready, false);
+  assert.match(help.textContent, /Seguimos sin conexión/);
+  const recovery = listeners.get('online')();
+  pending(true); await recovery; await gate;
+  assert.equal(calls, 2); assert.ok(ready); assert.ok(removed);
+  assert.equal(app.inert, false); assert.equal(listeners.size, 0);
+  assert.equal(classes.has('is-offline'), false); assert.equal(classes.has('is-connection-pending'), false);
+  assert.equal(subtitle.textContent, 'Preparando la tienda…');
+}
+
 (async () => {
+  await startupConnectionGate();
   externalInstalledSearch();
   await syncFadeCompletesBeforeRemoval();
   await splashFadeCompletesBeforeRemoval();

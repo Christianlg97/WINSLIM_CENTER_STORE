@@ -887,6 +887,28 @@ async fn probe_app_status_async(
     .map_err(|error| format!("Falló la comprobación de la aplicación: {error}"))
 }
 
+/// Comprobar acceso real, no solo que haya un adaptador conectado. Dos destinos
+/// independientes evitan confundir la caída de un proveedor con falta de red.
+#[tauri::command]
+async fn check_connection() -> Result<bool, String> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(3))
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .map_err(|error| format!("No se pudo comprobar la conexión: {error}"))?;
+    let mut probes = futures_util::stream::FuturesUnordered::new();
+    for url in ["https://www.microsoft.com/", "https://github.com/"] {
+        probes.push(client.head(url).send());
+    }
+    while let Some(result) = probes.next().await {
+        // Incluso un rechazo HTTP confirma acceso al servidor por HTTPS.
+        if result.is_ok() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[tauri::command]
 fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
     logger::info("bootstrap", "La interfaz solicitó los datos iniciales.");
@@ -4377,6 +4399,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_main_window,
             get_bootstrap,
+            check_connection,
             refresh_statuses,
             check_updates,
             check_store_update,

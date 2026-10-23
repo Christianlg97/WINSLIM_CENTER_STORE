@@ -255,7 +255,8 @@ textarea {
   transition: transform var(--motion-feedback) var(--ease-out);
 }
 
-#btn-refresh:hover .btn-svg-icon {
+#btn-refresh:hover .btn-svg-icon,
+#boot-retry:not([disabled]):hover .btn-svg-icon {
   transform: rotate(-180deg);
 }
 
@@ -2465,6 +2466,56 @@ textarea {
 .boot-splash-copy span {
   font-size: 15px;
   color: var(--text-light);
+}
+
+/* El logo conserva exactamente su posición: las acciones cuelgan debajo del
+   bloque de marca, sin alterar su centrado ni la superficie del arranque. */
+.boot-splash.is-connection-pending { animation: none; }
+.boot-offline-symbol { display: none; }
+.boot-splash.is-offline .sync-logo-wrapper img { display: none; }
+.boot-splash.is-offline .boot-offline-symbol {
+  display: block;
+  width: 68px;
+  height: 68px;
+  color: #d8d8d8;
+}
+.boot-offline-actions[aria-busy="true"] .btn-svg-icon {
+  animation: scan-spin var(--motion-spin) linear infinite;
+}
+
+.boot-splash.is-offline .sync-logo-ring {
+  animation-play-state: paused;
+  border-color: rgba(255, 255, 255, 0.16);
+}
+.boot-splash.is-offline .boot-splash-copy span { color: #d0d0d0; }
+.boot-offline-actions {
+  position: absolute;
+  top: calc(50% + 140px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(360px, calc(100vw - 48px));
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 22px;
+}
+.boot-offline-actions[hidden] { display: none; }
+.boot-offline-actions p {
+  margin: 0;
+  color: #a4a4a4;
+  font-size: 14px;
+  line-height: 1.65;
+  text-wrap: balance;
+}
+.boot-offline-actions .btn {
+  min-width: 156px;
+  min-height: 42px;
+  gap: 9px;
+  justify-content: center;
+}
+.boot-offline-actions .btn:focus-visible {
+  outline: 2px solid #d8d8d8;
+  outline-offset: 4px;
 }
 
 @keyframes bootSplashGiveUp {

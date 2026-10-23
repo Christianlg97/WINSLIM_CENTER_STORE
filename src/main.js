@@ -5910,6 +5910,89 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   }
 }
 
+/** Mantener el arranque hasta recuperar la red, sin reiniciar la aplicación. */
+function waitForStartupConnection() {
+  const splash = document.getElementById("boot-splash");
+  if (!splash) return Promise.resolve();
+  const app = document.getElementById("app");
+  const copy = splash.querySelector(".boot-splash-copy");
+  const subtitle = copy.querySelector("span");
+  const originalSubtitle = subtitle.textContent;
+  splash.classList.add("is-connection-pending");
+  app.inert = true;
+  const panel = document.createElement("div");
+  panel.className = "boot-offline-actions";
+  panel.hidden = true;
+  panel.innerHTML = `
+    <p id="boot-connection-help" aria-live="polite">Conecta el equipo a Internet para acceder a tus aplicaciones y descubrir otras nuevas.</p>
+    <button type="button" class="btn primary" id="boot-retry">
+      <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+        <path d="M3 3v5h5"/>
+        <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+        <path d="M16 16h5v5"/>
+      </svg>
+      <span>Reintentar</span>
+    </button>`;
+  splash.appendChild(panel);
+  const button = panel.querySelector("button");
+  const label = button.querySelector("span");
+  const help = panel.querySelector("p");
+  let checking = false;
+  let complete = false;
+  return new Promise((resolve) => {
+    const retry = async () => {
+      if (checking || complete) return;
+      checking = true;
+      button.disabled = true;
+      label.textContent = "Comprobando…";
+      panel.setAttribute("aria-busy", "true");
+      let connected = false;
+      let failed = false;
+      try {
+        connected = navigator.onLine !== false && await invoke("check_connection");
+      } catch (error) {
+        failed = true;
+        void clientLog("warn", "startup-connection", String(error));
+      }
+      checking = false;
+      if (connected) {
+        complete = true;
+        window.removeEventListener("online", retry);
+        panel.remove();
+        splash.classList.remove("is-offline", "is-connection-pending");
+        splash.setAttribute("role", "status");
+        splash.setAttribute("aria-label", "Iniciando WinSlimCenter");
+        splash.removeAttribute("aria-modal");
+        subtitle.textContent = originalSubtitle;
+        app.inert = false;
+        resolve();
+        return;
+      }
+      const firstAttempt = panel.hidden;
+      splash.classList.add("is-offline");
+      splash.setAttribute("role", "dialog");
+      splash.setAttribute("aria-modal", "true");
+      splash.setAttribute("aria-label", "Sin conexión a Internet");
+      copy.removeAttribute("aria-hidden");
+      subtitle.textContent = "Sin conexión a Internet";
+      help.textContent = failed
+        ? "No hemos podido comprobar la conexión. Vuelve a intentarlo."
+        : firstAttempt
+          ? "Conecta el equipo a Internet para acceder a tus aplicaciones y descubrir otras nuevas."
+          : "Seguimos sin conexión. Comprueba el Wi-Fi o el cable de red y vuelve a intentarlo.";
+      panel.hidden = false;
+      panel.setAttribute("aria-busy", "false");
+      button.disabled = false;
+      label.textContent = "Reintentar";
+      button.focus({ preventScroll: true });
+    };
+    button.addEventListener("click", retry);
+    window.addEventListener("online", retry);
+    void retry();
+  });
+}
+
 /// Retira la pantalla de arranque de `index.html`. Dos fotogramas: en el
 /// primero se dibuja la tienda debajo y en el segundo ya está en pantalla, así
 /// que el fundido descubre el catálogo entero y no una ventana a medio pintar.
@@ -6667,6 +6750,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   let bootstrapPromise;
   try {
     await Promise.all(listenerRegistrations);
+    await waitForStartupConnection();
     // The snapshot begins only after all listeners are confirmed active.
     bootstrapPromise = invoke("get_bootstrap");
   } catch (error) {
