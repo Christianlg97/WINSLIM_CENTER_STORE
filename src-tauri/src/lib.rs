@@ -3026,11 +3026,18 @@ fn update_check_result_is_reusable(request: u64, source_generation: u64) -> bool
 /// different case. No tag is newer than it and every tag differs from it, so the
 /// store offered SCSKiller 1.3.0 over 1.3.0, and would have gone on offering it
 /// after installing, since that changes nothing the store can read.
+///
+/// The same goes for a release republished under the fixed tag "latest" with a
+/// new setup each time (BSG Launcher, or VMware when its description carries no
+/// version): its spelling differs from whatever version Windows reports, so the
+/// store would offer the same setup over and over.
 fn github_release_is_update(tag: &str, installed: &str) -> bool {
+    let unknown = |version: &str| {
+        version.is_empty() || matches!(version.to_ascii_lowercase().as_str(), "latest" | "lastest")
+    };
+    let tag = tag.trim();
     let installed = installed.trim();
-    if installed.is_empty()
-        || matches!(installed.to_ascii_lowercase().as_str(), "latest" | "lastest")
-    {
+    if unknown(installed) || unknown(tag) {
         return false;
     }
     detect::is_newer(tag, installed).unwrap_or(tag != installed)
@@ -3068,7 +3075,7 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
     // which release the update check has to look at: Thorium publishes one per
     // CPU instruction set under the same tag.
     let chosen_variants = state.settings.lock().variants.clone();
-    let github_targets: Vec<(String, String, Option<String>)> = catalog
+    let github_targets: Vec<(String, String, Option<String>, bool)> = catalog
         .iter()
         .filter_map(|entry| {
             let id = entry.get("id").and_then(|v| v.as_str())?;
@@ -3087,6 +3094,10 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
                     .get("asset_pattern")
                     .and_then(|v| v.as_str())
                     .map(str::to_string),
+                resolved
+                    .get("version_from_release_notes")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
             ))
         })
         .collect();
@@ -3115,10 +3126,11 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
         }
     };
     let github_lookup = futures_util::stream::iter(github_targets)
-        .map(|(id, repo, pattern)| async move {
-            let result = download::github_latest_release_asset(&repo, pattern.as_deref())
-                .await
-                .map(|(_url, tag)| tag);
+        .map(|(id, repo, pattern, from_notes)| async move {
+            let result =
+                download::github_latest_release_asset(&repo, pattern.as_deref(), from_notes)
+                    .await
+                    .map(|(_url, tag)| tag);
             (id, result)
         })
         .buffer_unordered(6)
@@ -4243,10 +4255,54 @@ async fn install_app(
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+/// Shows the main window, which is created hidden (`visible: false`): while
+/// WebView2 starts there is nothing to paint, and the window used to sit there
+/// empty for about a second. The page asks for it as soon as its start-up
+/// screen exists, so that screen is the first thing on display.
+fn reveal_window(window: &tauri::WebviewWindow) {
+    // show() despacha al hilo de interfaz: is_visible() puede seguir siendo
+    // false al llegar otra solicitud. Evitar dos aperturas durante el arranque.
+    static REVEAL_REQUESTED: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+    if REVEAL_REQUESTED.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    if window.is_visible().unwrap_or(false) {
+        return;
+    }
+    // La superficie nativa y el controlador de WebView2 deben recibir el mismo
+    // gris opaco antes de mostrarse; no basta con el fondo CSS del documento.
+    if let Err(error) = window.set_background_color(Some(tauri::window::Color(24, 24, 24, 255))) {
+        logger::warn("startup", format!("No se pudo fijar el fondo de arranque: {error}"));
+    }
+    if let Err(error) = window.show() {
+        REVEAL_REQUESTED.store(false, Ordering::Release);
+        logger::warn("startup", format!("No se pudo mostrar la ventana: {error}"));
+        return;
+    }
+    let _ = window.set_focus();
+}
+
+#[tauri::command]
+fn show_main_window(window: tauri::WebviewWindow) {
+    reveal_window(&window);
+}
+
 pub fn run() {
     let application = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        // El frontend es quien revela la ventana con la página preparada.
+        // PageLoadEvent::Finished no garantiza un primer dibujo: mostrar aquí
+        // competía con esa señal y dejaba ver el cambio de superficie de WebView2.
+        // El temporizador conserva una salida si el frontend no llega a pedirla.
         .setup(|app| {
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                if let Some(window) = handle.get_webview_window("main") {
+                    reveal_window(&window);
+                }
+            });
             let setup_started = std::time::Instant::now();
             let log_path = logger::init()?;
             let default_panic_hook = std::panic::take_hook();
@@ -4319,6 +4375,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            show_main_window,
             get_bootstrap,
             refresh_statuses,
             check_updates,
@@ -4580,6 +4637,8 @@ mod tests {
         assert!(!github_release_is_update("v1.3.0", ""));
         assert!(!github_release_is_update("v1.3.0", "1.3.0"));
         assert!(github_release_is_update("v1.3.1", "1.3.0"));
+        // A fixed "latest" tag carries no version to compare with Windows'.
+        assert!(!github_release_is_update("latest", "15.0.0.4574"));
         // Tags without numbers are still told apart by spelling.
         assert!(github_release_is_update("nightly", "stable"));
     }

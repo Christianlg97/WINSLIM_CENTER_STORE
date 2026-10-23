@@ -2069,7 +2069,11 @@ where
                 .and_then(|v| v.as_str())
                 .ok_or("Falta github_repo")?;
             let pattern = app.get("asset_pattern").and_then(|v| v.as_str());
-            match download::github_latest_release_asset(repo, pattern).await {
+            let from_notes = app
+                .get("version_from_release_notes")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match download::github_latest_release_asset(repo, pattern, from_notes).await {
                 Ok((u, tag)) => {
                     if force_update
                         && current_version

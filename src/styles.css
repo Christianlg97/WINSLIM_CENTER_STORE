@@ -48,6 +48,21 @@
   --shadow: 0 14px 38px rgba(0, 0, 0, 0.38);
   /* Shared easing so buttons, modals and the sync overlay all move alike. */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  /* Entradas de contenido y diálogos: ease-out-quart. La exponencial de arriba
+     hacía casi todo el recorrido en los primeros 80 ms y se sentía precipitada;
+     ésta sale igual de decidida y deja ver el movimiento. */
+  --ease-enter: cubic-bezier(0.25, 1, 0.5, 1);
+  --enter-duration: 280ms;
+  --motion-fast: 140ms;
+  --motion-feedback: 180ms;
+  --motion-press: 90ms;
+  --motion-progress: 220ms;
+  --motion-reveal: 320ms;
+  --ease-fade: cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-spin: 1100ms;
+  --motion-breathe: 1800ms;
+  --motion-attention: 3200ms;
+  --ease-interact: cubic-bezier(0.22, 1, 0.36, 1);
   color-scheme: dark;
 }
 
@@ -156,8 +171,8 @@ textarea {
   height: 38px;
   border-radius: 12px;
   font-size: 14px;
-  background: #25262b;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
   overflow: hidden;
   box-shadow:
     inset 0 0 0 2px rgba(255, 255, 255, 0.035),
@@ -237,7 +252,7 @@ textarea {
   height: 14px;
   flex-shrink: 0;
   stroke: currentColor;
-  transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+  transition: transform var(--motion-feedback) var(--ease-out);
 }
 
 #btn-refresh:hover .btn-svg-icon {
@@ -283,14 +298,9 @@ textarea {
   z-index: 40;
   display: grid;
   place-items: center;
-  background: rgba(0, 0, 0, 0.62);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  animation: syncModalFadeIn 0.22s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-.shell-busy.closing {
-  animation: syncModalFadeOut 0.26s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --overlay-blur: 14px;
+  --overlay-shade: rgba(0, 0, 0, 0.62);
+  isolation: isolate;
 }
 
 .sidebar {
@@ -374,7 +384,7 @@ textarea {
   gap: 10px;
   font-size: 13px;
   font-weight: 500;
-  transition: background 0.15s, color 0.15s;
+  transition: background var(--motion-feedback) var(--ease-interact), color var(--motion-feedback) var(--ease-interact);
 }
 
 /* Los mismos grises que los botones de la cabecera: reposo, encima y elegido. */
@@ -404,6 +414,32 @@ textarea {
   border-radius: 999px;
   background: var(--accent);
   transform: translateY(-50%);
+}
+
+.nav-ico {
+  transition: transform var(--motion-progress) var(--ease-interact);
+}
+
+.nav-btn:hover .nav-ico,
+.nav-btn:focus-visible .nav-ico,
+.action-btn:hover .nav-ico,
+.action-btn:focus-visible .nav-ico {
+  transform: translateY(-1px) scale(1.08);
+}
+
+.nav-btn:active .nav-ico,
+.action-btn:active .nav-ico {
+  transform: scale(0.94);
+  transition-duration: var(--motion-press);
+}
+
+.nav-btn.active::before {
+  animation: navMarkerIn var(--motion-progress) var(--ease-interact);
+}
+
+@keyframes navMarkerIn {
+  from { opacity: 0; transform: translateY(-50%) scaleY(0.5); }
+  to { opacity: 1; transform: translateY(-50%) scaleY(1); }
 }
 
 /* Una línea siempre: una etiqueta partida en dos desalinea la columna entera. */
@@ -452,7 +488,7 @@ textarea {
   border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border) 78%);
   box-shadow: var(--shadow);
   overflow: hidden;
-  animation: fadeUp 0.35s ease;
+  animation: fadeUp var(--enter-duration) var(--ease-enter);
 }
 
 .empty-updates-card::before {
@@ -667,7 +703,7 @@ textarea {
 }
 
 .btn.updates-toolbar-all[aria-busy="true"] .btn-svg-icon {
-  animation: bulk-arrow-dip 1.4s ease-in-out infinite;
+  animation: bulk-arrow-dip var(--motion-breathe) ease-in-out infinite;
 }
 
 @keyframes bulk-arrow-dip {
@@ -682,22 +718,13 @@ textarea {
 }
 
 #btn-scan-updates[aria-busy="true"] .scan-icon {
-  animation: scan-spin 900ms linear infinite;
+  animation: scan-spin var(--motion-spin) linear infinite;
   transition: none;
 }
 
 @keyframes scan-spin {
   to {
     transform: rotate(360deg);
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  #btn-scan-updates[aria-busy="true"] .scan-icon {
-    animation-duration: 2.4s;
-  }
-  #btn-scan-updates:not([disabled]):hover .scan-icon {
-    transform: none;
   }
 }
 
@@ -721,19 +748,17 @@ textarea {
   border-radius: 50%;
   background: var(--green);
   box-shadow: 0 0 8px var(--green);
-  animation: pulseGreen 2s infinite;
+  /* Un estado terminado no debe parecer una operación en marcha. */
 }
 
-@keyframes pulseGreen {
-  0% {
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7);
-  }
-  70% {
-    box-shadow: 0 0 0 8px rgba(74, 222, 128, 0);
-  }
-  100% {
-    box-shadow: 0 0 0 0 rgba(74, 222, 128, 0);
-  }
+.ms-inline-note .pulse-dot,
+.ms-loading-status .pulse-dot {
+  animation: activityBreath var(--motion-breathe) ease-in-out infinite;
+}
+
+@keyframes activityBreath {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
 }
 
 .main {
@@ -784,7 +809,7 @@ textarea {
   margin-bottom: 16px;
   overflow: hidden;
   box-shadow: var(--shadow);
-  animation: fadeUp 0.35s ease;
+  animation: fadeUp var(--enter-duration) var(--ease-enter);
 }
 
 .hero::after {
@@ -798,10 +823,12 @@ textarea {
   pointer-events: none;
 }
 
+/* Las entradas usan --ease-enter: arrancan decididas y frenan sin que se note
+   el final, en vez de `ease`, que tardaba en salir y se paraba de golpe. */
 @keyframes fadeUp {
   from {
     opacity: 0;
-    transform: translateY(10px);
+    transform: translateY(8px);
   }
   to {
     opacity: 1;
@@ -856,8 +883,8 @@ textarea {
   box-sizing: border-box;
   padding: 7px;
   object-fit: contain;
-  background: #25262b;
-  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: var(--bg-app);
+  border: 1px solid var(--border);
   border-radius: 18px;
   box-shadow: inset 0 0 0 2px rgba(255, 255, 255, 0.035);
 }
@@ -967,7 +994,19 @@ textarea {
 
 .section {
   margin-top: 10px;
-  animation: fadeUp 0.3s ease;
+  animation: fadeUp var(--enter-duration) var(--ease-enter);
+}
+
+/* Al redibujar la misma sección, lo que ya estaba a la vista no vuelve a
+   entrar: solo lo hacen las tarjetas nuevas (replaceContent en main.js). */
+.section.is-settled,
+.hero.is-settled,
+.empty-updates-card.is-settled {
+  animation: none;
+}
+
+.app-card.is-entering {
+  animation: fadeUp var(--enter-duration) var(--ease-enter);
 }
 
 .console-filters {
@@ -1054,7 +1093,7 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: background 0.15s, border-color 0.15s, transform 0.15s, box-shadow 0.15s;
+  transition: background var(--motion-feedback) var(--ease-interact), border-color var(--motion-feedback) var(--ease-interact), transform var(--motion-progress) var(--ease-interact), box-shadow var(--motion-progress) var(--ease-interact);
 }
 
 .app-card:hover {
@@ -1218,7 +1257,7 @@ textarea {
 
 /*
  * Abrir, Instalar, Obtener, Actualizar, Desinstalar and Cancelar all behave the
- * same: a short lift with a light sweeping across the face on hover, and an
+ * same: a restrained lift on hover and an
  * immediate settle on press. The easing is the shared --ease-out, so buttons
  * move with the same character as the modals and the sync overlay.
  */
@@ -1226,11 +1265,11 @@ textarea {
   position: relative;
   overflow: hidden;
   transition:
-    background 180ms var(--ease-out),
-    border-color 180ms var(--ease-out),
-    box-shadow 180ms var(--ease-out),
-    filter 180ms var(--ease-out),
-    transform 140ms var(--ease-out);
+    background var(--motion-feedback) var(--ease-out),
+    border-color var(--motion-feedback) var(--ease-out),
+    box-shadow var(--motion-feedback) var(--ease-out),
+    filter var(--motion-feedback) var(--ease-out),
+    transform var(--motion-fast) var(--ease-out);
 }
 
 .btn::after {
@@ -1238,29 +1277,23 @@ textarea {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(
-    115deg,
-    transparent 36%,
-    rgba(255, 255, 255, 0.26) 50%,
-    transparent 64%
-  );
-  transform: translateX(-130%);
+  background: linear-gradient(110deg, transparent 30%, rgba(255,255,255,0.16) 50%, transparent 70%);
   opacity: 0;
+  transform: translateX(-130%);
 }
 
-.btn:hover::after,
-.btn:focus-visible::after {
-  animation: btnSheen 640ms var(--ease-out);
+.btn:not([disabled]):not([aria-busy="true"]):not(.installed-label):is(:hover, :focus-visible)::after {
+  animation: controlSheen 480ms var(--ease-interact);
 }
 
-@keyframes btnSheen {
-  0% { transform: translateX(-130%); opacity: 0; }
+@keyframes controlSheen {
+  0% { opacity: 0; transform: translateX(-130%); }
   35% { opacity: 1; }
-  100% { transform: translateX(130%); opacity: 0; }
+  100% { opacity: 0; transform: translateX(130%); }
 }
 
 .btn:hover {
-  transform: translateY(-1.5px);
+  transform: translateY(-1px);
   box-shadow:
     0 8px 18px rgba(0, 0, 0, 0.42),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
@@ -1284,7 +1317,7 @@ textarea {
 .btn:active {
   transform: translateY(0) scale(0.98);
   /* Snappier than the hover so the press reads as immediate. */
-  transition-duration: 90ms;
+  transition-duration: var(--motion-press);
   box-shadow:
     0 2px 6px rgba(0, 0, 0, 0.4),
     inset 0 1px 0 rgba(255, 255, 255, 0.18);
@@ -1295,9 +1328,8 @@ textarea {
   outline-offset: 2px;
 }
 
-/* Busy and disabled buttons must not invite a click: no lift, no sweep. The
-   slow breathing on aria-busy is the only motion left, signalling work in
-   progress while Instalando… / Desinstalando… is shown. */
+/* El texto y el indicador de la operación comunican actividad sin hacer
+   respirar también toda la superficie del botón. */
 .btn[disabled],
 .btn.installed-label {
   cursor: default;
@@ -1305,12 +1337,7 @@ textarea {
 }
 
 .btn[aria-busy="true"] {
-  animation: btnBusyPulse 1.7s ease-in-out infinite;
-}
-
-@keyframes btnBusyPulse {
-  0%, 100% { opacity: 0.68; }
-  50% { opacity: 0.94; }
+  opacity: 0.8;
 }
 
 .btn[disabled]:hover,
@@ -1551,6 +1578,13 @@ textarea {
   white-space: nowrap;
 }
 
+/* Refrescar ya muestra el avance en su diálogo; los eventos del backend
+   pueden seguir actualizándolo sin duplicar la barra en el banner inferior. */
+.refreshing-store #status-progress,
+.refreshing-store #status-progress-track {
+  display: none;
+}
+
 .status-progress {
   margin-left: auto;
   flex: 0 0 auto;
@@ -1583,7 +1617,7 @@ textarea {
   border-radius: inherit;
   background: var(--accent);
   box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 55%, transparent);
-  transition: width 220ms ease-out;
+  transition: width var(--motion-progress) var(--ease-out);
 }
 
 .version-badge {
@@ -1690,7 +1724,6 @@ textarea {
   flex-direction: column;
   gap: 14px;
   min-height: 0;
-  animation: fadeUp 0.35s ease;
 }
 
 /* The logo, the title and the buttons keep their size whatever happens; only
@@ -1896,7 +1929,6 @@ textarea {
   justify-items: center;
   gap: 13px;
   text-align: center;
-  animation: fadeUp 0.35s ease;
 }
 
 .store-update-logo {
@@ -1943,13 +1975,13 @@ textarea {
   inset: -2px;
   border-radius: 50%;
   border: 2px solid var(--green);
-  animation: updateHalo 2.4s var(--ease-out) infinite;
+  animation: updateHalo var(--motion-attention) var(--ease-out) infinite;
   pointer-events: none;
 }
 
 .store-update-badge-icon {
   display: block;
-  animation: updateArrow 2.4s var(--ease-out) infinite;
+  animation: updateArrow var(--motion-attention) var(--ease-out) infinite;
 }
 
 @keyframes updateArrow {
@@ -1979,12 +2011,7 @@ textarea {
 }
 
 /* Anyone who asked the system to stop animations gets a still badge. */
-@media (prefers-reduced-motion: reduce) {
-  .store-update-badge-icon,
-  .store-update-badge::after {
-    animation: none;
-  }
-}
+
 
 .store-update-title {
   margin: 0;
@@ -2038,7 +2065,6 @@ textarea {
   border-radius: 13px;
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
   text-align: left;
-  animation: fadeUp 0.35s ease;
 }
 
 .release-notes-head {
@@ -2348,13 +2374,6 @@ textarea {
   to { background-position: -100% 0; }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .release-notes,
-  .release-notes-skeleton i {
-    animation: none;
-  }
-}
-
 /* -------------------------------------------------------------------------- */
 /*  Arranque sin pantalla de carga                                             */
 /* -------------------------------------------------------------------------- */
@@ -2372,40 +2391,79 @@ textarea {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 20px;
-  background: var(--bg-app);
+  gap: 28px;
+  /* El mismo #181818 que el fondo de la ventana (`backgroundColor` en
+     tauri.conf.json) y que el estilo en línea de index.html: entre una capa y
+     otra no puede verse ningún cambio de tono. Es fijo para que los ajustes
+     del tema no alteren el color del arranque. */
+  background: #181818;
+  /* Mantener la superficie opaca durante la promoción de las capas del logo
+     y del texto; crearla al iniciar el fundido producía un fotograma oscuro. */
+  transform: translateZ(0);
+  will-change: opacity;
   text-align: center;
-  transition: opacity 360ms var(--ease-out), visibility 0s linear 360ms;
-  animation: bootSplashGiveUp 360ms ease-out 15s forwards;
+  animation: bootSplashGiveUp var(--motion-reveal) var(--ease-fade) 15s forwards;
 }
 
 .boot-splash.done {
-  opacity: 0;
-  visibility: hidden;
+  /* Una sola mezcla hacia la tienda ya pintada: sin fondo intermedio ni
+     otra entrada del catálogo después del fundido. */
+  animation: bootSplashOut var(--motion-reveal) var(--ease-fade) both;
   pointer-events: none;
 }
 
+@keyframes bootSplashOut {
+  from { opacity: 1; visibility: visible; }
+  to { opacity: 0; visibility: hidden; }
+}
+
+/* Solo entra el contenido; el fondo opaco no descubre la tienda a medias. */
+.boot-splash > * { opacity: 0; will-change: opacity; }
+
+.boot-splash.is-presented > * {
+  animation: splashContentIn var(--motion-reveal) var(--ease-fade) both;
+}
+
+.boot-splash:not(.is-presented) .sync-logo-ring { animation-play-state: paused; }
+
+@keyframes splashContentIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 .boot-splash .sync-logo-box {
+  width: 128px;
+  height: 128px;
   margin-bottom: 0;
-  animation: syncCardPop 0.35s var(--ease-out) both;
+}
+
+/* Escalar solo el arranque mantiene intacto el tamaño de los otros diálogos. */
+.boot-splash .sync-logo-ring {
+  inset: -10px;
+  border-width: 3px;
+}
+
+.boot-splash .sync-logo-wrapper {
+  width: 116px;
+  height: 116px;
+  padding: 14px;
 }
 
 .boot-splash-copy {
   display: grid;
-  gap: 4px;
-  animation: fadeUp 0.4s var(--ease-out) 80ms both;
+  gap: 8px;
 }
 
 .boot-splash-copy strong {
   font-family: var(--font-display);
-  font-size: 18px;
+  font-size: 28px;
   font-weight: 700;
   color: var(--text-dark);
   letter-spacing: -0.01em;
 }
 
 .boot-splash-copy span {
-  font-size: 12px;
+  font-size: 15px;
   color: var(--text-light);
 }
 
@@ -2496,7 +2554,7 @@ textarea {
    en vez de aparecer de golpe donde estaban las siluetas. `backwards` y no
    `both`: al acabar manda otra vez la opacidad propia de cada botón. */
 #content.statuses-revealed .card-actions > .btn {
-  animation: actionReveal 320ms var(--ease-out) backwards;
+  animation: actionReveal var(--enter-duration) var(--ease-enter) backwards;
 }
 
 @keyframes actionReveal {
@@ -2513,24 +2571,7 @@ textarea {
   border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--accent) 22%, transparent);
   border-top-color: var(--accent);
-  animation: scan-spin 900ms linear infinite;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .loading-line::before {
-    animation-duration: 3s;
-  }
-  .btn-skeleton,
-  .skeleton-block,
-  .skeleton-lines i,
-  #content.statuses-revealed .card-actions > .btn,
-  .boot-splash .sync-logo-box,
-  .boot-splash-copy {
-    animation: none;
-  }
-  .nav-badge-scan {
-    animation-duration: 2.4s;
-  }
+  animation: scan-spin var(--motion-spin) linear infinite;
 }
 
 .version-product {
@@ -2553,18 +2594,53 @@ textarea {
 }
 
 .modal-backdrop {
+  --overlay-blur: 4px;
+  --overlay-shade: rgba(0, 0, 0, 0.68);
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.68);
+  isolation: isolate;
   display: grid;
   place-items: center;
   z-index: 50;
   padding: 24px;
   overflow: auto;
-  backdrop-filter: blur(4px);
-  animation: fadeUp 0.2s ease;
 }
 
+.modal-backdrop::before,
+.modal-backdrop::after,
+.sync-modal-overlay::before,
+.sync-modal-overlay::after,
+.shell-busy::before,
+.shell-busy::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.modal-backdrop::before,
+.sync-modal-overlay::before,
+.shell-busy::before {
+  backdrop-filter: blur(var(--overlay-blur));
+  -webkit-backdrop-filter: blur(var(--overlay-blur));
+}
+
+.shell-busy::before,
+.shell-busy::after { position: absolute; }
+
+.shell-busy > .sync-logo-box {
+  animation: dialogIn var(--enter-duration) var(--ease-enter) both;
+}
+
+.modal-backdrop::after,
+.sync-modal-overlay::after,
+.shell-busy::after {
+  background: var(--overlay-shade);
+}
+
+/* El desenfoque y el velo aparecen completos, sin animación. Solo entra
+   la ventana; su contenido no repite la entrada ni cambia de tamaño. */
 .modal {
   width: min(540px, calc(100vw - 48px));
   max-height: min(640px, 92vh);
@@ -2574,6 +2650,15 @@ textarea {
   border-radius: 16px;
   padding: 18px 20px 16px;
   box-shadow: var(--shadow);
+  animation: dialogIn var(--enter-duration) var(--ease-enter) both;
+}
+
+/* Sin escala: el texto pintado a otro tamaño saltaba a su sitio al terminar. */
+@keyframes dialogIn {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
 }
 
 .modal.wide {
@@ -2904,7 +2989,7 @@ textarea {
   border-radius: inherit;
   background: var(--accent);
   box-shadow: 0 0 7px color-mix(in srgb, var(--accent) 55%, transparent);
-  transition: width 220ms ease-out;
+  transition: width var(--motion-progress) var(--ease-out);
 }
 
 @keyframes package-operation-dot {
@@ -3009,7 +3094,7 @@ textarea {
   border-radius: inherit;
   background: var(--accent);
   box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 55%, transparent);
-  transition: width 260ms ease-out;
+  transition: width var(--motion-progress) var(--ease-out);
 }
 
 /* Terminada del todo y sin incidencias: el mismo verde de las filas y de las
@@ -3163,7 +3248,7 @@ textarea {
   height: 100%;
   border-radius: inherit;
   background: var(--accent);
-  transition: width 220ms ease-out;
+  transition: width var(--motion-progress) var(--ease-out);
 }
 
 .bulk-row-status {
@@ -3300,8 +3385,11 @@ textarea {
     box-shadow 200ms var(--ease-out);
 }
 
+/* Solo el foco del teclado lo deja a la vista: el que deja un clic se quedaba
+   en el botón y el círculo vacío seguía ahí al apartar el ratón. */
 .app-card:hover .card-select,
-.app-card:focus-within .card-select,
+.app-card:focus-visible .card-select,
+.app-card:has(:focus-visible) .card-select,
 #content.selection-active .card-select,
 .card-select[aria-pressed="true"] {
   opacity: 1;
@@ -3380,7 +3468,7 @@ textarea {
   pointer-events: none;
   transform: translate(-50%, calc(100% + 28px));
   transition:
-    transform 320ms var(--ease-out),
+    transform var(--enter-duration) var(--ease-enter),
     opacity 220ms var(--ease-out);
 }
 
@@ -3411,8 +3499,8 @@ textarea {
   font-size: 13px;
 }
 
-.card-avatar.queue-dock-avatar:last-child {
-  animation: queue-avatar-in 260ms var(--ease-out);
+.card-avatar.queue-dock-avatar.is-new {
+  animation: queue-avatar-in var(--enter-duration) var(--ease-enter);
 }
 
 .queue-dock-more {
@@ -3431,7 +3519,7 @@ textarea {
 @keyframes queue-avatar-in {
   from {
     opacity: 0;
-    transform: translateY(6px) scale(0.85);
+    transform: translateY(4px);
   }
 }
 
@@ -3476,7 +3564,7 @@ textarea {
 }
 
 .btn.queue-dock-install[aria-busy="true"] .btn-svg-icon {
-  animation: bulk-arrow-dip 1.4s ease-in-out infinite;
+  animation: bulk-arrow-dip var(--motion-breathe) ease-in-out infinite;
 }
 
 /* El repaso antes de confirmar: la cola numerada, en el orden en que va. */
@@ -3547,43 +3635,6 @@ textarea {
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .queue-dock,
-  .card-select {
-    transition-duration: 1ms;
-  }
-
-  .card-avatar.queue-dock-avatar:last-child {
-    animation: none;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .package-operation-dots span {
-    animation-duration: 2.4s;
-  }
-
-  /* Keep the state changes, drop the movement: the sweep and the lift are
-     decoration, while the colour and shadow shifts still say "hovered". */
-  .btn::after,
-  .btn:hover::after,
-  .btn:focus-visible::after {
-    animation: none;
-    opacity: 0;
-  }
-
-  .btn,
-  .btn:hover,
-  .btn:active {
-    transform: none;
-  }
-
-  .btn[aria-busy="true"] {
-    animation: none;
-    opacity: 0.8;
-  }
-}
-
 .installed-badge-banner {
   display: inline-flex;
   align-items: center;
@@ -3620,104 +3671,6 @@ textarea {
   font-weight: 700;
   font-size: 13px;
   margin-bottom: 8px;
-}
-
-.preset-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-}
-
-.preset-card {
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  border-radius: 12px;
-  padding: 8px;
-  cursor: pointer;
-  text-align: center;
-  transition: border-color 0.15s;
-}
-
-.preset-card.active {
-  border-color: var(--accent);
-  border-width: 2px;
-}
-
-.swatch {
-  display: flex;
-  gap: 4px;
-  justify-content: center;
-  margin-bottom: 6px;
-}
-
-.swatch i {
-  width: 40px;
-  height: 26px;
-  border-radius: 6px;
-  display: block;
-}
-
-.preset-card strong {
-  display: block;
-  font-size: 12px;
-}
-
-.preset-card span {
-  font-size: 10px;
-  color: var(--text-light);
-}
-
-.accent-grid {
-  display: grid;
-  grid-template-columns: repeat(8, 1fr);
-  gap: 6px;
-}
-
-.accent-dot {
-  width: 30px;
-  height: 30px;
-  border-radius: 15px;
-  border: 0;
-  cursor: pointer;
-}
-
-.accent-dot.active {
-  outline: 2px solid var(--text-dark);
-  outline-offset: 2px;
-}
-
-.preview {
-  border: 1px solid var(--border);
-  background: var(--bg-card);
-  border-radius: 12px;
-  padding: 14px;
-}
-
-.preview-bar {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  height: 40px;
-  border-radius: 8px;
-  overflow: hidden;
-  margin-top: 10px;
-}
-
-.preview-bar .side {
-  width: 70px;
-  height: 100%;
-}
-
-.preview-bar .card {
-  width: 100px;
-  height: 24px;
-  border-radius: 6px;
-}
-
-.preview-bar .dot {
-  width: 28px;
-  height: 28px;
-  border-radius: 14px;
 }
 
 .modal-foot {
@@ -3782,27 +3735,14 @@ textarea {
   display: grid;
   place-items: center;
   padding: 24px;
-  /* Neutral black like .modal-backdrop. The previous value was blue-tinted and
-     `saturate(180%)` amplified every colour behind the blur, which is why the
-     loading screen looked like a different application than the store. */
-  background: rgba(0, 0, 0, 0.78);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  animation: syncModalFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  --overlay-blur: 16px;
+  --overlay-shade: rgba(0, 0, 0, 0.78);
+  isolation: isolate;
 }
 
-.sync-modal-overlay.closing {
-  animation: syncModalFadeOut 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes syncModalFadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes syncModalFadeOut {
-  from { opacity: 1; transform: scale(1); }
-  to { opacity: 0; transform: scale(0.96); }
+.sync-modal-overlay.is-leaving {
+  /* Salida breve que responde desde el primer fotograma al acabar el trabajo. */
+  animation: bootSplashOut 110ms var(--ease-enter) both;
 }
 
 .sync-modal-card {
@@ -3824,12 +3764,7 @@ textarea {
   align-items: center;
   gap: 16px;
   transform-origin: center;
-  animation: syncCardPop 0.35s cubic-bezier(0.16, 1, 0.3, 1) forwards;
-}
-
-@keyframes syncCardPop {
-  from { opacity: 0; transform: scale(0.92) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+  animation: dialogIn var(--enter-duration) var(--ease-enter) both;
 }
 
 .sync-logo-box {
@@ -3848,12 +3783,7 @@ textarea {
   border-radius: 50%;
   border: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
   border-top-color: var(--accent);
-  animation: syncRingSpin 1.4s cubic-bezier(0.5, 0, 0.5, 1) infinite;
-}
-
-@keyframes syncRingSpin {
-  0% { transform: rotate(0deg); }
-  100% { transform: rotate(360deg); }
+  animation: scan-spin var(--motion-spin) linear infinite;
 }
 
 .sync-logo-wrapper {
@@ -3921,7 +3851,7 @@ textarea {
   border-radius: 999px;
   background: linear-gradient(90deg, var(--accent) 0%, color-mix(in srgb, var(--accent) 70%, #fff 30%) 100%);
   box-shadow: 0 0 12px var(--accent);
-  transition: width 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width var(--motion-progress) var(--ease-out);
 }
 
 .sync-status-row {
@@ -4177,7 +4107,6 @@ textarea {
   padding: 40px 72px 68px;
   background: rgba(0, 0, 0, 0.86);
   backdrop-filter: blur(6px);
-  animation: fadeUp 0.18s ease;
   cursor: zoom-out;
 }
 
@@ -4198,6 +4127,7 @@ textarea {
 }
 
 .shot-viewer-image {
+  animation: dialogIn var(--motion-progress) var(--ease-enter);
   display: block;
   max-width: 100%;
   max-height: 100%;

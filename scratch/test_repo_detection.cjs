@@ -14,7 +14,7 @@ const context = vm.createContext({
 });
 vm.runInContext('function appStatus(id) { return state.statuses[id] || {}; }', context);
 for (const name of ['repoAppId', 'repoAppShape', 'repoCatalogEntry', 'repoPackageByAppId',
-  'installedRepoApp', 'isStatusPending', 'actionButtons', 'versionLabel', 'repoCardHtml', 'findApp']) {
+  'knownApps', 'installedRepoApp', 'isStatusPending', 'actionButtons', 'versionLabel', 'cardMetaHtml', 'updateVersionBadge', 'repoCardHtml', 'findApp']) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, name);
   const end = source.indexOf('\n}', start) + 2;
@@ -48,5 +48,16 @@ assert.match(render(), /data-repo-install=/);
 // A confirmed uninstall must restore the install action.
 context.state.catalog[0].name = 'Cheat Engine';
 context.state.statuses.cheat_engine.installed = false;
+assert.match(render(), /data-repo-install=/);
+// Las entradas persistidas también son aplicaciones conocidas aunque no sean
+// parte del catálogo curado ni conserven el mismo identificador del resultado.
+context.state.catalog = [];
+context.state.repoEntries = [{ id: 'saved-cheatengine', choco_id: 'cheatengine', name: 'Cheat Engine' }];
+context.state.statuses['saved-cheatengine'] = { installed: true, can_launch: true };
+assert.match(render(), /Ya instalado/);
+assert.match(render(), /data-launch="saved-cheatengine"/);
+assert.match(render(), /data-uninstall="saved-cheatengine"/);
+assert.doesNotMatch(render(), /data-repo-install=/);
+context.state.statuses['saved-cheatengine'].installed = false;
 assert.match(render(), /data-repo-install=/);
 console.log('Repository detection UI: all regression checks passed.');

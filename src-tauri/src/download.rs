@@ -633,6 +633,48 @@ mod tests {
         assert!(release_notes_from_feed(NOTES_FEED, Some("9.0")).is_none());
         assert!(release_notes_from_feed("<feed></feed>", None).is_none());
     }
+
+    fn vmware_release(body: Option<&str>) -> GhRelease {
+        GhRelease {
+            tag_name: "latest".into(),
+            name: Some("VMWare".into()),
+            body: body.map(str::to_string),
+            assets: vec![GhAsset {
+                name: "VMware-Workstation-Full-26H1u1-25688693.exe".into(),
+                browser_download_url: "https://example.com/vmware.exe".into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn a_release_under_a_fixed_tag_takes_its_version_from_the_description() {
+        // Windows registers 26H1u1 as 26.0.1; the description says so.
+        let release = vmware_release(Some("### 26H1u1 · v26.0.1 ###"));
+        assert_eq!(release_version(&release, true), "26.0.1");
+        // Only the entries that ask for it: BSG Launcher keeps "latest".
+        assert_eq!(release_version(&release, false), "latest");
+        // "26H1u1" alone, or a bare build number, is no version to compare.
+        assert_eq!(release_version(&vmware_release(Some("### 26H1u1 ###")), true), "latest");
+        assert_eq!(release_version(&vmware_release(Some("build 25688693")), true), "latest");
+        assert_eq!(release_version(&vmware_release(None), true), "latest");
+        assert_eq!(dotted_version("BsgLauncher.15.0.0.4574.exe").as_deref(), Some("15.0.0.4574"));
+    }
+
+    #[test]
+    fn the_notes_of_a_release_under_a_fixed_tag_are_found_by_the_version_they_state() {
+        let feed = concat!(
+            "<feed><entry><id>tag:github.com,2008:Repository/1/latest</id>",
+            "<updated>2026-10-23T10:00:00Z</updated>",
+            "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/o/r/releases/tag/latest\"/>",
+            "<title>VMWare</title>",
+            "<content type=\"html\">&lt;h3&gt;26H1u1 · v26.0.1&lt;/h3&gt;</content></entry></feed>"
+        );
+        assert_eq!(
+            release_notes_from_feed(feed, Some("26.0.1")).map(|notes| notes.tag),
+            Some("latest".into())
+        );
+        assert!(release_notes_from_feed(feed, Some("26.0.2")).is_none());
+    }
 }
 
 fn fmt_size(mut size: f64) -> String {
@@ -1381,7 +1423,7 @@ pub fn is_github_rate_limit(error: &str) -> bool {
 /// 60 requests per hour per IP. Checking updates for every installed
 /// `github_release` app at startup and again on every refresh used to burn that
 /// quota, after which perfectly valid installations failed with a 403.
-/// Cached lookup: when it was resolved, the asset URL and the release tag.
+/// Cached lookup: when it was resolved, the asset URL and the release version.
 type CachedRelease = (std::time::Instant, String, String);
 
 static RELEASE_CACHE: Mutex<Option<HashMap<String, CachedRelease>>> = Mutex::new(None);
@@ -1585,7 +1627,14 @@ pub fn release_notes_from_feed(feed: &str, tag: Option<&str>) -> Option<ReleaseN
             })
         })
         .find(|notes| match tag {
-            Some(wanted) => same_release(&notes.tag, wanted),
+            Some(wanted) => {
+                same_release(&notes.tag, wanted)
+                    // A release republished under the fixed tag `latest` is
+                    // known by the version written in its notes (`release_version`).
+                    || (matches!(notes.tag.to_ascii_lowercase().as_str(), "latest" | "lastest")
+                        && dotted_version(&notes.html)
+                            .is_some_and(|version| same_release(&version, wanted)))
+            }
             None => true,
         })
 }
@@ -1657,11 +1706,50 @@ fn decode_xml_entities(text: &str) -> String {
     decoded
 }
 
+/// The version a release stands for: its tag or, with `version_from_notes`, the
+/// version written in its description. VMware is republished under the fixed
+/// tag `latest` with a new setup each time, so only the description can say
+/// which version it is ("26H1u1 · v26.0.1", as Windows registers it). Without
+/// one there, the tag stands.
+fn release_version(release: &GhRelease, version_from_notes: bool) -> String {
+    release
+        .body
+        .as_deref()
+        .filter(|_| version_from_notes)
+        .and_then(dotted_version)
+        .unwrap_or_else(|| release.tag_name.clone())
+}
+
+/// The first dotted version in `text`: "26.0.1" in "26H1u1 · v26.0.1". A lone
+/// number does not count: a build number such as 25688693 would read as a
+/// version far ahead of anything installed, and the update would never go away.
+fn dotted_version(text: &str) -> Option<String> {
+    for chunk in text.split(|c: char| !c.is_ascii_digit() && c != '.') {
+        let mut run: Vec<&str> = Vec::new();
+        for part in chunk.split('.').chain(std::iter::once("")) {
+            if !part.is_empty() {
+                run.push(part);
+            } else if run.len() >= 2 {
+                return Some(run.join("."));
+            } else {
+                run.clear();
+            }
+        }
+    }
+    None
+}
+
+/// The asset to download from the newest release that has one, and that
+/// release's version (see `release_version`).
 pub async fn github_latest_release_asset(
     repo: &str,
     asset_pattern: Option<&str>,
+    version_from_notes: bool,
 ) -> Result<(String, String), String> {
-    let cache_key = format!("{repo}|{}", asset_pattern.unwrap_or_default());
+    let cache_key = format!(
+        "{repo}|{}|{version_from_notes}",
+        asset_pattern.unwrap_or_default()
+    );
     if let Some((url, tag)) = cached_release(&cache_key, false) {
         crate::logger::debug(
             "github",
@@ -1699,16 +1787,16 @@ pub async fn github_latest_release_asset(
     };
 
     if let Some(url) = select_github_asset_url(&release.assets, asset_pattern) {
+        let version = release_version(&release, version_from_notes);
         crate::logger::info(
             "github",
             format!(
-                "Recurso seleccionado: repositorio={repo}, versión={}, url={}",
-                release.tag_name,
+                "Recurso seleccionado: repositorio={repo}, versión={version}, url={}",
                 crate::logger::safe_url(&url)
             ),
         );
-        store_release(&cache_key, &url, &release.tag_name);
-        return Ok((url, release.tag_name));
+        store_release(&cache_key, &url, &version);
+        return Ok((url, version));
     }
 
     // Some projects publish platform-specific releases independently. If the
@@ -1732,8 +1820,9 @@ pub async fn github_latest_release_asset(
 
     for candidate in releases {
         if let Some(url) = select_github_asset_url(&candidate.assets, asset_pattern) {
-            store_release(&cache_key, &url, &candidate.tag_name);
-            return Ok((url, candidate.tag_name));
+            let version = release_version(&candidate, version_from_notes);
+            store_release(&cache_key, &url, &version);
+            return Ok((url, version));
         }
     }
 

@@ -3,6 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
     <title>WinSlimCenter UI Harness</title>
     <base href="/src/" />
     <link rel="stylesheet" href="/src/styles.css" />
@@ -440,6 +441,43 @@
       <div class="sync-logo-box" aria-hidden="true"><div class="sync-logo-ring"></div><div class="sync-logo-wrapper"><img src="/src/assets/winslim-center-logo.png" alt="" /></div></div>
       <div class="boot-splash-copy" aria-hidden="true"><strong>WinSlimCenter</strong><span>Preparando la tienda…</span></div>
     </div>
+    <script>
+      // Preparar fuentes y logotipo antes de revelar el contenido evita cambios
+      // de dibujo durante la entrada. El fondo coincide siempre con la ventana.
+      const splash = document.getElementById("boot-splash");
+      const logo = splash.querySelector("img");
+      const logoLoaded = !logo || logo.complete ? null : new Promise((resolve) => {
+        logo.addEventListener("load", resolve, { once: true });
+        logo.addEventListener("error", resolve, { once: true });
+      });
+      const ready = Promise.all([
+        logoLoaded,
+        document.fonts?.load("700 28px Ubuntu"),
+        document.fonts?.load("400 15px Ubuntu"),
+      ]).catch(() => {});
+      const pageLoaded = document.readyState === "complete" ? null : new Promise((resolve) => {
+        window.addEventListener("load", resolve, { once: true });
+      });
+      window.__bootSplashShown = Promise.all([
+        pageLoaded,
+        Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 400))]),
+      ]).then(async () => {
+        // Preparar las capas antes de abrir: el primer cambio de superficie de
+        // WebView2 no debe ocurrir con la ventana ya en pantalla. Una ventana
+        // oculta puede suspender rAF; el plazo evita bloquear su apertura.
+        await Promise.race([
+          new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
+          new Promise((resolve) => setTimeout(resolve, 150)),
+        ]);
+        if (window.__TAURI__?.core) {
+          await window.__TAURI__.core.invoke("show_main_window").catch(() => {});
+        }
+        // Ya visible: pintar el fondo y arrancar juntos logo, aro y texto.
+        await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        window.__bootSplashShownAt = performance.now();
+        splash.classList.add("is-presented");
+      });
+    </script>
     <div id="app">
       <header class="topbar">
         <div class="brand"><span class="brand-mark"><img src="/src/assets/winslim-center-logo.png" alt="" /></span><span class="brand-name">WinSlimCenter</span><span class="brand-sub">App Store</span></div>

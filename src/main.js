@@ -161,12 +161,6 @@ const THEME_PRESETS = {
   },
 };
 
-const ACCENT_CHOICES = [
-  "#c7ced6", "#f8fafc", "#e2e8f0", "#cbd5e1", "#94a3b8", "#64748b",
-  "#475569", "#1f2937", "#0f172a", "#d4d4d8", "#c0c7d0",
-  "#aeb8c5", "#8b95a7", "#7c8aa5", "#b0b7be", "#e5e7eb",
-];
-
 const ACCENT_PALETTE = [
   "#3b82f6", "#8b5cf6", "#10b981", "#f97316", "#ec4899",
   "#06b6d4", "#f59e0b", "#6366f1", "#14b8a6", "#84cc16",
@@ -1387,7 +1381,12 @@ function renderQueueDock() {
   document.getElementById("content")?.classList.toggle("selection-active", count > 0);
   dock.classList.toggle("is-visible", count > 0);
   dock.inert = !count;
-  if (!count) return;
+  if (!count) {
+    // Olvidar la firma permite reconstruir la misma selección al volver a elegirla.
+    delete dock.dataset.signature;
+    delete dock.dataset.appIds;
+    return;
+  }
 
   const running = isBulkUpdateRunning();
   const signature = `${apps.map((app) => app.id).join(",")}|${running}`;
@@ -1396,6 +1395,8 @@ function renderQueueDock() {
 
   // Las cuatro últimas elegidas, la más reciente a la derecha y por encima: la
   // que se acaba de marcar se ve llegar. Lo que no cabe se cuenta delante.
+  const previousIds = new Set((dock.dataset.appIds || "").split(",").filter(Boolean));
+  dock.dataset.appIds = apps.map((app) => app.id).join(",");
   const shown = apps.slice(-4);
   dock.innerHTML = `
     <div class="queue-dock-stack" aria-hidden="true">
@@ -1405,7 +1406,7 @@ function renderQueueDock() {
           const accent = pickAccent(app, index);
           // A la vista desde el primer momento y como mucho cuatro: sin espera
           // perezosa, que dejaría la letra en lugar del icono al aparecer.
-          return `<span class="card-avatar queue-dock-avatar" style="background:${avatarBackground(app, accent)}">${renderAvatar(app, (app.name || "?")[0].toUpperCase(), true)}</span>`;
+          return `<span class="card-avatar queue-dock-avatar${previousIds.has(app.id) ? "" : " is-new"}" style="background:${avatarBackground(app, accent)}">${renderAvatar(app, (app.name || "?")[0].toUpperCase(), true)}</span>`;
         })
         .join("")}
     </div>
@@ -1628,27 +1629,36 @@ function msStoreInstalledByFamily(family) {
   );
 }
 
-/**
- * El registro de lo instalado que corresponde a un resultado de búsqueda.
- *
- * El backend ya comprobó contra Windows si el producto está puesto y con qué
- * versión, así que un resultado marcado como instalado lo está aunque la lista
- * local todavía no haya llegado; de ella sólo falta con qué abrirlo.
- */
+/** La lista local es la misma que usa «Aplicaciones instaladas». La marca
+ * del resultado puede ser anterior a una instalación o venir sin completar. */
 function msStoreInstalledRecord(product) {
-  if (!product?.installed || !product.installed_family) return null;
-  return (
-    msStoreInstalledByFamily(product.installed_family) || {
-      family: product.installed_family,
-      full_name: "",
-      name: product.title || product.installed_family,
-      display_name: product.title || product.installed_family,
-      version: product.installed_version || "",
-      install_location: "",
-      can_uninstall: !!product.can_uninstall,
-      launch_target: null,
-    }
-  );
+  if (!product) return null;
+  const families = [product.installed_family, ...(product.package_families || [])].filter(Boolean);
+  for (const family of families) {
+    const installed = msStoreInstalledByFamily(family);
+    if (installed) return installed;
+  }
+  // Una comprobación de versiones puede conocer el producto aun cuando la
+  // búsqueda no publique las familias. Vincular por identidad, no por nombre.
+  const id = String(product.product_id || "").toUpperCase();
+  if (id) {
+    const installed = state.msstore.installed.find((app) =>
+      String(msStoreUpdateOf(app.family)?.product_id || "").toUpperCase() === id);
+    if (installed) return installed;
+  }
+  // Una lista local ya cargada también confirma las desinstalaciones y evita
+  // conservar el estado antiguo de resultados que siguen abiertos.
+  if (state.msstore.installedLoaded || !product.installed || !product.installed_family) return null;
+  return {
+    family: product.installed_family,
+    full_name: "",
+    name: product.title || product.installed_family,
+    display_name: product.title || product.installed_family,
+    version: product.installed_version || "",
+    install_location: "",
+    can_uninstall: !!product.can_uninstall,
+    launch_target: null,
+  };
 }
 
 /** Lo que se sabe de la versión publicada de una familia, si ya se preguntó. */
@@ -2491,7 +2501,7 @@ function installedRepoApp(repoId, pkg) {
   const entry = repoCatalogEntry(repoId, pkg);
   if (appStatus(entry.id).installed) return entry;
   const packageField = REPOS[repoId].package_field;
-  return state.catalog.find((app) => appStatus(app.id).installed && (
+  return knownApps().find((app) => appStatus(app.id).installed && (
     String(app[packageField] || "").toLowerCase() === pkg.key.toLowerCase() ||
     String(app.name || "").trim().toLowerCase() === pkg.name.trim().toLowerCase()
   ));
@@ -2529,11 +2539,12 @@ function repoCardHtml(repoId, pkg, index) {
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, false)}</div>
         <div>
-          <strong>${escapeHtml(pkg.name)}
-            <span class="origin-tag repo-tag">${escapeHtml(repo.label)}</span>
-            ${pkg.warning ? `<span class="origin-tag repo-warning-tag">${escapeHtml(pkg.warning)}</span>` : ""}
-          </strong>
-          <small>${escapeHtml(meta)}</small>
+          ${installedApp ? cardMetaHtml(installedApp) : `
+            <strong>${escapeHtml(pkg.name)}
+              <span class="origin-tag repo-tag">${escapeHtml(repo.label)}</span>
+              ${pkg.warning ? `<span class="origin-tag repo-warning-tag">${escapeHtml(pkg.warning)}</span>` : ""}
+            </strong>
+            <small>${escapeHtml(meta)}</small>`}
           <small class="repo-package-id">${escapeHtml(pkg.key)}</small>
         </div>
       </div>
@@ -2767,8 +2778,7 @@ function renderMsStoreNow() {
   const view = `msstore|${store.lastQuery}|${store.loading}`;
   const restoreTo = view === lastRenderedView ? content.scrollTop : 0;
   lastRenderedView = view;
-  content.innerHTML = html;
-  content.scrollTop = restoreTo;
+  replaceContent(content, html, restoreTo);
 
   if (keepFocus) {
     const input = document.getElementById("ms-search");
@@ -2801,6 +2811,7 @@ async function runMsStoreSearch() {
     const response = await invoke("msstore_search", { query });
     const products = Array.isArray(response?.products) ? response.products : [];
     store.results = products;
+    if (products.length) void ensureMsStoreInstalled().then(() => renderContent());
     store.lastQuery = query;
     store.error = "";
     store.loading = false;
@@ -3409,6 +3420,124 @@ async function uninstallMsStoreApp(family) {
 /// same one can put the scroll back where it was.
 let lastRenderedView = null;
 
+/// The section (and console filter) the content was last drawn for: a redraw of
+/// that same section knows what was already on screen.
+let lastEntranceScope = null;
+
+// Lo que entra con `fadeUp` al aparecer en la lista.
+const ENTERING_BLOCKS = ".section, .hero, .empty-updates-card";
+
+function enteringBlockKey(block) {
+  const classes = [...block.classList].filter((name) => name !== "is-settled").join(".");
+  return `${classes}|${block.querySelector(".section-head h3")?.textContent.trim() || ""}`;
+}
+
+function enteringCardKey(card) {
+  const { appId, msId, msFamily, repoCard } = card.dataset;
+  return appId || msId || msFamily || repoCard || "";
+}
+
+function paintedIconKey(img) {
+  const { iconCandidates, iconSignature, catalogGeneration } = img.dataset;
+  return `${iconCandidates}|${iconSignature}|${catalogGeneration}|${img.alt}|${img.getAttribute("style")}`;
+}
+
+/// Lo que hay a la vista antes de redibujar: cada bloque con sus tarjetas, lo
+/// que lleva ya de su entrada si aún no ha terminado (null si ya terminó) y los
+/// iconos ya pintados.
+function contentOnScreen(content) {
+  const entering = new Map();
+  for (const animation of content.getAnimations({ subtree: true })) {
+    if (animation.animationName === "fadeUp" && animation.playState === "running") {
+      entering.set(animation.effect?.target, Number(animation.currentTime) || 0);
+    }
+  }
+  const blocks = new Map();
+  for (const block of content.querySelectorAll(ENTERING_BLOCKS)) {
+    const cards = new Map();
+    for (const card of block.querySelectorAll(".app-card")) {
+      cards.set(enteringCardKey(card), entering.get(card) ?? null);
+    }
+    blocks.set(enteringBlockKey(block), { elapsed: entering.get(block) ?? null, cards });
+  }
+  const icons = new Map();
+  for (const img of content.querySelectorAll("img.is-loaded[data-icon-candidates]")) {
+    const key = paintedIconKey(img);
+    if (!icons.has(key)) icons.set(key, []);
+    icons.get(key).push(img);
+  }
+  return { blocks, icons };
+}
+
+/// Un redibujado de la misma sección no vuelve a hacer entrar lo que ya estaba.
+///
+/// El contenido se rehace entero con cada cambio, y con él la entrada de cada
+/// bloque y el fundido de cada icono: al terminar las comprobaciones del
+/// arranque, o con cada repositorio que contestaba a una búsqueda, la página
+/// entera volvía a subir y parpadeaba. Un bloque que ya estaba se queda quieto,
+/// sus iconos siguen pintados (el mismo nodo, sin volver a cargarse) y solo
+/// entran las tarjetas que no estaban. Lo que seguía entrando cuando llegó el
+/// redibujado sigue desde donde iba, en vez de saltar al final. Al cambiar de
+/// sección todo entra como siempre.
+function replaceContent(content, html, scrollTop) {
+  const scope = `${state.section}|${state.consoleFilter}`;
+  const before = scope === lastEntranceScope ? contentOnScreen(content) : null;
+  lastEntranceScope = scope;
+  content.innerHTML = html;
+  if (before) {
+    const resume = (element, elapsed) => {
+      element.style.animationDelay = `-${Math.round(elapsed)}ms`;
+    };
+    for (const block of content.querySelectorAll(ENTERING_BLOCKS)) {
+      const shown = before.blocks.get(enteringBlockKey(block));
+      if (!shown) continue;
+      if (shown.elapsed === null) block.classList.add("is-settled");
+      else resume(block, shown.elapsed);
+      for (const card of block.querySelectorAll(".app-card")) {
+        const key = enteringCardKey(card);
+        if (shown.cards.get(key) === null) continue;
+        card.classList.add("is-entering");
+        if (shown.cards.has(key)) resume(card, shown.cards.get(key));
+      }
+    }
+    for (const img of content.querySelectorAll("img[data-icon-candidates]")) {
+      const painted = before.icons.get(paintedIconKey(img))?.pop();
+      if (!painted) continue;
+      img.replaceWith(painted);
+      painted.parentElement?.classList.add("has-loaded-icon");
+    }
+  }
+  content.scrollTop = scrollTop;
+  skipHiddenEntrances(content);
+}
+
+/// Lo que entra fuera de la vista no se anima.
+///
+/// Nadie lo ve, y cada bloque o tarjeta que se anima es una capa que el
+/// navegador pinta al empezar y retira al terminar. Inicio entero son once
+/// bloques y casi trescientas tarjetas, casi todo por debajo del borde: animarlo
+/// todo a la vez era lo que hacía tosco el final de la entrada al volver a él.
+/// Lo que ya iba entrando (con su retraso negativo) sigue a lo suyo.
+function skipHiddenEntrances(content) {
+  const candidates = [
+    ...[...content.querySelectorAll(ENTERING_BLOCKS)].filter(
+      (block) => !block.classList.contains("is-settled"),
+    ),
+    ...content.querySelectorAll(".app-card.is-entering"),
+  ].filter((element) => !element.style.animationDelay);
+  if (!candidates.length) return;
+  // Todo se mide antes de tocar nada: una sola maquetación.
+  const view = content.getBoundingClientRect();
+  const hidden = candidates.filter((element) => {
+    const box = element.getBoundingClientRect();
+    return box.bottom <= view.top || box.top >= view.bottom;
+  });
+  for (const element of hidden) {
+    if (element.classList.contains("app-card")) element.classList.remove("is-entering");
+    else element.classList.add("is-settled");
+  }
+}
+
 function renderContent() {
   if (contentRenderFrame !== null) return;
   contentRenderFrame = requestAnimationFrame(() => {
@@ -3565,11 +3694,11 @@ function renderContentNow() {
   const restoreTo = view === lastRenderedView ? content.scrollTop : 0;
   lastRenderedView = view;
 
-  content.innerHTML = html;
-  // `scrollTop` is clamped by the browser. Avoid reading scrollHeight and
-  // clientHeight immediately after replacing the DOM, which forced a complete
-  // synchronous layout of every card.
-  content.scrollTop = restoreTo;
+  // `scrollTop` is clamped by the browser, so scrollHeight and clientHeight are
+  // never read. The one layout taken right after replacing the DOM is the one
+  // that decides which entrances are on screen (skipHiddenEntrances), and it
+  // only happens when something is about to enter.
+  replaceContent(content, html, restoreTo);
   renderQueueDock();
 }
 
@@ -3674,10 +3803,7 @@ function bindShellDelegation() {
     }
 
     const actionButton = event.target.closest("[data-action]");
-    if (actionButton?.dataset.action === "theme") {
-      void clientLog("info", "action", "Abriendo selector de apariencia.");
-      openThemePicker();
-    } else if (actionButton?.dataset.action === "folder") {
+    if (actionButton?.dataset.action === "folder") {
       void clientLog("info", "action", "Abriendo carpeta de aplicaciones.");
       invoke("open_apps_dir").catch((error) => {
         setStatus(`No se pudo abrir la carpeta: ${error}`, "var(--red)");
@@ -4614,7 +4740,7 @@ function closeModal() {
   }
 }
 
-function openModal(html, wide = false, locked = false) {
+function openModal(html, wide = false, locked = false, presentation = "") {
   // Por lo mismo: lo que ampliaba el visor pertenecía al diálogo anterior.
   closeShotViewer();
   const backdrop = document.getElementById("modal-backdrop");
@@ -4622,9 +4748,10 @@ function openModal(html, wide = false, locked = false) {
   if (backdrop.classList.contains("hidden")) modalReturnFocus = document.activeElement;
   modalLocked = locked;
   modal.classList.toggle("wide", wide);
-  // Cleared here rather than on close, so the treatment can never leak from the
-  // modal that asked for it into the next one.
-  modal.classList.remove("modal-hero", "modal-about");
+  // El foco fuerza una maquetación: preparar el tamaño y la decoración antes
+  // de mostrar evita un fotograma intermedio del diálogo genérico.
+  modal.classList.toggle("modal-hero", presentation === "hero" || presentation === "about");
+  modal.classList.toggle("modal-about", presentation === "about");
   modal.innerHTML = html;
   const heading = modal.querySelector("h2");
   if (heading) {
@@ -4637,7 +4764,7 @@ function openModal(html, wide = false, locked = false) {
   backdrop.onclick = (e) => {
     if (!locked && e.target === backdrop) closeModal();
   };
-  modal.querySelector("button, input, textarea, select, [tabindex]:not([tabindex='-1'])")?.focus();
+  modal.querySelector("button, input, textarea, select, [tabindex]:not([tabindex='-1'])")?.focus({ preventScroll: true });
 }
 
 document.addEventListener("keydown", (event) => {
@@ -5513,104 +5640,6 @@ function showAlertModal(title, message) {
   document.getElementById("modal-btn-close").onclick = closeModal;
 }
 
-function openThemePicker() {
-  const draft = {
-    theme: state.settings.theme,
-    accent: state.settings.accent,
-    accent_locked: false,
-  };
-  const preset = THEME_PRESETS[draft.theme] || THEME_PRESETS.plata;
-  openModal(`
-    <h2>Personalizar apariencia</h2>
-    <p class="sub">Tema neutro · blanco, negro, gris y plata</p>
-    <div class="modal-section">
-      <label>Tema base</label>
-      <div class="preset-grid">
-        <button type="button" class="preset-card active" data-theme="plata">
-          <div class="swatch">${preset.swatch.map((c) => `<i style="background:${c}"></i>`).join("")}</div>
-          <strong>${preset.label}</strong>
-          <span>blanco / negro / gris / plata</span>
-        </button>
-      </div>
-    </div>
-    <div class="modal-section">
-      <label>Color de acento</label>
-      <div class="accent-grid">
-        ${ACCENT_CHOICES.map(
-          (c) =>
-            `<button type="button" class="accent-dot ${normalizeHex(c) === normalizeHex(draft.accent) ? "active" : ""}"
-              data-accent="${c}" style="background:${c}" aria-label="Usar color de acento ${c}" title="${c}"></button>`
-        ).join("")}
-      </div>
-    </div>
-    <div class="modal-section">
-      <label>Color personalizado</label>
-      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
-        <input type="color" id="custom-accent-picker" value="${draft.accent}" aria-label="Color de acento personalizado"
-          style="width:52px; height:38px; border:none; background:transparent; border-radius:10px; cursor:pointer;" />
-        <button type="button" class="btn ghost" id="theme-reset-neutral">Restaurar plata</button>
-      </div>
-    </div>
-    <div class="modal-section preview">
-      <div id="theme-preview-label">${preset.label}  ·  acento ${draft.accent}</div>
-      <div class="preview-bar" style="background:${preset.vars["--bg-app"]}">
-        <div class="side" style="background:${preset.vars["--bg-sidebar"]}"></div>
-        <div class="card" style="background:${preset.vars["--bg-card"]}"></div>
-        <div class="dot" id="theme-preview-dot" style="background:${draft.accent}"></div>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button type="button" class="btn ghost" id="theme-cancel">Cancelar</button>
-      <button type="button" class="btn" id="theme-apply">Aplicar</button>
-    </div>
-  `);
-
-  const modal = document.getElementById("modal");
-  const picker = document.getElementById("custom-accent-picker");
-  const previewLabel = document.getElementById("theme-preview-label");
-  const previewDot = document.getElementById("theme-preview-dot");
-  const updatePreview = () => {
-    const normalized = normalizeHex(draft.accent);
-    modal.querySelectorAll("[data-accent]").forEach((button) => {
-      button.classList.toggle("active", normalizeHex(button.dataset.accent) === normalized);
-    });
-    const accent = `#${normalized}`;
-    if (picker.value !== accent) picker.value = accent;
-    previewLabel.textContent = `${preset.label}  ·  acento ${accent}`;
-    previewDot.style.background = accent;
-  };
-
-  modal.querySelector(".accent-grid").addEventListener("click", (event) => {
-    const button = event.target.closest("[data-accent]");
-    if (!button) return;
-    draft.accent = button.dataset.accent;
-    draft.accent_locked = true;
-    updatePreview();
-  });
-  picker.addEventListener("input", (event) => {
-    draft.accent = event.target.value;
-    draft.accent_locked = true;
-    updatePreview();
-  });
-  document.getElementById("theme-reset-neutral").onclick = () => {
-    draft.accent = THEME_PRESETS.plata.default_accent;
-    draft.accent_locked = false;
-    updatePreview();
-  };
-  document.getElementById("theme-cancel").onclick = closeModal;
-  document.getElementById("theme-apply").onclick = async () => {
-    const settings = { theme: draft.theme, accent: `#${normalizeHex(draft.accent)}` };
-    try {
-      await invoke("save_settings", { settings });
-      applyTheme(settings.theme, settings.accent);
-      closeModal();
-    } catch (error) {
-      setStatus(`No se pudo guardar la apariencia: ${error}`, "var(--red)");
-      showAlertModal("Error al guardar la apariencia", String(error));
-    }
-  };
-}
-
 async function openCatalogEditor() {
   let templates;
   try {
@@ -5742,10 +5771,8 @@ function hideShellBusy() {
   if (!shellBusyOverlay) return;
   const overlay = shellBusyOverlay;
   shellBusyOverlay = null;
-  overlay.classList.add("closing");
-  // Long enough for the fade to play out, short enough that a rescan finishing
-  // and another starting do not stack veils.
-  setTimeout(() => overlay.remove(), 280);
+  // Retirar el velo sin escalar ni fundir su desenfoque evita saltos del compositor.
+  overlay.remove();
 }
 
 function showSyncModal(title = "WinSlimCenter", subtitle = "Sincronizando tienda...") {
@@ -5792,14 +5819,27 @@ function updateSyncModal(percent, text) {
 }
 
 function closeSyncModal() {
-  if (!syncModalOverlay) return;
-  syncModalOverlay.classList.add("closing");
-  setTimeout(() => {
-    if (syncModalOverlay && syncModalOverlay.parentNode) {
-      syncModalOverlay.parentNode.removeChild(syncModalOverlay);
-    }
-    syncModalOverlay = null;
-  }, 280);
+  if (!syncModalOverlay) return Promise.resolve();
+  const overlay = syncModalOverlay;
+  syncModalOverlay = null;
+  // Capturar esta capa: el respaldo nunca debe retirar una sincronización nueva.
+  return new Promise((resolve) => {
+    let timer;
+    const remove = () => {
+      clearTimeout(timer);
+      overlay.removeEventListener("animationend", onEnd);
+      overlay.remove();
+      resolve();
+    };
+    const onEnd = (event) => {
+      if (event.target === overlay && event.animationName === "bootSplashOut") remove();
+    };
+    overlay.addEventListener("animationend", onEnd);
+    overlay.classList.add("is-leaving");
+    const duration = getComputedStyle(overlay).animationDuration;
+    const milliseconds = parseFloat(duration) * (duration.trim().endsWith("ms") ? 1 : 1000);
+    timer = setTimeout(remove, (Number.isFinite(milliseconds) ? milliseconds : 110) + 100);
+  });
 }
 
 /**
@@ -5815,6 +5855,7 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   const button = document.getElementById("btn-refresh");
   const original = button.innerHTML;
   if (!silent) {
+    document.body.classList.add("refreshing-store");
     button.disabled = true;
     button.innerHTML = '<span>↻</span> Refrescando...';
     showSyncModal("Sincronizando Tienda", "Recargando catálogo y escaneando estado del sistema...");
@@ -5843,7 +5884,8 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
     renderContent();
     if (!silent) {
       updateSyncModal(100, "¡Sincronización completada!");
-      await new Promise((r) => setTimeout(r, 350));
+      // Descubrir la rejilla ya pintada, sin una pausa artificial al 100 %.
+      await afterFirstPaint();
     }
 
     if (updates) {
@@ -5859,23 +5901,53 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
     if (reportErrors) showAlertModal("Error al refrescar", String(error));
   } finally {
     if (!silent) {
-      closeSyncModal();
+      await closeSyncModal();
       button.disabled = false;
       button.innerHTML = original;
     }
     setProgress(100);
+    if (!silent) document.body.classList.remove("refreshing-store");
   }
 }
 
 /// Retira la pantalla de arranque de `index.html`. Dos fotogramas: en el
 /// primero se dibuja la tienda debajo y en el segundo ya está en pantalla, así
 /// que el fundido descubre el catálogo entero y no una ventana a medio pintar.
+/// Lo que la pantalla de arranque se queda a la vista, como poco, desde que se
+/// muestra la ventana: la tienda se pinta en milisegundos y, sin un mínimo, de
+/// ella sólo se veía un destello antes del fundido.
+const BOOT_SPLASH_MIN_MS = 750;
+
 function dismissBootSplash() {
   const splash = document.getElementById("boot-splash");
-  if (!splash || splash.classList.contains("done")) return;
-  void afterFirstPaint().then(() => {
-    splash.classList.add("done");
-    setTimeout(() => splash.remove(), 400);
+  if (!splash || splash.dataset.leaving) return;
+  splash.dataset.leaving = "true";
+  // La ventana puede seguir oculta esperando al logotipo y la letra: el mínimo
+  // cuenta desde que se muestra, no desde que la tienda está lista debajo.
+  void Promise.all([afterFirstPaint(), window.__bootSplashShown]).then(() => {
+    // Sin la marca de index.html (fuera de Tauri) no hay ventana que esperar.
+    const shownAt = window.__bootSplashShownAt;
+    const wait = shownAt === undefined ? 0 : Math.max(0, shownAt + BOOT_SPLASH_MIN_MS - performance.now());
+    setTimeout(() => {
+      let cleanupTimer;
+      const remove = () => {
+        clearTimeout(cleanupTimer);
+        splash.removeEventListener("animationend", onEnd);
+        splash.remove();
+      };
+      const onEnd = (event) => {
+        // El logo y el texto también animan: solo la salida de la capa completa
+        // puede retirarla, para no cortar el fundido por un evento de un hijo.
+        if (event.target === splash && event.animationName === "bootSplashOut") remove();
+      };
+      splash.addEventListener("animationend", onEnd);
+      splash.classList.add("done");
+      // Respaldo si WebView no entrega animationend. CSS sigue siendo la fuente
+      // de la duración, tanto si se expresa en segundos como en milisegundos.
+      const duration = getComputedStyle(splash).animationDuration;
+      const milliseconds = parseFloat(duration) * (duration.trim().endsWith("ms") ? 1 : 1000);
+      cleanupTimer = setTimeout(remove, (Number.isFinite(milliseconds) ? milliseconds : 320) + 100);
+    }, wait);
   });
 }
 
@@ -6134,10 +6206,7 @@ function showAboutModal() {
         <button type="button" class="btn primary" id="about-close">Cerrar</button>
       </div>
     </div>
-  `);
-  // `modal-about` is what lets the facts list scroll while the buttons stay put:
-  // this is the one hero dialog that can outgrow the height a modal is allowed.
-  document.getElementById("modal").classList.add("modal-hero", "modal-about");
+  `, false, false, "about");
   document.getElementById("about-close").onclick = closeModal;
 
   const check = document.getElementById("about-check");
@@ -6518,8 +6587,7 @@ function showStoreUpdateModal(update) {
         <button type="button" class="btn primary" id="store-update-now">Actualizar ahora</button>
       </div>
     </div>
-  `);
-  document.getElementById("modal").classList.add("modal-hero");
+  `, false, false, "hero");
   // Las notas llegan con el aviso, en la misma consulta que dijo la versión.
   fillReleaseNotes(
     document.querySelector("#modal .release-notes"),

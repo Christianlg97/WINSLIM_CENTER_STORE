@@ -328,7 +328,156 @@ function versionLabels() {
   assert.equal(ctx.versionLabel('latest', 'versión desconocida'), 'versión desconocida');
 }
 
+async function splashPresentation() {
+  for (const file of ['../src/index.html', 'ui_harness.html']) {
+    const html = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
+      .map(match => match[1]).find(text => text.includes('window.__bootSplashShown ='));
+    assert.ok(script, file);
+    for (const fails of [false, true]) for (const suspended of [false, true]) {
+      const frames = [], events = [], timers = [];
+      let pageLoaded;
+      const splash = { querySelector: () => ({ complete: true }), classList: { add: name => events.push(name) } };
+      const window = { addEventListener: (name, callback) => { assert.equal(name, 'load'); pageLoaded = callback; }, __TAURI__: { core: { invoke: () => {
+        events.push('show');
+        return fails ? Promise.reject(new Error('fallback')) : Promise.resolve();
+      } } } };
+      vm.runInNewContext(script, { window, document: { readyState: 'loading', getElementById: () => splash, fonts: { load: () => Promise.resolve() } },
+        performance: { now: () => 42 }, setTimeout: (callback, delay) => timers.push({ callback, delay }), requestAnimationFrame: callback => frames.push(callback) });
+      // Ni fuentes listas ni el script inicial bastan: esperar la página entera.
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      assert.deepEqual(events, []);
+      assert.equal(frames.length, 0);
+      pageLoaded();
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      assert.deepEqual(events, [], 'Preparar el primer pintado antes de mostrar la ventana');
+      assert.equal(frames.length, 1);
+      if (suspended) {
+        // WebView2 puede suspender los fotogramas de una ventana oculta.
+        timers.find(timer => timer.delay === 150).callback();
+        frames.length = 0;
+      } else {
+        frames.shift()();
+        assert.deepEqual(events, []);
+        frames.shift()();
+      }
+      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
+      assert.deepEqual(events, ['show']);
+      assert.equal(frames.length, 1);
+      frames.shift()();
+      assert.deepEqual(events, ['show']);
+      frames.shift()();
+      await window.__bootSplashShown;
+      assert.deepEqual(events, ['show', 'is-presented']);
+      assert.equal(window.__bootSplashShownAt, 42);
+    }
+  }
+}
+
+function modalPresentationBeforeFocus() {
+  const classes = new Set(), observed = [];
+  const modal = {
+    classList: { toggle(name, enabled) { enabled ? classes.add(name) : classes.delete(name); } },
+    removeAttribute() {},
+    querySelector: selector => selector === 'h2' ? null : { focus: options => observed.push({ classes: [...classes], options }) },
+  };
+  const backdrop = { classList: { contains: () => true, remove: () => observed.push({ classes: [...classes], shown: true }) } };
+  const ctx = vm.createContext({ document: { getElementById: id => id === 'modal' ? modal : backdrop, activeElement: {} }, closeShotViewer() {} });
+  load(ctx, ['openModal']);
+  ctx.openModal('about', false, false, 'about');
+  assert.ok(observed[0].shown);
+  assert.ok(observed[0].classes.includes('modal-about'));
+  assert.ok(observed[0].classes.includes('modal-hero'));
+  assert.equal(observed[1].options.preventScroll, true);
+  ctx.openModal('plain');
+  assert.equal(classes.has('modal-about'), false);
+  assert.equal(classes.has('modal-hero'), false);
+}
+
+async function splashFadeCompletesBeforeRemoval() {
+  for (const duration of ['320ms', '0.32s']) {
+    const timers = [], cleared = [], listeners = new Map();
+    let removed = 0;
+    const splash = { dataset: {}, classList: { add: name => assert.equal(name, 'done') },
+      addEventListener: (name, callback) => listeners.set(name, callback),
+      removeEventListener: name => listeners.delete(name), remove: () => removed++ };
+    const ctx = vm.createContext({ document: { getElementById: () => splash }, window: {},
+      afterFirstPaint: () => Promise.resolve(), performance: { now: () => 0 }, BOOT_SPLASH_MIN_MS: 750,
+      getComputedStyle: () => ({ animationDuration: duration }),
+      setTimeout: (callback, delay) => { timers.push({ callback, delay }); return timers.length; },
+      clearTimeout: id => cleared.push(id) });
+    load(ctx, ['dismissBootSplash']);
+    ctx.dismissBootSplash();
+    ctx.dismissBootSplash();
+    for (let turn = 0; turn < 6; turn++) await Promise.resolve();
+    assert.equal(timers.length, 1, 'El cierre repetido no reinicia la salida');
+    timers[0].callback();
+    assert.equal(removed, 0, 'La capa sigue presente durante el fundido');
+    const end = listeners.get('animationend');
+    end({ target: {}, animationName: 'splashContentIn' });
+    assert.equal(removed, 0, 'Una animación del contenido no corta la salida');
+    assert.equal(timers[1].delay, 420, 'El respaldo usa la duración CSS más un margen');
+    end({ target: splash, animationName: 'bootSplashOut' });
+    assert.equal(removed, 1);
+    assert.ok(cleared.includes(2));
+    assert.equal(listeners.has('animationend'), false);
+  }
+}
+
+function externalInstalledSearch() {
+  const app = { family: 'king.com.CandyCrushSodaSaga_abc', version: '1.329.300.0',
+    name: 'king.com.CandyCrushSodaSaga', display_name: 'Candy Crush Soda Saga',
+    can_uninstall: true, launch_target: 'shell:AppsFolder/candy' };
+  const store = { installed: [app], installedLoaded: true, updates: {}, busy: {}, installing: {} };
+  const ctx = vm.createContext({ state: { msstore: store }, String, escapeHtml: String,
+    msStoreAppShape: product => ({ name: product.title }), pickAccent: () => '#ccc', avatarBackground: () => '', renderAvatar: () => '',
+    MSSTORE_KIND_LABELS: { appx: 'Paquete de Windows' }, versionLabel: value => value,
+  });
+  load(ctx, ['msStoreInstalledByFamily', 'msStoreInstalledRecord', 'msStoreUpdateOf',
+    'msStoreOriginTag', 'msStoreVersionBadge', 'msStoreInstalledActions', 'msStoreCardHtml']);
+  const product = { product_id: '9CANDY', title: 'Candy Crush Soda Saga', kind: 'appx',
+    installed: false, package_families: ['KING.COM.CANDYCRUSHSODASAGA_ABC'] };
+  assert.equal(ctx.msStoreInstalledRecord(product), app, 'Cruzar la familia aunque la marca de búsqueda sea anterior');
+  const html = ctx.msStoreCardHtml(product, 0);
+  assert.match(html, /Ya instalado/); assert.match(html, /data-ms-launch=/); assert.match(html, /data-ms-uninstall=/);
+  assert.doesNotMatch(html, /data-ms-install=/);
+  store.updates[app.family.toLowerCase()] = { product_id: '9candy' };
+  assert.equal(ctx.msStoreInstalledRecord({ product_id: '9CANDY' }), app, 'Reutilizar la identidad aprendida al comprobar versiones');
+  assert.equal(ctx.msStoreInstalledRecord({ product_id: '9OTHER', title: product.title }), null, 'El nombre no prueba identidad');
+  store.installed = [];
+  assert.equal(ctx.msStoreInstalledRecord({ ...product, installed: true, installed_family: app.family }), null, 'La desinstalación local invalida marcas viejas');
+  assert.match(ctx.msStoreCardHtml(product, 0), /data-ms-install=/);
+  store.installedLoaded = false;
+  assert.equal(ctx.msStoreInstalledRecord({ ...product, installed: true, installed_family: app.family }).family, app.family);
+}
+
+async function syncFadeCompletesBeforeRemoval() {
+  for (const fallback of [false, true]) {
+    let end, removed = 0, timer, cleared = false;
+    const overlay = { classList: { add: name => assert.equal(name, 'is-leaving') },
+      addEventListener: (name, fn) => { end = fn; }, removeEventListener() {}, remove: () => { removed++; } };
+    const ctx = vm.createContext({ syncModalOverlay: overlay, Promise,
+      getComputedStyle: () => ({ animationDuration: '0.11s' }),
+      setTimeout: (fn, delay) => { assert.equal(delay, 210); timer = fn; return 1; },
+      clearTimeout: () => { cleared = true; },
+    });
+    load(ctx, ['closeSyncModal']); const closing = ctx.closeSyncModal();
+    assert.equal(removed, 0, 'La capa sigue visible durante el fundido');
+    end({ target: {}, animationName: 'bootSplashOut' }); assert.equal(removed, 0);
+    const newerOverlay = {}; ctx.syncModalOverlay = newerOverlay;
+    if (fallback) timer(); else end({ target: overlay, animationName: 'bootSplashOut' });
+    await closing;
+    assert.equal(removed, 1); assert.ok(cleared);
+    assert.equal(ctx.syncModalOverlay, newerOverlay, 'La salida no retira una capa posterior');
+  }
+}
+
 (async () => {
+  externalInstalledSearch();
+  await syncFadeCompletesBeforeRemoval();
+  await splashFadeCompletesBeforeRemoval();
+  await splashPresentation();
+  modalPresentationBeforeFocus();
   versionLabels();
   visibleCounters();
   await msStoreScanReuse();
