@@ -2249,6 +2249,15 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
         .and_then(|entry| entry.get("launch_executable"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
+    let launch_args = catalog_entry
+        .as_ref()
+        .and_then(|entry| entry.get("launch_args"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
 
     if let Some(known_paths) = catalog_entry
         .as_ref()
@@ -2266,7 +2275,11 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
                             path.display()
                         ),
                     );
-                    return installer::launch_path_with_preferred(&path, None);
+                    return installer::launch_path_with_preferred_and_args(
+                        &path,
+                        None,
+                        &launch_args,
+                    );
                 }
             }
         }
@@ -2280,7 +2293,11 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
         .filter(|path| PathBuf::from(path).is_file());
     if let Some(path) = cached_launch_path {
         logger::info("launch", format!("Usando ejecutable almacenado: {path}"));
-        return installer::launch_path_with_preferred(&PathBuf::from(path), None);
+        return installer::launch_path_with_preferred_and_args(
+            &PathBuf::from(path),
+            None,
+            &launch_args,
+        );
     }
 
     if let Some(st) = state.statuses.lock().get(app_id).cloned() {
@@ -2288,9 +2305,10 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
             return installer::launch_shell_target(&st.install_path);
         }
         if st.installed && !st.install_path.is_empty() {
-            return installer::launch_path_with_preferred(
+            return installer::launch_path_with_preferred_and_args(
                 &PathBuf::from(&st.install_path),
                 preferred_executable.as_deref(),
+                &launch_args,
             );
         }
         if st.installed {
@@ -2301,7 +2319,18 @@ fn launch_app_internal(state: &AppState, app_id: &str) -> Result<String, String>
         }
     }
     let installed = state.installed.lock();
-    installer::launch_app(app_id, &installed)
+    if launch_args.is_empty() {
+        installer::launch_app(app_id, &installed)
+    } else {
+        let info = installed
+            .get(app_id)
+            .ok_or("La aplicación no está instalada")?;
+        installer::launch_path_with_preferred_and_args(
+            &PathBuf::from(&info.install_path),
+            preferred_executable.as_deref(),
+            &launch_args,
+        )
+    }
 }
 
 #[tauri::command]
@@ -2315,14 +2344,26 @@ fn launch_app_elevated(state: State<'_, AppState>, app_id: String) -> Result<Str
         "launch",
         format!("Solicitud de apertura elevada: app_id={app_id}"),
     );
-    let preferred_executable = state
+    let catalog_entry = state
         .catalog
         .lock()
         .iter()
         .find(|entry| entry.get("id").and_then(|value| value.as_str()) == Some(app_id.as_str()))
+        .cloned();
+    let preferred_executable = catalog_entry
+        .as_ref()
         .and_then(|entry| entry.get("launch_executable"))
         .and_then(|value| value.as_str())
         .map(str::to_string);
+    let launch_args = catalog_entry
+        .as_ref()
+        .and_then(|entry| entry.get("launch_args"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<Vec<_>>();
 
     let cached_launch_path = state
         .installed
@@ -2331,7 +2372,11 @@ fn launch_app_elevated(state: State<'_, AppState>, app_id: String) -> Result<Str
         .and_then(|info| info.launch_path.clone())
         .filter(|path| PathBuf::from(path).is_file());
     if let Some(path) = cached_launch_path {
-        return installer::launch_path_elevated_with_preferred(&PathBuf::from(path), None);
+        return installer::launch_path_elevated_with_preferred_and_args(
+            &PathBuf::from(path),
+            None,
+            &launch_args,
+        );
     }
 
     if let Some(status) = state.statuses.lock().get(&app_id).cloned() {
@@ -2339,9 +2384,10 @@ fn launch_app_elevated(state: State<'_, AppState>, app_id: String) -> Result<Str
             return Err("Las aplicaciones empaquetadas de Windows no admiten el inicio elevado desde WinSlimCenter.".into());
         }
         if status.installed && !status.install_path.is_empty() {
-            return installer::launch_path_elevated_with_preferred(
+            return installer::launch_path_elevated_with_preferred_and_args(
                 &PathBuf::from(status.install_path),
                 preferred_executable.as_deref(),
+                &launch_args,
             );
         }
     }
@@ -2350,9 +2396,10 @@ fn launch_app_elevated(state: State<'_, AppState>, app_id: String) -> Result<Str
     let info = installed
         .get(&app_id)
         .ok_or("La aplicación no está instalada")?;
-    installer::launch_path_elevated_with_preferred(
+    installer::launch_path_elevated_with_preferred_and_args(
         &PathBuf::from(&info.install_path),
         preferred_executable.as_deref(),
+        &launch_args,
     )
 }
 
@@ -3097,7 +3144,7 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
     // which release the update check has to look at: Thorium publishes one per
     // CPU instruction set under the same tag.
     let chosen_variants = state.settings.lock().variants.clone();
-    let github_targets: Vec<(String, String, Option<String>, bool)> = catalog
+    let github_targets: Vec<(String, String, Option<String>, bool, bool)> = catalog
         .iter()
         .filter_map(|entry| {
             let id = entry.get("id").and_then(|v| v.as_str())?;
@@ -3118,6 +3165,10 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
                     .map(str::to_string),
                 resolved
                     .get("version_from_release_notes")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                resolved
+                    .get("asset_release_from_notes")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
             ))
@@ -3148,11 +3199,15 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
         }
     };
     let github_lookup = futures_util::stream::iter(github_targets)
-        .map(|(id, repo, pattern, from_notes)| async move {
-            let result =
-                download::github_latest_release_asset(&repo, pattern.as_deref(), from_notes)
-                    .await
-                    .map(|(_url, tag)| tag);
+        .map(|(id, repo, pattern, from_notes, asset_release_from_notes)| async move {
+            let result = download::github_latest_release_asset(
+                &repo,
+                pattern.as_deref(),
+                from_notes,
+                asset_release_from_notes,
+            )
+            .await
+            .map(|(_url, tag)| tag);
             (id, result)
         })
         .buffer_unordered(6)

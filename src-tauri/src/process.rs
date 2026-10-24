@@ -58,7 +58,7 @@ pub fn is_elevated() -> bool {
 
 /// Requests elevation through Windows UAC while keeping the PowerShell helper
 /// hidden. The target path has already been resolved by the backend.
-pub fn launch_elevated(executable: &Path) -> Result<(), String> {
+pub fn launch_elevated(executable: &Path, arguments: &[String]) -> Result<(), String> {
     #[cfg(windows)]
     {
         crate::logger::info(
@@ -66,8 +66,18 @@ pub fn launch_elevated(executable: &Path) -> Result<(), String> {
             format!("Solicitando elevación para {}", executable.display()),
         );
         let escaped_path = executable.to_string_lossy().replace('\'', "''");
+        let escaped_arguments = arguments
+            .iter()
+            .map(|argument| format!("'{}'", argument.replace('\'', "''")))
+            .collect::<Vec<_>>()
+            .join(",");
+        let argument_clause = if arguments.is_empty() {
+            String::new()
+        } else {
+            format!(" -ArgumentList @({escaped_arguments})")
+        };
         let script = format!(
-            "$ErrorActionPreference='Stop'; try {{ Start-Process -FilePath '{escaped_path}' -Verb RunAs }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+            "$ErrorActionPreference='Stop'; try {{ Start-Process -FilePath '{escaped_path}'{argument_clause} -Verb RunAs }} catch {{ [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
         );
         let mut command = Command::new("powershell.exe");
         background(&mut command);
@@ -111,6 +121,7 @@ pub fn launch_elevated(executable: &Path) -> Result<(), String> {
     #[cfg(not(windows))]
     {
         let _ = executable;
+        let _ = arguments;
         Err("La ejecución elevada solo está disponible en Windows.".into())
     }
 }

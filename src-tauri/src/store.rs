@@ -303,14 +303,15 @@ mod tests {
             "variants": {
                 "default": "avx2",
                 "options": [
-                    { "id": "avx2", "overrides": { "asset_pattern": "thorium_AVX2_*.zip" } },
-                    { "id": "sse3", "overrides": { "asset_pattern": "thorium_SSE3_*.zip" } }
+                    { "id": "avx2", "overrides": { "asset_pattern": "thorium_avx2_mini_installer.exe" } },
+                    { "id": "avx512", "overrides": { "asset_pattern": "thorium_avx512_mini_installer.exe" } },
+                    { "id": "sse3", "overrides": { "asset_pattern": "thorium_sse3_mini_installer.exe" } }
                 ]
             }
         });
 
         let chosen = apply_variant(&entry, Some("sse3"));
-        assert_eq!(chosen["asset_pattern"], "thorium_SSE3_*.zip");
+        assert_eq!(chosen["asset_pattern"], "thorium_sse3_mini_installer.exe");
         assert_eq!(chosen["variant"], "sse3");
         // The block is spent once the choice is made: everything downstream
         // reads an ordinary entry.
@@ -322,12 +323,16 @@ mod tests {
         // No choice yet means the one the catalog leads with.
         assert_eq!(
             apply_variant(&entry, None)["asset_pattern"],
-            "thorium_AVX2_*.zip"
+            "thorium_avx2_mini_installer.exe"
         );
-        // A choice that no longer exists must not leave the entry unusable.
         assert_eq!(
             apply_variant(&entry, Some("avx512"))["asset_pattern"],
-            "thorium_AVX2_*.zip"
+            "thorium_avx512_mini_installer.exe"
+        );
+        // A choice that does not exist must not leave the entry unusable.
+        assert_eq!(
+            apply_variant(&entry, Some("neon"))["asset_pattern"],
+            "thorium_avx2_mini_installer.exe"
         );
         // An entry without builds is handed back untouched.
         let plain = serde_json::json!({ "id": "git", "asset_pattern": "Git-*.exe" });

@@ -595,6 +595,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_last_linked_github_release_is_the_download_source() {
+        let notes = concat!(
+            "Code: https://github.com/gz83/thorium/tree/M156-LTS\n",
+            "Issues: https://github.com/Alex313031/thorium/issues\n",
+            "Download: https://github.com/gz83/thorium/releases/tag/M156.0.8078.28"
+        );
+        assert_eq!(
+            linked_github_release(notes),
+            Some(("gz83/thorium".into(), "M156.0.8078.28".into()))
+        );
+        assert_eq!(linked_github_release("No download here"), None);
+    }
+
     const NOTES_FEED: &str = concat!(
         "<feed><title>Release notes from notepad-plus-plus</title>",
         "<entry><id>tag:github.com,2008:Repository/1/v8.9.8.1</id>",
@@ -1720,6 +1734,37 @@ fn release_version(release: &GhRelease, version_from_notes: bool) -> String {
         .unwrap_or_else(|| release.tag_name.clone())
 }
 
+/// The last GitHub release linked by the author. Some projects publish an
+/// announcement in their main repository and put the actual binaries in a
+/// collaborator's release, so the catalog must not guess that repository.
+fn linked_github_release(notes: &str) -> Option<(String, String)> {
+    const PREFIX: &str = "https://github.com/";
+    const RELEASE_MARKER: &str = "/releases/tag/";
+
+    notes
+        .split_whitespace()
+        .filter_map(|word| {
+            let start = word.find(PREFIX)?;
+            let url = word[start..].trim_end_matches(|character: char| {
+                matches!(character, ')' | ']' | '>' | ',' | '.' | ';')
+            });
+            let path = url.strip_prefix(PREFIX)?;
+            let (repo, tag) = path.split_once(RELEASE_MARKER)?;
+            let (owner, name) = repo.split_once('/')?;
+            let tag = tag.split(['?', '#']).next()?;
+            if owner.is_empty()
+                || name.is_empty()
+                || name.contains('/')
+                || tag.is_empty()
+                || tag.contains('/')
+            {
+                return None;
+            }
+            Some((format!("{owner}/{name}"), tag.to_string()))
+        })
+        .last()
+}
+
 /// The first dotted version in `text`: "26.0.1" in "26H1u1 · v26.0.1". A lone
 /// number does not count: a build number such as 25688693 would read as a
 /// version far ahead of anything installed, and the update would never go away.
@@ -1745,9 +1790,10 @@ pub async fn github_latest_release_asset(
     repo: &str,
     asset_pattern: Option<&str>,
     version_from_notes: bool,
+    asset_release_from_notes: bool,
 ) -> Result<(String, String), String> {
     let cache_key = format!(
-        "{repo}|{}|{version_from_notes}",
+        "{repo}|{}|{version_from_notes}|{asset_release_from_notes}",
         asset_pattern.unwrap_or_default()
     );
     if let Some((url, tag)) = cached_release(&cache_key, false) {
@@ -1770,7 +1816,7 @@ pub async fn github_latest_release_asset(
     )
     .await;
 
-    let release = match latest {
+    let mut release = match latest {
         Ok(release) => release,
         Err(error) => {
             if let Some((url, tag)) = cached_release(&cache_key, true) {
@@ -1786,6 +1832,42 @@ pub async fn github_latest_release_asset(
         }
     };
 
+    if asset_release_from_notes {
+        let (linked_repo, linked_tag) = release
+            .body
+            .as_deref()
+            .and_then(linked_github_release)
+            .ok_or_else(|| {
+                format!(
+                    "La última release de {repo} no indica otra release de GitHub con los instaladores."
+                )
+            })?;
+        crate::logger::info(
+            "github",
+            format!("La descripción remite los instaladores a {linked_repo}, versión={linked_tag}"),
+        );
+        release = match fetch_github_json::<GhRelease>(
+            client,
+            &format!("https://api.github.com/repos/{linked_repo}/releases/tags/{linked_tag}"),
+        )
+        .await
+        {
+            Ok(release) => release,
+            Err(error) => {
+                if let Some((url, tag)) = cached_release(&cache_key, true) {
+                    crate::logger::warn(
+                        "github",
+                        format!(
+                            "GitHub no respondió para la release enlazada de {repo} ({error}); se reutiliza la última versión conocida: {tag}"
+                        ),
+                    );
+                    return Ok((url, tag));
+                }
+                return Err(error);
+            }
+        };
+    }
+
     if let Some(url) = select_github_asset_url(&release.assets, asset_pattern) {
         let version = release_version(&release, version_from_notes);
         crate::logger::info(
@@ -1797,6 +1879,12 @@ pub async fn github_latest_release_asset(
         );
         store_release(&cache_key, &url, &version);
         return Ok((url, version));
+    }
+
+    if asset_release_from_notes {
+        return Err(format!(
+            "La release enlazada desde {repo} no contiene el instalador solicitado."
+        ));
     }
 
     // Some projects publish platform-specific releases independently. If the

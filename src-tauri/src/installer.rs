@@ -2073,7 +2073,18 @@ where
                 .get("version_from_release_notes")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false);
-            match download::github_latest_release_asset(repo, pattern, from_notes).await {
+            let asset_release_from_notes = app
+                .get("asset_release_from_notes")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            match download::github_latest_release_asset(
+                repo,
+                pattern,
+                from_notes,
+                asset_release_from_notes,
+            )
+            .await
+            {
                 Ok((u, tag)) => {
                     if force_update
                         && current_version
@@ -4606,9 +4617,21 @@ fn directory_is_reparse_point(path: &Path) -> bool {
         .unwrap_or(true)
 }
 
-pub fn launch_path_with_preferred(
+fn expanded_launch_args(executable: &Path, arguments: &[String]) -> Vec<String> {
+    let executable_dir = executable
+        .parent()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_default();
+    arguments
+        .iter()
+        .map(|argument| argument.replace("{executable_dir}", &executable_dir))
+        .collect()
+}
+
+pub fn launch_path_with_preferred_and_args(
     install_path: &Path,
     preferred_executable: Option<&str>,
+    arguments: &[String],
 ) -> Result<String, String> {
     let executable = resolve_launchable_path(install_path, preferred_executable).ok_or(
         "La aplicación no está instalada: sólo se encontró el instalador o no existe un ejecutable final válido.",
@@ -4644,6 +4667,8 @@ pub fn launch_path_with_preferred(
         ));
     }
     let mut command = std::process::Command::new(&executable);
+    let arguments = expanded_launch_args(&executable, arguments);
+    command.args(&arguments);
     // A shortcut made by Windows always carries a "Start in" folder, and plenty
     // of programs need it: UNIGINE Heaven reads its configuration through a path
     // built from the working directory and refuses to start without the right
@@ -4675,8 +4700,8 @@ pub fn launch_path_with_preferred(
     crate::logger::info(
         "launch",
         format!(
-            "Proceso iniciado: ejecutable={}, pid={pid}",
-            executable.display()
+            "Proceso iniciado: ejecutable={}, argumentos={arguments:?}, pid={pid}",
+            executable.display(),
         ),
     );
     let executable_for_log = executable.clone();
@@ -4698,6 +4723,13 @@ pub fn launch_path_with_preferred(
         ),
     });
     Ok(format!("Lanzando {}", executable.display()))
+}
+
+pub fn launch_path_with_preferred(
+    install_path: &Path,
+    preferred_executable: Option<&str>,
+) -> Result<String, String> {
+    launch_path_with_preferred_and_args(install_path, preferred_executable, &[])
 }
 
 pub fn launch_shell_target(target: &str) -> Result<String, String> {
@@ -4728,9 +4760,10 @@ pub fn launch_shell_target(target: &str) -> Result<String, String> {
     Ok("Aplicación abierta mediante Windows".into())
 }
 
-pub fn launch_path_elevated_with_preferred(
+pub fn launch_path_elevated_with_preferred_and_args(
     install_path: &Path,
     preferred_executable: Option<&str>,
+    arguments: &[String],
 ) -> Result<String, String> {
     let executable = resolve_launchable_path(install_path, preferred_executable)
         .ok_or("No se encontró un ejecutable final válido para solicitar la elevación.")?;
@@ -4744,7 +4777,8 @@ pub fn launch_path_elevated_with_preferred(
             executable.display()
         ));
     }
-    crate::process::launch_elevated(&executable)?;
+    let arguments = expanded_launch_args(&executable, arguments);
+    crate::process::launch_elevated(&executable, &arguments)?;
     Ok(format!(
         "Lanzando {} como administrador",
         executable.display()
@@ -5751,6 +5785,19 @@ mod tests {
             .iter()
             .any(|flag| quiet.contains(flag));
         assert!(already_silent);
+    }
+
+    #[test]
+    fn launch_arguments_can_follow_the_selected_executable() {
+        let executable = Path::new(
+            r"C:\Program Files\AutoHotkey\UX\AutoHotkeyUX.exe",
+        );
+        let arguments = vec![r"{executable_dir}\ui-dash.ahk".to_string()];
+
+        assert_eq!(
+            expanded_launch_args(executable, &arguments),
+            vec![r"C:\Program Files\AutoHotkey\UX\ui-dash.ahk"]
+        );
     }
 
     #[test]

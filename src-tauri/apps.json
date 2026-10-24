@@ -245,6 +245,34 @@
     "winget_source": "winget"
   },
   {
+    "id": "vscodium",
+    "name": "VSCodium",
+    "description": "Editor de código libre basado en Visual Studio Code, sin telemetría de Microsoft.",
+    "version": "latest",
+    "author": "VSCodium",
+    "category": "Editores e IDE",
+    "section": "Desarrollo",
+    "featured": false,
+    "source_type": "github_release",
+    "github_repo": "VSCodium/vscodium",
+    "asset_pattern": "vscodiumusersetup-x64-*.exe",
+    "installer_args": [
+      "/VERYSILENT",
+      "/SUPPRESSMSGBOXES",
+      "/NORESTART",
+      "/SP-"
+    ],
+    "detect_names": [
+      "VSCodium"
+    ],
+    "launch_executable": "VSCodium.exe",
+    "known_launch_paths": [
+      "%LOCALAPPDATA%\\Programs\\VSCodium\\VSCodium.exe"
+    ],
+    "icon_url": "assets/catalog/vscodium.svg",
+    "accent_color": "#1a5fb4"
+  },
+  {
     "id": "opencode",
     "name": "OpenCode",
     "description": "Agente de programación con IA, disponible como aplicación nativa de escritorio.",
@@ -542,6 +570,29 @@
     "winget_id": "Audacity.Audacity",
     "accent_color": "#0079c1",
     "icon_url": "assets/catalog/audacity.svg",
+    "featured": false
+  },
+  {
+    "id": "virtualdj",
+    "name": "VirtualDJ",
+    "description": "Software profesional para mezclar audio, vídeo y karaoke, con separación de pistas en tiempo real y soporte para controladores DJ.",
+    "version": "latest",
+    "author": "Atomix Productions",
+    "category": "Audio",
+    "section": "Multimedia",
+    "source_type": "winget",
+    "winget_id": "AtomixProductions.VirtualDJ",
+    "winget_source": "winget",
+    "detect_names": [
+      "VirtualDJ"
+    ],
+    "launch_executable": "virtualdj.exe",
+    "known_launch_paths": [
+      "%PROGRAMFILES%\\VirtualDJ\\virtualdj.exe"
+    ],
+    "web_url": "https://es.virtualdj.com/download/",
+    "icon_url": "assets/catalog/virtualdj.png",
+    "accent_color": "#ed1c24",
     "featured": false
   },
   {
@@ -1568,6 +1619,10 @@
     "section": "Navegadores",
     "source_type": "github_release",
     "github_repo": "Alex313031/Thorium-Win",
+    "asset_release_from_notes": true,
+    "installer_args": [
+      "--silent"
+    ],
     "icon_url": "assets/catalog/thorium.png",
     "accent_color": "#2563eb",
     "launch_executable": "thorium.exe",
@@ -1582,9 +1637,17 @@
         {
           "id": "avx2",
           "name": "AVX2",
-          "description": "Intel desde 4ª generación (2013) y AMD desde Excavator. La más rápida.",
+          "description": "Intel desde 4ª generación (2013) y AMD desde Excavator. Recomendada para la mayoría de equipos modernos.",
           "overrides": {
-            "asset_pattern": "thorium_AVX2_*.zip"
+            "asset_pattern": "thorium_avx2_mini_installer.exe"
+          }
+        },
+        {
+          "id": "avx512",
+          "name": "AVX-512",
+          "description": "Procesadores recientes compatibles con AVX-512. La compilación más exigente.",
+          "overrides": {
+            "asset_pattern": "thorium_avx512_mini_installer.exe"
           }
         },
         {
@@ -1592,7 +1655,7 @@
           "name": "AVX",
           "description": "Intel desde Sandy Bridge (2011) y AMD desde Bulldozer.",
           "overrides": {
-            "asset_pattern": "thorium_AVX_*.zip"
+            "asset_pattern": "thorium_avx_mini_installer.exe"
           }
         },
         {
@@ -1600,7 +1663,7 @@
           "name": "SSE4",
           "description": "Procesadores x64 anteriores a AVX, desde Core 2 y AMD K10.",
           "overrides": {
-            "asset_pattern": "thorium_SSE4_*.zip"
+            "asset_pattern": "thorium_sse4_mini_installer.exe"
           }
         },
         {
@@ -1608,7 +1671,7 @@
           "name": "SSE3",
           "description": "Máxima compatibilidad, para los x64 más antiguos.",
           "overrides": {
-            "asset_pattern": "thorium_SSE3_*.zip"
+            "asset_pattern": "thorium_sse3_mini_installer.exe"
           }
         }
       ]
@@ -1831,6 +1894,10 @@
     "source_type": "wget",
     "download_url": "https://www.autohotkey.com/download/ahk-v2.exe",
     "winget_id": "AutoHotkey.AutoHotkey",
+    "launch_executable": "UX\\AutoHotkeyUX.exe",
+    "launch_args": [
+      "{executable_dir}\\ui-dash.ahk"
+    ],
     "icon_url": "assets/catalog/autohotkey.svg",
     "accent_color": "#334155",
     "featured": false
