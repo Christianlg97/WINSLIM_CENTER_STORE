@@ -74,6 +74,7 @@ async function updaterFailure() {
   const ctx = vm.createContext({
     invoke: () => { calls++; return new Promise((_, fail) => { reject = fail; }); },
     setStatus() {}, setProgress() {}, showAlertModal: (title, message) => errors.push(message),
+    storeOperationsInProgress: () => false,
   });
   vm.runInContext('let storeUpdateRunning = false;', ctx);
   load(ctx, ['startStoreUpdate']);
@@ -84,6 +85,82 @@ async function updaterFailure() {
   await first;
   assert.match(errors[0], /download interrupted/);
   assert.equal(vm.runInContext('storeUpdateRunning', ctx), false);
+}
+
+const tick = () => new Promise(resolve => setImmediate(resolve));
+
+function busyStore() {
+  return {
+    tasks: [{ app_id: 'demo', state: 'installing' }],
+    busy: { demo: 'updating' },
+    bulkUpdate: null,
+    msstore: { installing: {}, busy: {} },
+  };
+}
+
+// Accepting the store update while an installation runs used to fail in the
+// backend. It now waits for the installation and then updates.
+async function updaterWaitsForRunningOperations() {
+  const calls = [];
+  const statuses = [];
+  const state = busyStore();
+  const ctx = vm.createContext({
+    state, ACTIVE_TASK_STATES: new Set(['queued', 'downloading', 'paused', 'installing', 'cancelling']),
+    invoke: async name => { calls.push(name); return 'ok'; },
+    setStatus: text => statuses.push(text), setProgress() {}, showAlertModal() {}, clientLog() {},
+    setTimeout: fn => setImmediate(fn),
+  });
+  vm.runInContext('let storeUpdateRunning = false;', ctx);
+  load(ctx, ['storeOperationsInProgress', 'whenStoreIdle', 'startStoreUpdate']);
+  const pending = ctx.startStoreUpdate();
+  await tick(); await tick();
+  assert.equal(calls.length, 0, 'the store must not close over a running installation');
+  assert.match(statuses[0], /al terminar las operaciones en curso/);
+  // Opening an application is not something to wait for; the installation is.
+  state.busy.demo = 'launching';
+  state.tasks[0].state = 'done';
+  await pending;
+  assert.deepEqual(calls, ['update_center_app']);
+}
+
+// The start-up offer used to replace the locked dialog of an installation the
+// user had started during the scan. It now waits for the installation and for
+// the dialog in front to close; asked for from About, it shows straight away.
+async function startupOfferWaitsForIdle() {
+  const shown = [];
+  let modalHidden = false;
+  const state = busyStore();
+  const ctx = vm.createContext({
+    state, ACTIVE_TASK_STATES: new Set(['queued', 'downloading', 'paused', 'installing', 'cancelling']),
+    invoke: async () => ({ version: '9.9.9', current: '1.0.0' }),
+    clientLog() {}, showStoreUpdateModal: update => shown.push(update.version),
+    document: { getElementById: () => ({ classList: { contains: () => modalHidden } }) },
+    setTimeout: fn => setImmediate(fn),
+  });
+  vm.runInContext('let storeUpdateRunning = false; let storeUpdateOffered = false;', ctx);
+  load(ctx, ['storeOperationsInProgress', 'modalIsOpen', 'whenStoreIdle', 'runStoreUpdateCheck']);
+
+  const pending = ctx.runStoreUpdateCheck({ waitForIdle: true });
+  await tick(); await tick();
+  assert.equal(shown.length, 0, 'the offer must not cover a running installation');
+  state.tasks[0].state = 'done';
+  delete state.busy.demo;
+  await tick(); await tick();
+  assert.equal(shown.length, 0, 'the offer waits for the completion dialog to close');
+  modalHidden = true;
+  await pending;
+  assert.deepEqual(shown, ['9.9.9']);
+
+  state.busy.demo = 'uninstalling';
+  await ctx.runStoreUpdateCheck();
+  assert.equal(shown.length, 2, 'a manual check answers at once');
+
+  const repeated = ctx.runStoreUpdateCheck({ waitForIdle: true });
+  await tick();
+  vm.runInContext('storeUpdateOffered = true;', ctx);
+  delete state.busy.demo;
+  await repeated;
+  assert.equal(shown.length, 2, 'an offer already made is not repeated after waiting');
 }
 
 async function queuedInstall() {
@@ -532,9 +609,11 @@ async function startupConnectionGate() {
   await portableUpdate('preserve', false);
   await portableUpdate('delete', true);
   await updaterFailure();
+  await updaterWaitsForRunningOperations();
+  await startupOfferWaitsForIdle();
   restoredRepositories();
   await queuedInstall();
   queueEligibility();
   await startupVerification();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors, install queue, start-up verification, Microsoft Store scan reuse, web-app browser choice, visible counters and version labels passed.');
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

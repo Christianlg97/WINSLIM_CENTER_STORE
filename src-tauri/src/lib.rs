@@ -1,4 +1,5 @@
 mod choco;
+mod desktop;
 mod detect;
 mod download;
 mod env_path;
@@ -1582,7 +1583,8 @@ fn published_shortcut_name(entry: &Value) -> Option<String> {
 ///
 /// Es el mismo caso que [`published_shortcut_name`]: un portable no trae quien
 /// le ponga un icono en el escritorio, así que lo pone la tienda al instalarlo y
-/// lo quita ella misma al desinstalarlo.
+/// lo quita ella misma al desinstalarlo. Al actualizar solo lo reescribe si
+/// sigue ahí: el que el usuario quitó no vuelve.
 fn desktop_shortcut_name(entry: &Value) -> Option<String> {
     if !entry
         .get("desktop_shortcut")
@@ -1706,6 +1708,11 @@ async fn uninstall_app(
         "uninstall",
         format!("Solicitud de desinstalación: app_id={app_id}"),
     );
+    // Actualizar la tienda la cierra: una desinstalación empezada mientras se
+    // descarga la nueva versión se quedaría a medias, igual que una instalación.
+    if SELF_UPDATE.available_permits() == 0 {
+        return Err("Espera a que termine la actualización de WinSlimCenter.".into());
+    }
     let st = state
         .statuses
         .lock()
@@ -2082,7 +2089,15 @@ fn refresh_component_statuses(state: &AppState, suite_id: &str) {
 ///
 /// The icon is not set: a shortcut to `WINWORD.EXE` already wears Word's own,
 /// straight from the executable, which is sharper than anything downloadable.
-fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
+///
+/// `before` is the desktop as it was ahead of an update. Then only the shortcuts
+/// still there are rewritten: whoever removed Outlook's did not ask to see it
+/// come back with every Office update.
+fn publish_component_shortcuts(
+    state: &AppState,
+    suite_id: &str,
+    before: Option<&desktop::Snapshot>,
+) {
     let catalog = state.catalog.lock().clone();
     let components = detect::components_of(&catalog, suite_id)
         .into_iter()
@@ -2101,6 +2116,9 @@ fn publish_component_shortcuts(state: &AppState, suite_id: &str) {
         let Some(shortcut) = component_desktop_shortcut(name) else {
             continue;
         };
+        if before.is_some_and(|before| !before.had(&shortcut)) {
+            continue;
+        }
         match start_menu::write_shortcut(
             &shortcut,
             &executable,
@@ -2636,6 +2654,9 @@ async fn msstore_check_updates(
 #[tauri::command]
 async fn msstore_uninstall(family: String) -> Result<String, String> {
     logger::info("msstore", format!("Desinstalación solicitada: {family}"));
+    if SELF_UPDATE.available_permits() == 0 {
+        return Err("Espera a que termine la actualización de WinSlimCenter.".into());
+    }
     let outcome = async_runtime::spawn_blocking(move || msstore::uninstall(&family))
         .await
         .map_err(|error| format!("La desinstalación no pudo completarse: {error}"))?;
@@ -3613,6 +3634,9 @@ static SELF_UPDATE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1
 #[tauri::command]
 async fn update_center_app(app: AppHandle) -> Result<String, String> {
     let _updating = SELF_UPDATE.try_acquire().map_err(|_| "La actualización de la tienda ya está en curso.")?;
+    // La interfaz ya espera a que no quede nada en marcha antes de pedirla
+    // (`whenStoreIdle`). Esto es la última barrera: cerrar la tienda con un
+    // instalador a medias lo dejaría huérfano.
     if app.state::<AppState>().downloads.lock().has_active_tasks() {
         return Err("Espera a que terminen las instalaciones antes de actualizar WinSlimCenter.".into());
     }
@@ -3771,6 +3795,11 @@ async fn install_app(
     let name_for_task = name.clone();
     let force_for_task = force;
     let flags_for_task = flags.clone();
+    // Lo que ya estaba en el equipo se actualiza, y una actualización deja el
+    // escritorio como lo tenía el usuario: ni la tienda ni el instalador vuelven
+    // a poner el icono que él quitó.
+    let was_installed = current_version.is_some();
+    let previous_location = installed_at.clone();
 
     async_runtime::spawn(async move {
         let app_state = app_handle.state::<AppState>();
@@ -3812,6 +3841,7 @@ async fn install_app(
             }
         }
 
+        let mut desktop_before: Option<Arc<desktop::Snapshot>> = None;
         let result = match acquire_download_slot(&flags_for_task).await {
             Ok(download_permit) => {
                 {
@@ -3829,6 +3859,15 @@ async fn install_app(
                     );
                 }
                 emit_dl(&app_handle, &app_state);
+                // La foto se toma justo antes de que empiece la actualización:
+                // lo que aparezca en el escritorio a partir de aquí no lo tenía
+                // el usuario.
+                if was_installed {
+                    desktop_before = async_runtime::spawn_blocking(desktop::Snapshot::take)
+                        .await
+                        .ok()
+                        .map(Arc::new);
+                }
                 let result = installer::do_install(
                     &app_entry_for_task,
                     &flags_for_task,
@@ -4041,15 +4080,57 @@ async fn install_app(
                     ),
                 }
 
+                // El icono que el instalador volvió a poner al actualizar se
+                // retira; el que el usuario ya tenía se queda. Las carpetas de
+                // antes y de después dicen qué accesos son de esta aplicación.
+                if let Some(before) = desktop_before.clone() {
+                    let mut folders: Vec<PathBuf> =
+                        previous_location.iter().map(PathBuf::from).collect();
+                    if let Some(info) = app_state.installed.lock().get(&app_id_for_task) {
+                        folders.push(PathBuf::from(&info.install_path));
+                        folders.extend(info.launch_path.iter().map(PathBuf::from));
+                    }
+                    if let Some(status) = app_state.statuses.lock().get(&app_id_for_task) {
+                        folders.push(PathBuf::from(&status.install_path));
+                        folders.extend(status.install_location.iter().map(PathBuf::from));
+                    }
+                    match async_runtime::spawn_blocking(move || before.remove_added_for(&folders))
+                        .await
+                    {
+                        Ok(removed) => {
+                            for link in removed {
+                                logger::info(
+                                    "desktop-shortcut",
+                                    format!(
+                                        "Retirado el acceso que la actualización de {name_for_task} volvió a poner en el escritorio: {}",
+                                        link.display()
+                                    ),
+                                );
+                            }
+                        }
+                        Err(error) => logger::warn(
+                            "desktop-shortcut",
+                            format!(
+                                "No se pudo revisar el escritorio tras actualizar {app_id_for_task}: {error}"
+                            ),
+                        ),
+                    }
+                }
+
                 // Una suite deja sus programas instalados pero el escritorio
                 // vacío: Office publica en el menú Inicio y nada más. Los
                 // accesos directos de Word, Excel y compañía se crean aquí, uno
                 // por cada componente que de verdad quedó en el disco.
                 let shortcut_handle = app_handle.clone();
                 let shortcut_suite_id = app_id_for_task.clone();
+                let shortcut_before = desktop_before.clone();
                 if let Err(error) = async_runtime::spawn_blocking(move || {
                     let state = shortcut_handle.state::<AppState>();
-                    publish_component_shortcuts(&state, &shortcut_suite_id);
+                    publish_component_shortcuts(
+                        &state,
+                        &shortcut_suite_id,
+                        shortcut_before.as_deref(),
+                    );
                 })
                 .await
                 {
@@ -4105,7 +4186,9 @@ async fn install_app(
 
                 // Lo mismo en el escritorio para las fichas que lo piden con
                 // `desktop_shortcut`: el portable se queda en la carpeta que
-                // administra la tienda y el acceso apunta allí.
+                // administra la tienda y el acceso apunta allí. Se crea al
+                // instalar; al actualizar solo se reescribe si sigue ahí, por si
+                // el ejecutable cambió de sitio.
                 if let Some(name) = desktop_shortcut_name(&app_entry_for_task) {
                     let published = app_state
                         .installed
@@ -4114,6 +4197,18 @@ async fn install_app(
                         .and_then(|info| info.launch_path.clone())
                         .map(PathBuf::from);
                     match (published, component_desktop_shortcut(&name)) {
+                        (Some(_), Some(shortcut))
+                            if desktop_before
+                                .as_ref()
+                                .is_some_and(|before| !before.had(&shortcut)) =>
+                        {
+                            logger::info(
+                                "desktop-shortcut",
+                                format!(
+                                    "{name} no tenía acceso en el escritorio antes de actualizar; no se vuelve a crear"
+                                ),
+                            );
+                        }
                         (Some(executable), Some(shortcut)) => {
                             std::thread::spawn(move || {
                                 match start_menu::write_shortcut(

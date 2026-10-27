@@ -6189,10 +6189,48 @@ async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSe
 }
 
 let storeUpdateRunning = false;
+// Si el aviso ya salió en esta sesión. El del arranque espera a que la tienda
+// quede libre, y no se repite si entretanto el usuario lo pidió desde «Acerca de».
+let storeUpdateOffered = false;
+
+// Lo que cerrar la tienda para actualizarla cortaría a medias: descargas e
+// instalaciones —también las de la Microsoft Store—, la tanda de «Actualizar
+// todo» y las desinstalaciones. Abrir una aplicación no cuenta: dura un
+// instante y no deja nada a medio hacer.
+function storeOperationsInProgress() {
+  if (state.tasks.some((task) => ACTIVE_TASK_STATES.has(task.state))) return true;
+  if (state.bulkUpdate && !state.bulkUpdate.finished) return true;
+  if (Object.keys(state.msstore.installing).length) return true;
+  const working = (kind) => kind && kind !== "launching";
+  return Object.values(state.busy).some(working) || Object.values(state.msstore.busy).some(working);
+}
+
+function modalIsOpen() {
+  return !document.getElementById("modal-backdrop").classList.contains("hidden");
+}
+
+// Se resuelve cuando no queda nada en marcha y, si se pide, tampoco ningún
+// diálogo abierto. Pregunta cada medio segundo porque lo que lo termina llega
+// por caminos distintos —eventos del backend, la tanda, una desinstalación, el
+// usuario cerrando un diálogo— y son unas pocas comprobaciones en memoria.
+async function whenStoreIdle({ withoutModal = false } = {}) {
+  while (storeOperationsInProgress() || (withoutModal && modalIsOpen())) {
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+}
+
 async function startStoreUpdate() {
   if (storeUpdateRunning) return;
   storeUpdateRunning = true;
   try {
+    // Aplicarla cierra la tienda. Con algo instalándose, el backend la rechazaba
+    // y el usuario veía fallar la actualización que acababa de aceptar: ahora
+    // espera a que termine lo que está en marcha.
+    if (storeOperationsInProgress()) {
+      setStatus("WinSlimCenter se actualizará al terminar las operaciones en curso...", "var(--accent)");
+      void clientLog("info", "self-update", "Aplazada hasta que terminen las operaciones en curso.");
+      await whenStoreIdle();
+    }
     setStatus("Descargando la nueva versión de la tienda...", "var(--accent)");
     const msg = await invoke("update_center_app");
     setStatus(String(msg || "Actualización iniciada"), "var(--accent)");
@@ -6636,6 +6674,12 @@ function loadReleaseNotes(repo, tag) {
 
 // Shown once per run when the repository publishes a build newer than this one.
 function showStoreUpdateModal(update) {
+  storeUpdateOffered = true;
+  // Pedida desde «Acerca de» puede llegar con algo en marcha: se dice ya que
+  // esperará, en vez de dejar que lo descubra al ver el estado.
+  const waits = storeOperationsInProgress()
+    ? " Antes esperará a que terminen las operaciones en curso."
+    : "";
   const version = String(update?.version || "").trim();
   const current = String(update?.current || state.appVersion || "").trim();
   const versions = version
@@ -6661,7 +6705,7 @@ function showStoreUpdateModal(update) {
       <h2 class="store-update-title">Actualización disponible</h2>
       <p class="store-update-sub">
         Hay una versión más reciente de WinSlimCenter publicada. La tienda se
-        cerrará para aplicarla y volverá a abrirse sola.
+        cerrará para aplicarla y volverá a abrirse sola.${waits}
       </p>
       ${versions}
       ${releaseNotesShell()}
@@ -6693,10 +6737,20 @@ function showStoreUpdateModal(update) {
 // The single place that decides what a published release means. Start-up and
 // the "Buscar actualizaciones" button in the About dialog both come through
 // here, so the two can never answer the same question differently.
-async function runStoreUpdateCheck() {
+//
+// `waitForIdle` is the start-up one: an offer nobody asked for waits until
+// nothing is installing and no dialog is open. Shown straight away it replaced
+// the locked dialog of an installation the user had started during the scan,
+// and accepting it failed because that installation was still running.
+async function runStoreUpdateCheck({ waitForIdle = false } = {}) {
   const update = await invoke("check_store_update");
   if (!update) return null;
   void clientLog("info", "self-update", `Versión publicada: ${update.version}, instalada: ${update.current}`);
+  if (waitForIdle && (storeOperationsInProgress() || modalIsOpen())) {
+    void clientLog("info", "self-update", "El aviso espera a que terminen las operaciones y diálogos abiertos.");
+    await whenStoreIdle({ withoutModal: true });
+    if (storeUpdateOffered || storeUpdateRunning) return update;
+  }
   showStoreUpdateModal(update);
   return update;
 }
@@ -6706,7 +6760,7 @@ async function runStoreUpdateCheck() {
 // act on, and it must never get in the way of a store that already works.
 async function checkStoreUpdate() {
   try {
-    await runStoreUpdateCheck();
+    await runStoreUpdateCheck({ waitForIdle: true });
   } catch (error) {
     void clientLog("warn", "self-update", `No se pudo comprobar la versión publicada: ${error}`);
   }
