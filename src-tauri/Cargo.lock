@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "center-app"
-version = "2.4.1"
+version = "2.4.3"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -449,6 +449,7 @@ dependencies = [
  "tokio",
  "url",
  "wildmatch",
+ "windows",
  "winreg",
  "zip",
 ]

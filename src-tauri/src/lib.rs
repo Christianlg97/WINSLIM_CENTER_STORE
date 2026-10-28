@@ -3,6 +3,7 @@ mod desktop;
 mod detect;
 mod download;
 mod env_path;
+mod folder_dialog;
 mod installer;
 mod logger;
 mod msix;
@@ -928,7 +929,7 @@ fn get_bootstrap(state: State<'_, AppState>) -> Result<Value, String> {
         "settings": settings,
         "tasks": tasks,
         "app_version": env!("CARGO_PKG_VERSION"),
-        "apps_dir": paths::app_dir().to_string_lossy(),
+        "apps_dir": paths::apps_root().to_string_lossy(),
         "catalog_path": state.catalog_path.lock().to_string_lossy(),
     }))
 }
@@ -1115,16 +1116,14 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
             settings.theme, settings.accent
         ),
     );
-    let mut s = store::migrate_settings(settings);
+    let appearance = store::migrate_settings(settings);
     // This command belongs to the appearance dialog, which knows nothing about
-    // which build of an application was installed. Storing its payload whole
-    // would forget every one of those choices each time the theme changed.
-    // Nor about the browser chosen for web applications.
-    {
-        let current = state.settings.lock();
-        s.variants = current.variants.clone();
-        s.web_browser = current.web_browser.clone();
-    }
+    // which build of an application was installed, the browser chosen for web
+    // applications, the folders or the language. Storing its payload whole
+    // would forget all of that each time the theme changed.
+    let mut s = state.settings.lock().clone();
+    s.theme = appearance.theme;
+    s.accent = appearance.accent;
     store::save_settings(&s)?;
     *state.settings.lock() = s;
     Ok(())
@@ -1132,11 +1131,244 @@ fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), S
 
 #[tauri::command]
 fn open_apps_dir(app: AppHandle) -> Result<(), String> {
-    paths::ensure_dirs()?;
-    let dir = paths::app_dir();
+    open_storage_location(app, "apps".into())
+}
+
+/// Where each of the store's folders is, for the settings dialog.
+fn storage_locations(settings: &Settings) -> Value {
+    let location = |in_use: PathBuf, default: PathBuf, configured: &Option<String>| {
+        serde_json::json!({
+            "path": in_use.to_string_lossy(),
+            "default": default.to_string_lossy(),
+            "configured": configured,
+            // Saved, but its drive is not there this session.
+            "unavailable": configured.as_deref().is_some_and(|saved| {
+                paths::path_key(Path::new(saved)) != paths::path_key(&in_use)
+            }),
+        })
+    };
+    let configured_data = paths::configured_data_dir().map(|dir| dir.to_string_lossy().to_string());
+    let mut data = location(paths::app_dir(), paths::default_app_dir(), &configured_data);
+    // The data only moves at the next start: what is queued, and why the last
+    // move did not happen, if it did not.
+    data["pending"] = serde_json::json!(paths::pending_data_dir().map(|dir| dir.to_string_lossy().to_string()));
+    data["error"] = serde_json::json!(paths::data_move_error());
+    serde_json::json!({
+        "downloads": location(paths::downloads_dir(), paths::default_downloads_dir(), &settings.downloads_dir),
+        "apps": location(paths::apps_root(), paths::default_app_dir(), &settings.apps_dir),
+        "data": data,
+        "backups": portable::backup_root().to_string_lossy(),
+    })
+}
+
+#[tauri::command]
+fn get_storage_locations(state: State<'_, AppState>) -> Value {
+    storage_locations(&state.settings.lock())
+}
+
+#[tauri::command]
+fn open_storage_location(app: AppHandle, kind: String) -> Result<(), String> {
+    let dir = match kind.as_str() {
+        "downloads" => paths::downloads_dir(),
+        "apps" => paths::apps_root(),
+        "data" => paths::app_dir(),
+        other => return Err(format!("Ubicación desconocida: {other}")),
+    };
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     tauri_plugin_opener::OpenerExt::opener(&app)
         .open_path(dir.to_string_lossy().to_string(), None::<String>)
         .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn choose_folder(
+    window: tauri::WebviewWindow,
+    title: String,
+    initial: Option<String>,
+) -> Result<Option<String>, String> {
+    #[cfg(windows)]
+    let owner = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
+    #[cfg(not(windows))]
+    let owner = {
+        let _ = &window;
+        0
+    };
+    let picked = folder_dialog::pick_folder(owner, title, initial.map(PathBuf::from)).await?;
+    Ok(picked.map(|path| path.to_string_lossy().to_string()))
+}
+
+/// Moves the downloads or the installation root, or puts it back on its default
+/// with `path: None`; for the store's own data, queues the move for the next
+/// start. Refused while anything downloads or installs: an operation half-way
+/// through would look for its files in the old place.
+#[tauri::command]
+async fn set_storage_location(
+    app: AppHandle,
+    kind: String,
+    path: Option<String>,
+) -> Result<Value, String> {
+    let kind = paths::StorageKind::parse(&kind)?;
+    let busy = "Espera a que terminen las descargas e instalaciones en curso para cambiar las carpetas.";
+    // Holding every download slot keeps a new download from staging its files
+    // while the folder changes under it, as the start-up cleanup does.
+    let _slots = DOWNLOAD_SLOTS.try_acquire_many(4).map_err(|_| busy.to_string())?;
+    if SELF_UPDATE.available_permits() == 0 || app.state::<AppState>().downloads.lock().has_active_tasks() {
+        return Err(busy.into());
+    }
+    async_runtime::spawn_blocking(move || {
+        let target = match path.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+            Some(chosen) => paths::validate_storage_choice(kind, Path::new(chosen))?,
+            None => None,
+        };
+        let state = app.state::<AppState>();
+        if kind == paths::StorageKind::Data {
+            paths::schedule_data_move(target.as_deref())?;
+            logger::info(
+                "settings",
+                format!(
+                    "Datos de la tienda: traslado pendiente a {}",
+                    paths::pending_data_dir().map_or("(ninguno)".into(), |dir| dir.display().to_string())
+                ),
+            );
+            return Ok(storage_locations(&state.settings.lock()));
+        }
+        let mut current = state.settings.lock();
+        let mut settings = current.clone();
+        let previous_downloads = paths::downloads_dir();
+        let target_text = target.as_ref().map(|path| path.to_string_lossy().to_string());
+        match kind {
+            paths::StorageKind::Downloads => settings.downloads_dir = target_text,
+            // Queued above; it never reaches settings.json.
+            paths::StorageKind::Data => {}
+            paths::StorageKind::Apps => {
+                // What was installed under the old root stays there: remember it
+                // so updates and uninstalls still find those applications.
+                let previous = paths::apps_root();
+                let default = paths::default_app_dir();
+                let new_root = target.clone().unwrap_or_else(|| default.clone());
+                if paths::path_key(&previous) != paths::path_key(&default)
+                    && paths::path_key(&previous) != paths::path_key(&new_root)
+                    && !settings.former_apps_dirs.iter().any(|former| {
+                        paths::path_key(Path::new(former)) == paths::path_key(&previous)
+                    })
+                {
+                    settings.former_apps_dirs.push(previous.to_string_lossy().to_string());
+                }
+                settings
+                    .former_apps_dirs
+                    .retain(|former| paths::path_key(Path::new(former)) != paths::path_key(&new_root));
+                settings.apps_dir = target_text;
+            }
+        }
+        store::save_settings(&settings)?;
+        *current = settings.clone();
+        drop(current);
+        paths::apply_storage_settings(&settings);
+        paths::ensure_dirs()?;
+        let current_downloads = paths::downloads_dir();
+        if paths::path_key(&previous_downloads) != paths::path_key(&current_downloads) {
+            paths::retire_downloads_dir(&previous_downloads);
+        }
+        logger::info(
+            "settings",
+            format!(
+                "Carpetas: descargas={}, aplicaciones={}",
+                current_downloads.display(),
+                paths::apps_root().display()
+            ),
+        );
+        Ok(storage_locations(&settings))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Restarts the store so a queued move of its data takes effect. The same rule
+/// as for changing folders: nothing may be downloading or installing.
+#[tauri::command]
+fn restart_store(app: AppHandle) -> Result<(), String> {
+    if SELF_UPDATE.available_permits() == 0 || app.state::<AppState>().downloads.lock().has_active_tasks() {
+        return Err("Espera a que terminen las operaciones en curso para reiniciar la tienda.".into());
+    }
+    logger::info("settings", "Reinicio pedido desde la configuración.");
+    // Through the exit event, so the log closes as on any normal exit.
+    app.request_restart();
+    Ok(())
+}
+
+/// The interface language, `None` to follow Windows. Only remembered here: the
+/// interface translates itself.
+#[tauri::command]
+fn set_language(state: State<'_, AppState>, language: Option<String>) -> Result<(), String> {
+    let language = language.filter(|code| {
+        !code.is_empty() && code.len() <= 8 && code.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+    });
+    let mut current = state.settings.lock();
+    let mut settings = current.clone();
+    settings.language = language;
+    store::save_settings(&settings)?;
+    logger::info(
+        "settings",
+        format!("Idioma: {}", settings.language.as_deref().unwrap_or("el del sistema")),
+    );
+    *current = settings;
+    Ok(())
+}
+
+/// Stores the accent selected by the interface after checking its CSS shape.
+#[tauri::command]
+fn set_accent(state: State<'_, AppState>, accent: String) -> Result<(), String> {
+    let accent = accent.trim().to_ascii_lowercase();
+    if accent.len() != 7
+        || !accent.starts_with('#')
+        || !accent[1..].chars().all(|character| character.is_ascii_hexdigit())
+    {
+        return Err("El color elegido no es válido.".into());
+    }
+    let mut current = state.settings.lock();
+    let mut settings = current.clone();
+    settings.accent = accent;
+    store::save_settings(&settings)?;
+    logger::info("settings", format!("Color de acento: {}", settings.accent));
+    *current = settings;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_check_updates_on_startup(state: State<'_, AppState>, enabled: bool) -> Result<(), String> {
+    let mut current = state.settings.lock();
+    let mut settings = current.clone();
+    settings.check_updates_on_startup = enabled;
+    store::save_settings(&settings)?;
+    logger::info(
+        "settings",
+        format!(
+            "Comprobar actualizaciones al iniciar: {}",
+            if enabled { "sí" } else { "no" }
+        ),
+    );
+    *current = settings;
+    Ok(())
+}
+
+/// Removes only the store's disposable staging directory, never user files.
+#[tauri::command]
+async fn clean_downloads(app: AppHandle) -> Result<Value, String> {
+    let busy = "Espera a que terminen las descargas e instalaciones para limpiar los temporales.";
+    let _slots = DOWNLOAD_SLOTS.try_acquire_many(4).map_err(|_| busy.to_string())?;
+    if SELF_UPDATE.available_permits() == 0 || app.state::<AppState>().downloads.lock().has_active_tasks() {
+        return Err(busy.into());
+    }
+    async_runtime::spawn_blocking(move || {
+        let (removed, freed) = paths::purge_downloads();
+        logger::info(
+            "settings",
+            format!("Limpieza manual: {removed} elementos, {freed} bytes liberados."),
+        );
+        serde_json::json!({ "removed": removed, "freed": freed })
+    })
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -1166,7 +1398,7 @@ async fn portable_data_info(app: AppHandle, app_id: String, for_update: Option<b
         let directory = if for_update.unwrap_or(false) {
             // Installing always swaps into this folder, whatever installed.json
             // remembers. External installations remain the vendor's job.
-            let target = paths::app_dir().join(&app_id);
+            let target = paths::managed_install_dir(&app_id);
             (target.is_dir() && !installer::directory_is_empty(&target)).then_some(target)
         } else {
             let status = state.statuses.lock().get(&app_id).cloned();
@@ -3001,7 +3233,14 @@ async fn run_msstore_install(
     const DOWNLOAD_SHARE: u32 = 68;
     const DOWNLOAD_START: u32 = 4;
 
-    for (index, package) in ordered.iter().enumerate() {
+    // Se registran las dependencias primero, pero se descarga primero la
+    // aplicación: lo recién publicado es ella, y si su archivo aún no está
+    // disponible se sabe antes de bajar para nada los frameworks
+    // (WinAppRuntime.Singleton bajaba diez, 280 MB, y luego fallaba).
+    let mut download_order: Vec<&msstore::StorePackage> = ordered.iter().collect();
+    download_order.sort_by_key(|package| package.is_dependency);
+
+    for (index, package) in download_order.into_iter().enumerate() {
         if cancelled() {
             return give_up();
         }
@@ -4476,6 +4715,9 @@ pub fn run() {
                 }
             });
             let setup_started = std::time::Instant::now();
+            // Before the logger: it opens its file in the data folder, and a move
+            // queued from the settings has to happen while nothing holds it.
+            let data_move_report = paths::settle_pending_data_move();
             let log_path = logger::init()?;
             let default_panic_hook = std::panic::take_hook();
             std::panic::set_hook(Box::new(move |panic_info| {
@@ -4483,16 +4725,22 @@ pub fn run() {
                 default_panic_hook(panic_info);
             }));
             logger::info("startup", format!("Registro iniciado en {}", log_path.display()));
+            for line in data_move_report {
+                logger::info("startup", line);
+            }
             // Los iconos del catálogo viajan con la interfaz dentro del
             // ejecutable, y los accesos directos de las aplicaciones web los
             // necesitan: esta es la única puerta a esos recursos.
             webapp::remember_application(app.handle().clone());
+            // The folders the user chose live in the settings, so they are read
+            // before anything creates, empties or installs into one.
+            let settings = store::load_settings();
+            paths::apply_storage_settings(&settings);
             paths::ensure_dirs().map_err(|e| e.to_string())?;
             let resource_dir = app.path().resource_dir().ok();
             let catalog_path = paths::resolve_apps_json(resource_dir);
             let catalog = store::load_catalog(&catalog_path);
             let installed = store::load_installed();
-            let settings = store::load_settings();
             // Keep the first window responsive. The complete Windows, Start Apps and
             // Winget scan starts from the frontend after its first visible frame.
             let repo_entries = store::load_repo_entries();
@@ -4519,7 +4767,9 @@ pub fn run() {
                 ),
             );
             logger::info("startup", format!("Catálogo: {}", catalog_path.display()));
-            logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::app_dir().display()));
+            logger::info("startup", format!("Datos de la tienda: {}", paths::app_dir().display()));
+            logger::info("startup", format!("Carpeta de aplicaciones: {}", paths::apps_root().display()));
+            logger::info("startup", format!("Carpeta de descargas: {}", paths::downloads_dir().display()));
 
             // Open-Shell only finds what has a shortcut under `shell:programs`,
             // so the store leaves one there the first time it runs. It goes on a
@@ -4592,6 +4842,15 @@ pub fn run() {
             choco_status,
             web_browsers,
             set_web_browser,
+            get_storage_locations,
+            open_storage_location,
+            choose_folder,
+            set_storage_location,
+            set_language,
+            set_accent,
+            set_check_updates_on_startup,
+            clean_downloads,
+            restart_store,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");

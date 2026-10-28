@@ -270,7 +270,7 @@ fn arguments_for(browser: &Browser, url: &str) -> String {
 }
 
 fn install_dir(app_id: &str) -> PathBuf {
-    crate::paths::app_dir().join(app_id)
+    crate::paths::managed_install_dir(app_id)
 }
 
 fn desktop_shortcut(name: &str) -> Option<PathBuf> {

@@ -689,6 +689,73 @@ mod tests {
         );
         assert!(release_notes_from_feed(feed, Some("26.0.2")).is_none());
     }
+
+    /// The shape of the file list a release page loads on github.com: one link
+    /// per asset, each with its checksum siblings, and the source archives.
+    const EXPANDED_ASSETS: &str = concat!(
+        r#"<a href="/VSCodium/vscodium/releases/download/1.143.17232/VSCodiumUserSetup-x64-1.143.17232.exe" rel="nofollow" data-turbo="false" class="wb-break-all">"#,
+        r#"<span class="text-bold">VSCodiumUserSetup-x64-1.143.17232.exe</span>"#,
+        r#"<clipboard-copy value="sha256:969c878c" aria-label="Copy to clipboard digest for VSCodiumUserSetup-x64-1.143.17232.exe">"#,
+        r#"<a href="/VSCodium/vscodium/releases/download/1.143.17232/VSCodiumUserSetup-x64-1.143.17232.exe.sha256" rel="nofollow">"#,
+        r#"<a href="/VSCodium/vscodium/releases/download/1.143.17232/VSCodiumUserSetup-arm64-1.143.17232.exe" rel="nofollow">"#,
+        r#"<a href="/o/r/releases/download/v1%2B2/My%20App%20Setup.exe" rel="nofollow">"#,
+        r#"<a href="/VSCodium/vscodium/archive/refs/tags/1.143.17232.zip" rel="nofollow">"#,
+        r#"<a href="https://docs.github.com/repositories/releasing-projects-on-github">"#,
+    );
+
+    #[test]
+    fn the_web_file_list_of_a_release_reads_like_its_api_assets() {
+        let assets = release_assets_in(EXPANDED_ASSETS);
+        let names: Vec<&str> = assets.iter().map(|asset| asset.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "VSCodiumUserSetup-x64-1.143.17232.exe",
+                "VSCodiumUserSetup-x64-1.143.17232.exe.sha256",
+                "VSCodiumUserSetup-arm64-1.143.17232.exe",
+                "My App Setup.exe",
+            ]
+        );
+        assert_eq!(
+            select_github_asset_url(&assets, Some("vscodiumusersetup-x64-*.exe")).as_deref(),
+            Some("https://github.com/VSCodium/vscodium/releases/download/1.143.17232/VSCodiumUserSetup-x64-1.143.17232.exe")
+        );
+        assert!(release_assets_in("<p>Sin archivos</p>").is_empty());
+    }
+
+    #[test]
+    fn web_tags_and_names_read_as_the_release_spells_them() {
+        assert_eq!(percent_decoded("v1%2B2"), "v1+2");
+        assert_eq!(percent_decoded("My%20App.exe"), "My App.exe");
+        // A stray percent sign is left as it was.
+        assert_eq!(percent_decoded("100%"), "100%");
+        assert_eq!(percent_decoded("%zz%2"), "%zz%2");
+        assert_eq!(feed_release_tags(NOTES_FEED), vec!["v8.9.8.1", "v8.9.8"]);
+    }
+
+    #[test]
+    fn a_release_found_on_the_web_has_the_version_the_api_would_give() {
+        let feed = concat!(
+            "<feed><entry><id>tag:github.com,2008:Repository/1/latest</id>",
+            "<link rel=\"alternate\" type=\"text/html\" href=\"https://github.com/o/r/releases/tag/latest\"/>",
+            "<content type=\"html\">&lt;h3 dir=&quot;auto&quot;&gt;26H1u1 · v26.0.1&lt;/h3&gt;</content></entry></feed>"
+        );
+        assert_eq!(web_release_version(Some(feed), "latest", true), "26.0.1");
+        assert_eq!(web_release_version(Some(feed), "latest", false), "latest");
+        assert_eq!(web_release_version(None, "v1%2B2", false), "v1+2");
+    }
+
+    #[test]
+    fn a_linked_release_is_found_in_the_rendered_notes_too() {
+        let html = concat!(
+            "<p>Download: <a href=\"https://github.com/gz83/thorium/releases/tag/M156.0.8078.28\">",
+            "https://github.com/gz83/thorium/releases/tag/M156.0.8078.28</a></p>"
+        );
+        assert_eq!(
+            linked_github_release(&html.replace(['"', '<', '>'], " ")),
+            Some(("gz83/thorium".into(), "M156.0.8078.28".into()))
+        );
+    }
 }
 
 fn fmt_size(mut size: f64) -> String {
@@ -1810,6 +1877,17 @@ pub async fn github_latest_release_asset(
     );
     let client = http_client()?;
 
+    let rescue = |error: String| {
+        release_lookup_rescue(
+            &cache_key,
+            repo,
+            asset_pattern,
+            version_from_notes,
+            asset_release_from_notes,
+            error,
+        )
+    };
+
     let latest = fetch_github_json::<GhRelease>(
         client,
         &format!("https://api.github.com/repos/{repo}/releases/latest"),
@@ -1818,18 +1896,7 @@ pub async fn github_latest_release_asset(
 
     let mut release = match latest {
         Ok(release) => release,
-        Err(error) => {
-            if let Some((url, tag)) = cached_release(&cache_key, true) {
-                crate::logger::warn(
-                    "github",
-                    format!(
-                        "GitHub no respondió para {repo} ({error}); se reutiliza la última versión conocida: {tag}"
-                    ),
-                );
-                return Ok((url, tag));
-            }
-            return Err(error);
-        }
+        Err(error) => return rescue(error).await,
     };
 
     if asset_release_from_notes {
@@ -1853,18 +1920,7 @@ pub async fn github_latest_release_asset(
         .await
         {
             Ok(release) => release,
-            Err(error) => {
-                if let Some((url, tag)) = cached_release(&cache_key, true) {
-                    crate::logger::warn(
-                        "github",
-                        format!(
-                            "GitHub no respondió para la release enlazada de {repo} ({error}); se reutiliza la última versión conocida: {tag}"
-                        ),
-                    );
-                    return Ok((url, tag));
-                }
-                return Err(error);
-            }
+            Err(error) => return rescue(error).await,
         };
     }
 
@@ -1898,12 +1954,7 @@ pub async fn github_latest_release_asset(
     .await
     {
         Ok(releases) => releases,
-        Err(error) => {
-            if let Some((url, tag)) = cached_release(&cache_key, true) {
-                return Ok((url, tag));
-            }
-            return Err(error);
-        }
+        Err(error) => return rescue(error).await,
     };
 
     for candidate in releases {
@@ -1917,6 +1968,245 @@ pub async fn github_latest_release_asset(
     Err(format!(
         "No se encontró un paquete de Windows compatible en las 20 releases más recientes de {repo}."
     ))
+}
+
+/// What a release lookup falls back on when the API does not answer: the web
+/// host first, and the last answer known after that.
+///
+/// The API allows sixty requests an hour per address. A few restarts of the
+/// store, or a network shared with other people, are enough to spend them, and
+/// from then on every update of a GitHub-hosted application failed until the
+/// hour turned, even after WinGet had already reported the new version. The
+/// pages github.com serves to a browser list the same releases and files, and
+/// they do not count against that budget.
+async fn release_lookup_rescue(
+    cache_key: &str,
+    repo: &str,
+    asset_pattern: Option<&str>,
+    version_from_notes: bool,
+    asset_release_from_notes: bool,
+    error: String,
+) -> Result<(String, String), String> {
+    let reason = error.replace(GITHUB_RATE_LIMIT_MARKER, "");
+    match github_web_release_asset(repo, asset_pattern, version_from_notes, asset_release_from_notes)
+        .await
+    {
+        Ok((url, version)) => {
+            crate::logger::warn(
+                "github",
+                format!(
+                    "La API de GitHub no respondió para {repo} ({reason}); versión leída de la web: {version}, url={}",
+                    crate::logger::safe_url(&url)
+                ),
+            );
+            store_release(cache_key, &url, &version);
+            return Ok((url, version));
+        }
+        Err(web_error) => crate::logger::warn(
+            "github",
+            format!("La API de GitHub no respondió para {repo} ({reason}) y la web tampoco: {web_error}"),
+        ),
+    }
+    if let Some((url, tag)) = cached_release(cache_key, true) {
+        crate::logger::warn(
+            "github",
+            format!("Se reutiliza la última versión conocida de {repo}: {tag}"),
+        );
+        return Ok((url, tag));
+    }
+    Err(error)
+}
+
+/// The asset and version `github_latest_release_asset` resolves through the
+/// API, read from the web host instead.
+///
+/// `releases/latest` redirects to the tag of the release GitHub calls the
+/// latest, and the fragment that release's page loads its files from links
+/// every asset. Notes, when the catalog needs them, come from the releases
+/// feed, looked up by that tag: the feed is ordered by creation date, so its
+/// first entry is not necessarily the latest release (Thorium's is not).
+async fn github_web_release_asset(
+    repo: &str,
+    asset_pattern: Option<&str>,
+    version_from_notes: bool,
+    asset_release_from_notes: bool,
+) -> Result<(String, String), String> {
+    let client = http_client()?;
+    let tag = github_web_latest_tag(client, repo).await?;
+    let feed = if version_from_notes || asset_release_from_notes {
+        Some(github_releases_feed(client, repo).await?)
+    } else {
+        None
+    };
+
+    if asset_release_from_notes {
+        // The feed carries the notes rendered, so the link sits inside an
+        // attribute rather than between spaces.
+        let (linked_repo, linked_tag) = feed
+            .as_deref()
+            .and_then(|feed| release_notes_from_feed(feed, Some(&percent_decoded(&tag))))
+            .map(|notes| notes.html.replace(['"', '<', '>'], " "))
+            .as_deref()
+            .and_then(linked_github_release)
+            .ok_or_else(|| {
+                format!(
+                    "La última release de {repo} no indica otra release de GitHub con los instaladores."
+                )
+            })?;
+        let assets = github_web_release_assets(client, &linked_repo, &linked_tag).await?;
+        return select_github_asset_url(&assets, asset_pattern)
+            .map(|url| (url, percent_decoded(&linked_tag)))
+            .ok_or_else(|| {
+                format!("La release enlazada desde {repo} no contiene el instalador solicitado.")
+            });
+    }
+
+    let assets = github_web_release_assets(client, repo, &tag).await?;
+    if let Some(url) = select_github_asset_url(&assets, asset_pattern) {
+        let version = web_release_version(feed.as_deref(), &tag, version_from_notes);
+        return Ok((url, version));
+    }
+
+    // The same second chance as through the API: the newest release that does
+    // carry the Windows package. Each one costs a request here, so this only
+    // runs when the latest genuinely had none.
+    let feed = match feed {
+        Some(feed) => feed,
+        None => github_releases_feed(client, repo).await?,
+    };
+    let latest = percent_decoded(&tag);
+    for older in feed_release_tags(&feed)
+        .into_iter()
+        .filter(|older| percent_decoded(older) != latest)
+    {
+        let assets = github_web_release_assets(client, repo, &older).await?;
+        if let Some(url) = select_github_asset_url(&assets, asset_pattern) {
+            let version = web_release_version(Some(&feed), &older, version_from_notes);
+            return Ok((url, version));
+        }
+    }
+    Err(format!(
+        "No se encontró un paquete de Windows compatible en las releases recientes de {repo}."
+    ))
+}
+
+/// The tag GitHub's `releases/latest` redirects to, spelled as in the address.
+/// A HEAD request is enough: the page itself is not needed.
+async fn github_web_latest_tag(client: &reqwest::Client, repo: &str) -> Result<String, String> {
+    let response = client
+        .head(format!("https://github.com/{repo}/releases/latest"))
+        .timeout(HTTP_METADATA_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!("la última release de {repo} respondió {}", response.status()));
+    }
+    // A repository without releases lands on its release list, with no tag.
+    response
+        .url()
+        .path()
+        .rsplit_once("/releases/tag/")
+        .map(|(_, tag)| tag.to_string())
+        .filter(|tag| !tag.is_empty() && !tag.contains('/'))
+        .ok_or_else(|| format!("{repo} no tiene ninguna release publicada"))
+}
+
+/// The files of a release, from the fragment its page on github.com loads its
+/// asset list from.
+async fn github_web_release_assets(
+    client: &reqwest::Client,
+    repo: &str,
+    tag: &str,
+) -> Result<Vec<GhAsset>, String> {
+    let response = client
+        .get(format!(
+            "https://github.com/{repo}/releases/expanded_assets/{tag}"
+        ))
+        .timeout(HTTP_METADATA_TIMEOUT)
+        .send()
+        .await
+        .map_err(|error| error.to_string())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "los archivos de la release {tag} de {repo} respondieron {}",
+            response.status()
+        ));
+    }
+    let html = response.text().await.map_err(|error| error.to_string())?;
+    Ok(release_assets_in(&html))
+}
+
+/// The assets a release's file list links to, named as the API names them.
+///
+/// Every asset is an `href` to `/<owner>/<repo>/releases/download/<tag>/<file>`;
+/// the source archives GitHub adds to every release live under `/archive/` and
+/// are left out, as the API leaves them out of `assets`.
+fn release_assets_in(html: &str) -> Vec<GhAsset> {
+    let mut assets: Vec<GhAsset> = Vec::new();
+    for path in html
+        .split("href=\"")
+        .skip(1)
+        .filter_map(|rest| rest.split('"').next())
+        .filter(|path| path.starts_with('/') && path.contains("/releases/download/"))
+    {
+        let name = percent_decoded(path.rsplit('/').next().unwrap_or_default());
+        if name.is_empty() || assets.iter().any(|asset| asset.name == name) {
+            continue;
+        }
+        assets.push(GhAsset {
+            name,
+            browser_download_url: format!("https://github.com{path}"),
+        });
+    }
+    assets
+}
+
+/// The tags of the releases in a feed, newest first, spelled as in the address.
+fn feed_release_tags(feed: &str) -> Vec<String> {
+    feed.split("<entry>")
+        .skip(1)
+        .filter_map(|entry| {
+            let url = element_attribute(entry, "link", "href")?;
+            Some(url.rsplit_once("/releases/tag/")?.1.to_string())
+        })
+        .collect()
+}
+
+/// `release_version` for a release known only by its tag: the version its
+/// notes in the feed state, with `version_from_notes`, or the tag itself.
+fn web_release_version(feed: Option<&str>, tag: &str, version_from_notes: bool) -> String {
+    let tag = percent_decoded(tag);
+    feed.filter(|_| version_from_notes)
+        .and_then(|feed| release_notes_from_feed(feed, Some(&tag)))
+        .and_then(|notes| dotted_version(&notes.html))
+        .unwrap_or(tag)
+}
+
+/// Undoes the `%XX` escapes of an address segment, such as a tag or a file
+/// name, so it reads as the release spells it.
+fn percent_decoded(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let escaped = (bytes[index] == b'%')
+            .then(|| bytes.get(index + 1..index + 3))
+            .flatten()
+            .filter(|hex| hex.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|hex| u8::from_str_radix(std::str::from_utf8(hex).ok()?, 16).ok());
+        match escaped {
+            Some(byte) => {
+                decoded.push(byte);
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
 }
 
 pub fn github_repo_archive(repo: &str, branch: &str) -> String {

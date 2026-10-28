@@ -8,7 +8,40 @@ const SOURCE_DIR = path.join(ROOT_DIR, "src");
 const OUTPUT_DIR = path.join(ROOT_DIR, "dist");
 const MAP_DIR = path.join(SCRIPT_DIR, ".frontend-maps");
 const CHECK_ONLY = process.argv.includes("--check");
-const TEXT_FILES = ["index.html", "main.js", "styles.css"];
+// Un archivo por idioma en src/locales: i18n.js carga solo el que se elige, así
+// que todos tienen que llegar a dist/ aunque nada los importe de forma estática.
+const LOCALE_FILES = (await readdir(path.join(SOURCE_DIR, "locales")))
+  .filter((name) => name.endsWith(".js"))
+  .sort()
+  .map((name) => `locales/${name}`);
+const TEXT_FILES = ["index.html", "main.js", "i18n.js", "styles.css", ...LOCALE_FILES];
+
+async function validateLocales() {
+  let reference = null;
+  let referenceName = "";
+  for (const name of LOCALE_FILES) {
+    const source = await readFile(path.join(SOURCE_DIR, ...name.split("/")), "utf8");
+    const match = source.match(/export default\s*\{([\s\S]*)\};?\s*$/);
+    if (!match) throw new Error(`${name}: el diccionario no exporta un objeto literal`);
+    const keys = [...match[1].matchAll(/^\s*(["'])(.*?)\1\s*:/gm)].map((entry) => entry[2]);
+    const duplicates = keys.filter((key, index) => keys.indexOf(key) !== index);
+    if (duplicates.length) throw new Error(`${name}: claves repetidas: ${[...new Set(duplicates)].join(", ")}`);
+    const current = new Set(keys);
+    if (!reference) {
+      reference = current;
+      referenceName = name;
+      continue;
+    }
+    const missing = [...reference].filter((key) => !current.has(key));
+    const extra = [...current].filter((key) => !reference.has(key));
+    if (missing.length || extra.length) {
+      throw new Error(
+        `${name}: claves distintas de ${referenceName} (` +
+          `${missing.length} ausentes, ${extra.length} adicionales)`,
+      );
+    }
+  }
+}
 // Editable catalog icons remain public, including the historical emulator
 // artwork. These five files are authoring sources/scaffold only; if one ever
 // becomes an explicit HTML/CSS/catalog reference, the collectors above still
@@ -99,6 +132,7 @@ async function optimizeTextFile(name, source, transform) {
 }
 
 async function main() {
+  await validateLocales();
   const sources = new Map(
     await Promise.all(
       TEXT_FILES.map(async (name) => [name, await readFile(path.join(SOURCE_DIR, name), "utf8")]),
@@ -140,7 +174,9 @@ async function main() {
     await mkdir(staging, { recursive: true });
 
     for (const [name, result] of optimized) {
-      await writeFile(path.join(staging, name), result.code, "utf8");
+      const destination = path.join(staging, ...name.split("/"));
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(destination, result.code, "utf8");
     }
     for (const asset of assets) {
       const destination = path.join(staging, ...asset.split("/"));
@@ -151,7 +187,10 @@ async function main() {
     if (transform) {
       await mkdir(MAP_DIR, { recursive: true });
       for (const [name, result] of optimized) {
-        if (result.map) await writeFile(path.join(MAP_DIR, `${name}.map`), result.map, "utf8");
+        if (!result.map) continue;
+        const destination = path.join(MAP_DIR, ...`${name}.map`.split("/"));
+        await mkdir(path.dirname(destination), { recursive: true });
+        await writeFile(destination, result.map, "utf8");
       }
     }
 

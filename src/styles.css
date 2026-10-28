@@ -23,8 +23,11 @@
 }
 
 :root {
-  --font-display: "Ubuntu", sans-serif;
-  --font-body: "Ubuntu", sans-serif;
+  /* Ubuntu va empaquetada solo con el latín básico. Lo que no dibuja (cirílico,
+     las letras propias del polaco o del rumano) lo toma Segoe UI, que es de la
+     misma familia humanista; los alfabetos de abajo piden su fuente de Windows. */
+  --font-display: "Ubuntu", "Segoe UI", sans-serif;
+  --font-body: "Ubuntu", "Segoe UI", sans-serif;
   --accent: #d8d8d8;
   --accent-hover: #eeeeee;
   --bg-app: #181818;
@@ -64,6 +67,33 @@
   --motion-attention: 3200ms;
   --ease-interact: cubic-bezier(0.22, 1, 0.36, 1);
   color-scheme: dark;
+}
+
+/* Con estos idiomas los nombres de las aplicaciones siguen en Ubuntu y el resto
+   del texto en la fuente de Windows hecha para esa escritura. */
+:root:lang(zh) {
+  --font-display: "Ubuntu", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-body: "Ubuntu", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+}
+
+:root:lang(ja) {
+  --font-display: "Ubuntu", "Yu Gothic UI", "Meiryo UI", sans-serif;
+  --font-body: "Ubuntu", "Yu Gothic UI", "Meiryo UI", sans-serif;
+}
+
+:root:lang(ko) {
+  --font-display: "Ubuntu", "Malgun Gothic", sans-serif;
+  --font-body: "Ubuntu", "Malgun Gothic", sans-serif;
+}
+
+:root:lang(hi) {
+  --font-display: "Ubuntu", "Nirmala UI", sans-serif;
+  --font-body: "Ubuntu", "Nirmala UI", sans-serif;
+}
+
+:root:lang(ar) {
+  --font-display: "Ubuntu", "Segoe UI", "Tahoma", sans-serif;
+  --font-body: "Ubuntu", "Segoe UI", "Tahoma", sans-serif;
 }
 
 *,
@@ -306,7 +336,7 @@ textarea {
 
 .sidebar {
   background: var(--bg-sidebar);
-  border-right: 1px solid var(--border);
+  border-inline-end: 1px solid var(--border);
   overflow: auto;
   padding: 16px 0;
 }
@@ -327,10 +357,15 @@ textarea {
 }
 
 ::-webkit-scrollbar-thumb {
-  background-color: color-mix(in srgb, var(--text-light) 30%, transparent);
+  background-color: transparent;
   background-clip: padding-box;
   border: 3px solid transparent;
   border-radius: 999px;
+  transition: background-color 180ms var(--ease-fade), border-width 180ms var(--ease-fade);
+}
+
+.is-scrolling::-webkit-scrollbar-thumb {
+  background-color: color-mix(in srgb, var(--text-light) 30%, transparent);
 }
 
 ::-webkit-scrollbar-thumb:hover {
@@ -381,7 +416,7 @@ textarea {
   background: transparent;
   color: var(--sb-text);
   cursor: pointer;
-  text-align: left;
+  text-align: start;
   gap: 10px;
   font-size: 13px;
   font-weight: 500;
@@ -462,7 +497,7 @@ textarea {
 }
 
 .nav-badge-count {
-  margin-left: auto;
+  margin-inline-start: auto;
   background: var(--accent);
   color: #101010;
   font-size: 11px;
@@ -1587,7 +1622,7 @@ textarea {
 }
 
 .status-progress {
-  margin-left: auto;
+  margin-inline-start: auto;
   flex: 0 0 auto;
   min-width: 46px;
   padding: 5px 8px;
@@ -1641,7 +1676,7 @@ textarea {
 /* Square, and the same height as the buttons beside it, so the top bar keeps a
    single line of controls: the row's own 8px gap and the bar's 16px padding put
    it where it belongs without touching either. */
-.about-btn {
+.settings-btn {
   display: grid;
   place-items: center;
   width: 36px;
@@ -1659,21 +1694,71 @@ textarea {
     0 4px 12px rgba(0, 0, 0, 0.18);
 }
 
-.about-btn:hover {
+.settings-btn:hover,
+.settings-btn[aria-expanded="true"] {
   border-color: color-mix(in srgb, var(--accent) 55%, transparent);
   color: var(--text-dark);
   transform: translateY(-1px);
 }
 
-.about-btn:active {
+.settings-btn:active {
   transform: translateY(0);
 }
 
-/* The glyph is an outlined icon like every other one in the top bar, and the
-   grid centres it exactly — a typographic "i" never sits in the optical middle
-   of its own box, which is what made the button look crooked. */
-.about-btn svg {
+/* The grid centres the outlined glyph exactly, like every other icon in the
+   top bar. */
+.settings-btn svg {
   display: block;
+  overflow: visible;
+}
+
+/* El engranaje gira un diente (60°, su simetría) al pasar por encima, como el
+   icono de Refrescar, y el eje se encoge un poco para que se lea como una pieza
+   que se mueve. Con el diálogo abierto sigue girando despacio: es su ajuste el
+   que está delante. */
+.settings-cog,
+.settings-hub {
+  transform-box: view-box;
+  transform-origin: 12px 12px;
+  transition: transform 520ms var(--ease-out);
+}
+
+.settings-btn:hover .settings-cog {
+  transform: rotate(60deg);
+}
+
+.settings-btn:hover .settings-hub {
+  transform: scale(0.78);
+}
+
+.settings-btn:active .settings-cog {
+  transform: rotate(120deg);
+  transition-duration: var(--motion-progress);
+}
+
+/* El giro continuo mueve el <svg> entero y no su trazado: el eje es un círculo
+   centrado y el engranaje es simétrico respecto al mismo punto, así que se ve
+   igual, pero un elemento con caja propia se anima en el compositor, mientras
+   que un trazado interior obligaría a repintar en cada fotograma. */
+.settings-btn[aria-expanded="true"] svg {
+  animation: settings-cog-idle 6s linear infinite;
+}
+
+@keyframes settings-cog-idle {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-cog,
+  .settings-hub {
+    transition: none;
+  }
+
+  .settings-btn[aria-expanded="true"] svg {
+    animation: none;
+  }
 }
 
 /* Both hero dialogs — About and the update notice — borrow the treatment of the
@@ -1793,7 +1878,7 @@ textarea {
   flex-shrink: 1;
   min-height: 0;
   overflow-y: auto;
-  text-align: left;
+  text-align: start;
 }
 
 .about-fact {
@@ -1860,7 +1945,7 @@ textarea {
   background: transparent;
   color: inherit;
   font: inherit;
-  text-align: left;
+  text-align: start;
   cursor: pointer;
   transition: background 0.15s, border-color 0.15s, transform 0.12s;
 }
@@ -1919,6 +2004,674 @@ textarea {
 
 .about-note.bad {
   color: var(--red);
+}
+
+/* «Volver» lleva de «Acerca de» a la configuración desde la que se abrió; se
+   aparta a la izquierda para no confundirse con las acciones del diálogo. */
+.about-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-inline-end: auto;
+}
+
+.about-back svg {
+  transition: transform var(--motion-feedback) var(--ease-out);
+}
+
+.about-back:hover svg {
+  transform: translateX(-2px);
+}
+
+/* Configuración: la misma familia que «Acerca de» —brillo detrás del icono,
+   tarjetas de borde fino y etiquetas en versalitas— para que se lea como parte
+   de la tienda y no como una ventana de sistema. Como allí, solo la lista cede
+   altura (con desplazamiento); cabecera y botones se quedan en su sitio. */
+.modal.modal-settings {
+  display: flex;
+  flex-direction: column;
+  width: min(660px, calc(100vw - 48px));
+  max-height: min(760px, calc(100vh - 32px));
+}
+
+.modal.modal-settings::before {
+  left: 70px;
+}
+
+.settings-dialog {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.settings-dialog > * {
+  flex-shrink: 0;
+}
+
+.settings-head {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 2px 4px;
+}
+
+.settings-head-icon {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: #181818;
+  color: var(--text-dark);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.settings-head-icon svg {
+  overflow: visible;
+  animation: settings-cog-idle 14s linear infinite;
+}
+
+.settings-title {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-title h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--text-dark);
+}
+
+.settings-title p {
+  margin: 0;
+  color: var(--text-light);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.settings-body {
+  display: grid;
+  gap: 16px;
+  flex-shrink: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-inline-end: 12px;
+  padding-block-end: 8px;
+}
+
+.settings-section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.settings-section-label {
+  margin: 0;
+  padding: 0 4px;
+  color: var(--text-light);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.settings-section-hint {
+  margin: -2px 0 0;
+  padding: 0 4px;
+  color: var(--text-medium);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.settings-preferences {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.settings-preference,
+.settings-cleanup {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+}
+
+/* Seis muestras no caben junto al texto en media fila: van debajo de él. */
+.settings-appearance {
+  grid-template-columns: auto minmax(0, 1fr);
+  row-gap: 7px;
+}
+
+.settings-appearance .settings-accents {
+  grid-column: 2;
+}
+
+.settings-toggle-row {
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.settings-toggle-row:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: var(--bg-card-hover);
+}
+
+.settings-preference-icon {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-badge);
+  color: var(--text-medium);
+}
+
+.settings-preference-copy {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-preference-copy strong {
+  color: var(--text-dark);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.settings-preference-copy small {
+  color: var(--text-light);
+  font-size: 10.5px;
+  line-height: 1.3;
+}
+
+.settings-accents {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.settings-accent {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 21px;
+  height: 21px;
+  cursor: pointer;
+}
+
+.settings-accent input,
+.settings-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-accent > span:not(.sr-only) {
+  width: 15px;
+  height: 15px;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: 50%;
+  background: var(--swatch);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 35%);
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+
+.settings-accent:hover > span:not(.sr-only),
+.settings-accent:has(input:checked) > span:not(.sr-only) {
+  transform: scale(1.15);
+}
+
+.settings-accent:has(input:checked) > span:not(.sr-only) {
+  box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 3px var(--accent);
+}
+
+.settings-accent:has(input:focus-visible),
+.settings-switch:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-switch {
+  position: relative;
+  display: block;
+  width: 36px;
+  height: 21px;
+  border-radius: 999px;
+}
+
+.settings-switch > span {
+  position: absolute;
+  inset: 0;
+  border: 1px solid var(--border);
+  border-radius: inherit;
+  background: var(--bg-badge);
+  transition: background 0.16s, border-color 0.16s;
+}
+
+.settings-switch > span::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--text-light);
+  transition: transform 0.16s, background 0.16s;
+}
+
+.settings-switch:has(input:checked) > span {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 34%, var(--bg-badge) 66%);
+}
+
+.settings-switch:has(input:checked) > span::after {
+  transform: translateX(15px);
+  background: var(--accent);
+}
+
+.settings-switch:has(input:disabled) {
+  opacity: 0.6;
+}
+
+.settings-cleanup .btn {
+  min-height: 32px;
+  padding: 6px 11px;
+  white-space: nowrap;
+}
+
+/* Dieciséis opciones en cuatro filas: un poco más apretadas que una tarjeta
+   corriente para que el diálogo quepa entero en la ventana por defecto. */
+.settings-languages {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.settings-language {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s;
+}
+
+.settings-language:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: var(--bg-card-hover);
+}
+
+.settings-language:active {
+  transform: translateY(1px);
+}
+
+.settings-language:has(input:checked) {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-card) 90%);
+}
+
+.settings-language:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-language input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.settings-language-code {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-badge);
+  color: var(--text-medium);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.settings-language:has(input:checked) .settings-language-code {
+  border-color: transparent;
+  background: var(--accent);
+  color: #151515;
+}
+
+.settings-language-flag {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: inherit;
+}
+
+.settings-language-text {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.settings-language-text strong,
+.settings-language-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-language-text strong {
+  color: var(--text-dark);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.settings-language-text small {
+  color: var(--text-light);
+  font-size: 10.5px;
+}
+
+.settings-paths {
+  display: grid;
+  gap: 8px;
+}
+
+.settings-path {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 11px 12px 11px 13px;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+}
+
+.settings-path-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-badge);
+  color: var(--text-medium);
+}
+
+.settings-path-text {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.settings-path-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--text-dark);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.settings-path-badge {
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-light);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.settings-path-badge.custom {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  color: var(--text-dark);
+}
+
+.settings-path-badge.warn {
+  color: var(--red);
+}
+
+/* La ruta abre la carpeta en el Explorador: un enlace discreto, que se parte
+   por donde haga falta antes que desbordar la tarjeta. */
+.settings-path-value {
+  justify-self: start;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-medium);
+  font: inherit;
+  font-size: 11.5px;
+  line-height: 1.4;
+  text-align: start;
+  word-break: break-all;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.settings-path-value:hover,
+.settings-path-value:focus-visible {
+  color: var(--text-dark);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.settings-path-hint {
+  color: var(--text-light);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* El destino de un traslado de los datos que espera al reinicio. */
+.settings-path-pending {
+  color: var(--text-dark);
+  font-size: 11.5px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.settings-path-pending::before {
+  content: "→ ";
+  color: var(--text-light);
+}
+
+.settings-path-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-path-actions .btn {
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+}
+
+/* Solo aparece si esa ruta se cambió. El texto hace evidente una acción que
+   antes quedaba escondida detrás de un icono de restauración sin etiqueta. */
+.settings-path-actions .settings-reset-path {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding-inline: 9px 10px;
+  color: var(--text-medium);
+}
+
+.settings-reset-path svg {
+  flex-shrink: 0;
+  transition: transform var(--motion-feedback) var(--ease-out);
+}
+
+.settings-reset-path:hover svg {
+  transform: rotate(-180deg);
+}
+
+.settings-dialog [disabled] {
+  cursor: default;
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* «Acerca de» va al pie, a la izquierda de Cerrar: siempre a la vista sin
+   competir con los ajustes, como la ficha de versión de la barra de estado. */
+.settings-foot {
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 0;
+}
+
+.settings-about {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  min-width: 0;
+  padding: 6px 12px 6px 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--bg-card) 70%, transparent);
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.12s;
+}
+
+.settings-about:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border) 55%);
+  background: var(--bg-card-hover);
+}
+
+.settings-about:active {
+  transform: translateY(1px);
+}
+
+.settings-about-logo {
+  width: 34px;
+  height: 34px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #181818;
+}
+
+.settings-about-logo img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.settings-about-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-about-text strong {
+  color: var(--text-dark);
+  font-size: 12.5px;
+  font-weight: 700;
+}
+
+.settings-about-text strong,
+.settings-about-text small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-about-text small {
+  color: var(--text-light);
+  font-size: 11px;
+}
+
+.settings-about-go {
+  display: block;
+  color: var(--text-light);
+  transition: color 0.15s, transform var(--motion-feedback) var(--ease-out);
+}
+
+.settings-about:hover .settings-about-go {
+  color: var(--text-dark);
+  transform: translateX(2px);
+}
+
+.settings-dialog .about-note {
+  margin: 0;
+}
+
+/* De derecha a izquierda (árabe) la interfaz se refleja sola por las
+   propiedades lógicas; las flechas, que son dibujos, hay que darles la vuelta. */
+[dir="rtl"] .settings-about-go,
+[dir="rtl"] .about-back svg,
+[dir="rtl"] .settings-path-pending::before {
+  display: inline-block;
+  transform: scaleX(-1);
+}
+
+[dir="rtl"] .settings-about:hover .settings-about-go {
+  transform: scaleX(-1) translateX(2px);
+}
+
+[dir="rtl"] .about-back:hover svg {
+  transform: scaleX(-1) translateX(-2px);
+}
+
+/* Las descripciones y notas son datos en su idioma (casi siempre español):
+   cada párrafo toma la dirección de su propio texto, así el punto final no
+   salta al otro extremo de la línea. */
+[dir="rtl"] .card-desc,
+[dir="rtl"] .app-description-text,
+[dir="rtl"] .release-notes-body {
+  unicode-bidi: plaintext;
+}
+
+/* El brillo de los diálogos sigue al logotipo, que en RTL está a la derecha. */
+[dir="rtl"] .modal.modal-settings::before {
+  left: auto;
+  right: 70px;
+  transform: translateX(50%);
+}
+
+[dir="rtl"] .modal.modal-about::before {
+  left: auto;
+  right: 92px;
+  transform: translateX(50%);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .settings-head-icon svg {
+    animation: none;
+  }
 }
 
 /* Announcing a new build of the store: the same tile-and-title shape the sync
@@ -2065,7 +2818,7 @@ textarea {
   border: 1px solid var(--border);
   border-radius: 13px;
   background: color-mix(in srgb, var(--bg-card) 70%, transparent);
-  text-align: left;
+  text-align: start;
 }
 
 .release-notes-head {
@@ -2114,7 +2867,7 @@ textarea {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 5px 9px;
   border: 1px solid transparent;
   border-radius: 9px;
@@ -2170,7 +2923,7 @@ textarea {
 }
 
 .release-notes-body :is(ul, ol) {
-  padding-left: 18px;
+  padding-inline-start: 18px;
 }
 
 .release-notes-body li + li {
@@ -2217,7 +2970,7 @@ textarea {
 
 .release-notes-body blockquote {
   padding: 2px 0 2px 12px;
-  border-left: 3px solid var(--border);
+  border-inline-start: 3px solid var(--border);
   color: var(--text-light);
 }
 
@@ -2267,7 +3020,7 @@ textarea {
    grises y un aviso de colores sería lo único que desentonase. */
 .release-notes-body .release-notes-alert {
   padding: 8px 12px;
-  border-left: 3px solid var(--accent);
+  border-inline-start: 3px solid var(--accent);
   border-radius: 0 9px 9px 0;
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   color: var(--text-medium);
@@ -2275,7 +3028,7 @@ textarea {
 
 .release-notes-body .release-notes-alert.note,
 .release-notes-body .release-notes-alert.tip {
-  border-left-color: var(--text-light);
+  border-inline-start-color: var(--text-light);
   background: color-mix(in srgb, var(--text-light) 6%, transparent);
 }
 
@@ -2615,7 +3368,7 @@ textarea {
 
 /* «Actualizaciones» mientras se buscan y todavía no hay ninguna que contar. */
 .nav-badge-scan {
-  margin-left: auto;
+  margin-inline-start: auto;
   width: 12px;
   height: 12px;
   flex-shrink: 0;
@@ -2642,6 +3395,19 @@ textarea {
 
 .hidden {
   display: none !important;
+}
+
+/* Texto solo para lectores de pantalla: ocupa el árbol de accesibilidad, no la vista. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .modal-backdrop {
@@ -2938,7 +3704,7 @@ textarea {
   display: flex;
   align-items: center;
   gap: 13px;
-  text-align: left;
+  text-align: start;
 }
 
 .package-operation-brand small,
@@ -3174,8 +3940,8 @@ textarea {
   gap: 8px;
   max-height: min(46vh, 380px);
   overflow-y: auto;
-  padding-right: 4px;
-  margin-right: -4px;
+  padding-inline-end: 4px;
+  margin-inline-end: -4px;
 }
 
 .bulk-group {
@@ -3273,7 +4039,7 @@ textarea {
    estados posibles se comparan de un vistazo. */
 .bulk-row-state {
   flex-shrink: 0;
-  margin-left: auto;
+  margin-inline-start: auto;
   padding: 2px 9px;
   border: 1px solid var(--border);
   border-radius: 20px;
@@ -3404,7 +4170,7 @@ textarea {
 }
 
 .app-card[data-selectable] .card-top {
-  padding-right: 26px;
+  padding-inline-end: 26px;
 }
 
 /* Discreto mientras no se usa —sale al pasar por la tarjeta o al llegar a ella
@@ -3413,7 +4179,7 @@ textarea {
 .card-select {
   position: absolute;
   top: 12px;
-  right: 12px;
+  inset-inline-end: 12px;
   z-index: 2;
   display: grid;
   place-items: center;
@@ -3533,14 +4299,14 @@ textarea {
   display: flex;
   align-items: center;
   flex-shrink: 0;
-  padding-left: 8px;
+  padding-inline-start: 8px;
 }
 
 .card-avatar.queue-dock-avatar,
 .queue-dock-more {
   width: 32px;
   height: 32px;
-  margin-left: -8px;
+  margin-inline-start: -8px;
   border: 2px solid var(--bg-card);
   border-radius: 10px;
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
@@ -3916,7 +4682,7 @@ textarea {
 .sync-status-text {
   color: var(--text-dark);
   font-weight: 500;
-  text-align: left;
+  text-align: start;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4303,7 +5069,7 @@ textarea {
 }
 
 .ms-section-head .btn {
-  margin-left: auto;
+  margin-inline-start: auto;
 }
 
 /* Lo que la Microsoft Store contesta a la barra de búsqueda de arriba, colgado
@@ -4358,7 +5124,7 @@ textarea {
 .repo-inline-lead {
   margin: 4px 0 16px;
   padding: 8px 0 8px 12px;
-  border-left: 2px solid var(--border);
+  border-inline-start: 2px solid var(--border);
   color: var(--text-light);
   font-size: 12px;
   line-height: 1.5;

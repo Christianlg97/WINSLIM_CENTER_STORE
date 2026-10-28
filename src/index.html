@@ -13,6 +13,36 @@
          no destelle en blanco mientras se carga. -->
     <style>html, body { background: #181818; }</style>
     <link rel="stylesheet" href="styles.css" />
+    <script>
+      // Métricas internas de bajo coste. No pintan nada ni escriben durante el
+      // arranque: main.js vuelca un único resumen cuando la tienda ya se ve.
+      window.__frontendBootStartedAt ??= performance.now();
+      window.__frontendMetrics ||= [];
+      window.__recordFrontendMetric ||= (name, startedAt, detail = {}) => {
+        const finishedAt = performance.now();
+        window.__frontendMetrics.push({
+          name,
+          duration: Math.max(0, finishedAt - startedAt),
+          at: finishedAt,
+          detail,
+        });
+        if (window.__frontendMetrics.length > 180) window.__frontendMetrics.shift();
+      };
+
+      // El idioma del arranque se prepara en paralelo al logo y las fuentes.
+      // Esta promesa existe antes de que pueda terminar cualquiera de ellos.
+      window.__bootI18nReady = new Promise((resolve) => {
+        window.__resolveBootI18n = resolve;
+      });
+    </script>
+    <script type="module">
+      import { cachedLanguagePreference, setLanguagePreference } from "./i18n.js";
+      window.__i18nReady = setLanguagePreference(cachedLanguagePreference());
+      window.__i18nReady.then(
+        () => window.__resolveBootI18n?.(),
+        () => window.__resolveBootI18n?.(),
+      );
+    </script>
   </head>
   <body>
     <!-- Lo primero que se ve mientras WebView carga el código y dibuja el
@@ -47,20 +77,15 @@
         document.fonts?.load("700 28px Ubuntu"),
         document.fonts?.load("400 15px Ubuntu"),
       ]).catch(() => {});
-      const pageLoaded = document.readyState === "complete" ? null : new Promise((resolve) => {
-        window.addEventListener("load", resolve, { once: true });
-      });
       window.__bootSplashShown = Promise.all([
-        pageLoaded,
         Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 400))]),
+        Promise.race([window.__bootI18nReady, new Promise((resolve) => setTimeout(resolve, 300))]),
       ]).then(async () => {
-        // Preparar las capas antes de abrir: el primer cambio de superficie de
-        // WebView2 no debe ocurrir con la ventana ya en pantalla. Una ventana
-        // oculta puede suspender rAF; el plazo evita bloquear su apertura.
-        await Promise.race([
-          new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-          new Promise((resolve) => setTimeout(resolve, 150)),
-        ]);
+        // El idioma ya se preparo en paralelo con los recursos visuales.
+        // La ventana oculta suele suspender rAF y agotaba siempre el plazo de
+        // 150 ms. Forzar estilo y geometria prepara la misma capa sin esperar;
+        // los dos fotogramas visibles que arrancan el fundido siguen debajo.
+        splash.getBoundingClientRect();
         if (window.__TAURI__?.core) {
           await window.__TAURI__.core.invoke("show_main_window").catch(() => {});
         }
@@ -95,11 +120,10 @@
             </svg>
             Refrescar
           </button>
-          <button type="button" class="about-btn" id="btn-about" title="Acerca de WinSlimCenter" aria-label="Acerca de WinSlimCenter">
+          <button type="button" class="settings-btn" id="btn-settings" title="Configuración" aria-label="Configuración" aria-haspopup="dialog">
             <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-              <circle cx="12" cy="12" r="9.25"/>
-              <line x1="12" y1="11" x2="12" y2="16.25"/>
-              <line x1="12" y1="7.75" x2="12" y2="7.75"/>
+              <path class="settings-cog" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+              <circle class="settings-hub" cx="12" cy="12" r="3"/>
             </svg>
           </button>
         </div>

@@ -927,7 +927,74 @@ fn velopack_status(entry: &Value, catalog_version: &str, install: VelopackInstal
     }
 }
 
+/// The status of every catalog entry.
+///
+/// Each entry is answered on its own, and on the first scan after the store
+/// updates (its launch cache belongs to the previous build) answering one means
+/// walking its installation and opening executables, time spent waiting on the
+/// disk and the antivirus rather than computing. A few threads take slices of
+/// the catalog in turn so those waits overlap. Every slice builds its own
+/// indexes, which only memoize, and the slices are merged in catalog order: the
+/// map is the one a single pass produces.
 pub fn build_statuses(
+    catalog: &[serde_json::Value],
+    center_installed: &HashMap<String, crate::store::InstalledInfo>,
+    system: &[SystemApp],
+    start_apps: &[StartApp],
+    winget_packages: &str,
+) -> HashMap<String, AppStatus> {
+    const SLICE: usize = 16;
+    let slices = catalog.chunks(SLICE).collect::<Vec<_>>();
+    let workers = std::thread::available_parallelism()
+        .map_or(1, |count| count.get())
+        .min(4)
+        .min(slices.len());
+    if workers <= 1 {
+        return statuses_for(catalog, center_installed, system, start_apps, winget_packages);
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut answered = std::thread::scope(|scope| {
+        let handles = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(slice) = slices.get(index) else {
+                            break done;
+                        };
+                        done.push((index, statuses_for(slice, center_installed, system, start_apps, winget_packages)));
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().unwrap_or_else(|panic| std::panic::resume_unwind(panic)))
+            .collect::<Vec<_>>()
+    });
+    answered.sort_by_key(|(index, _)| *index);
+    let mut map = HashMap::with_capacity(catalog.len());
+    for (_, statuses) in answered {
+        map.extend(statuses);
+    }
+    map
+}
+
+/// The single pass `build_statuses` splits, for the probe that compares both on
+/// the programs of a real machine.
+#[cfg(test)]
+pub(crate) fn build_statuses_in_one_pass(
+    catalog: &[serde_json::Value],
+    center_installed: &HashMap<String, crate::store::InstalledInfo>,
+    system: &[SystemApp],
+    start_apps: &[StartApp],
+    winget_packages: &str,
+) -> HashMap<String, AppStatus> {
+    statuses_for(catalog, center_installed, system, start_apps, winget_packages)
+}
+
+fn statuses_for(
     catalog: &[serde_json::Value],
     center_installed: &HashMap<String, crate::store::InstalledInfo>,
     system: &[SystemApp],
@@ -2208,6 +2275,36 @@ mod tests {
             uninstall_string: uninstall_string.map(str::to_string),
             full_uninstall_string: None,
         }
+    }
+
+    #[test]
+    fn statuses_built_in_slices_are_the_ones_a_single_pass_gives() {
+        let catalog = (0..70)
+            .map(|index| {
+                serde_json::json!({
+                    "id": format!("app{index}"),
+                    "name": format!("Programa {index}"),
+                    "source_type": if index % 11 == 0 { "web" } else { "winget" },
+                    "winget_id": format!("Vendor.App{index}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let system = (0..70)
+            .step_by(3)
+            .map(|index| system_app(&format!("Programa {index}"), Some("uninstall.exe")))
+            .collect::<Vec<_>>();
+        let start_apps = (1..70)
+            .step_by(5)
+            .map(|index| StartApp {
+                name: format!("Programa {index}"),
+                app_id: format!("Vendor.App{index}_abc!App"),
+            })
+            .collect::<Vec<_>>();
+        let installed = HashMap::new();
+        let sliced = build_statuses(&catalog, &installed, &system, &start_apps, "");
+        let single = statuses_for(&catalog, &installed, &system, &start_apps, "");
+        assert_eq!(sliced.len(), catalog.len());
+        assert_eq!(serde_json::to_value(&sliced).unwrap(), serde_json::to_value(&single).unwrap());
     }
 
     #[test]

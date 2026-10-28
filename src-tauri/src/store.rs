@@ -10,6 +10,10 @@ const DEFAULT_CATALOG_JSON: &str = include_str!("../apps.json");
 pub struct Settings {
     pub theme: String,
     pub accent: String,
+    /// Whether the installed applications are checked after start-up detection.
+    /// Missing in old settings files means enabled, preserving prior behaviour.
+    #[serde(default = "enabled")]
+    pub check_updates_on_startup: bool,
     /// Which build of an application published in several was chosen, by
     /// application id. Remembered so that an update installs the same one: for
     /// Thorium the choice is a CPU instruction set, and quietly moving from AVX2
@@ -23,6 +27,23 @@ pub struct Settings {
     /// changed, and on a system without Edge it may name a browser that is gone.
     #[serde(default)]
     pub web_browser: Option<String>,
+    /// The folder downloaded packages go to, when the user moved it off
+    /// `Downloads\WinSlimCenter`. Always one of the store's own: it is emptied at
+    /// every start-up, so it can never be a folder the user keeps files in.
+    #[serde(default)]
+    pub downloads_dir: Option<String>,
+    /// The root the store installs portables and archives under, when the user
+    /// moved it off `%LOCALAPPDATA%\CenterApps`. The store's own data
+    /// (`settings.json`, logs, `installed.json`) stays there regardless.
+    #[serde(default)]
+    pub apps_dir: Option<String>,
+    /// Roots used before the current one. What was installed under them stays
+    /// where it is, and updates and uninstalls must still find it there.
+    #[serde(default)]
+    pub former_apps_dirs: Vec<String>,
+    /// Interface language (`es`, `en`...). `None` follows the language of Windows.
+    #[serde(default)]
+    pub language: Option<String>,
 }
 
 impl Default for Settings {
@@ -30,10 +51,19 @@ impl Default for Settings {
         Self {
             theme: "plata".into(),
             accent: "#c7ced6".into(),
+            check_updates_on_startup: true,
             variants: HashMap::new(),
             web_browser: None,
+            downloads_dir: None,
+            apps_dir: None,
+            former_apps_dirs: Vec::new(),
+            language: None,
         }
     }
+}
+
+fn enabled() -> bool {
+    true
 }
 
 /// The catalog entry as it reads once one of its builds is chosen.
@@ -292,6 +322,23 @@ mod tests {
         let def = Settings::default();
         assert_eq!(def.theme, "plata");
         assert_eq!(def.accent, "#c7ced6");
+        assert!(def.check_updates_on_startup);
+    }
+
+    #[test]
+    fn old_settings_keep_the_startup_update_check_enabled() {
+        let old = serde_json::json!({
+            "theme": "plata",
+            "accent": "#c7ced6",
+            "variants": {},
+            "web_browser": null,
+            "downloads_dir": null,
+            "apps_dir": null,
+            "former_apps_dirs": [],
+            "language": null
+        });
+        let loaded: Settings = serde_json::from_value(old).unwrap();
+        assert!(loaded.check_updates_on_startup);
     }
 
     #[test]
@@ -446,7 +493,7 @@ mod tests {
             theme: "midnight".into(),
             accent: "#38bdf8".into(),
             variants: HashMap::new(),
-            web_browser: None,
+            ..Settings::default()
         };
         let migrated = migrate_settings(legacy);
         assert_eq!(migrated.theme, "plata");

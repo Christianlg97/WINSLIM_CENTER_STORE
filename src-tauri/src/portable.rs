@@ -27,7 +27,7 @@ impl DataPolicy {
 }
 
 pub fn backup_root() -> PathBuf {
-    crate::paths::app_dir().with_file_name("WinSlimCenter-Backups")
+    crate::paths::apps_root().with_file_name("WinSlimCenter-Backups")
 }
 
 #[derive(Serialize, Deserialize)]

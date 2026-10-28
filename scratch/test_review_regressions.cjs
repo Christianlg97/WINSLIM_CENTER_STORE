@@ -53,6 +53,7 @@ async function portableUpdate(policy, blocker) {
       if (name === 'portable_data_info') return { backup_root: 'Backups' };
       if (name === 'install_app') request = args;
     },
+    invokeShared: async name => name === 'portable_data_info' ? { backup_root: 'Backups' } : null,
     blockingRunningApp: async () => blocker ? { packaged: false } : null,
     showConfirmModal: options => { confirmation = options; },
     showRunningAppModal: options => { options.onClose(); },
@@ -408,45 +409,49 @@ function versionLabels() {
 async function splashPresentation() {
   for (const file of ['../src/index.html', 'ui_harness.html']) {
     const html = fs.readFileSync(path.join(__dirname, file), 'utf8');
+    if (file === '../src/index.html') {
+      assert.ok(
+        html.indexOf('window.__bootI18nReady = new Promise') < html.indexOf('id="boot-splash"'),
+        'El idioma del arranque debe empezar antes de crear la pantalla de carga',
+      );
+      assert.match(html, /window\.__i18nReady = setLanguagePreference\(cachedLanguagePreference\(\)\)/);
+    }
     const script = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)]
       .map(match => match[1]).find(text => text.includes('window.__bootSplashShown ='));
     assert.ok(script, file);
-    for (const fails of [false, true]) for (const suspended of [false, true]) {
+    for (const fails of [false, true]) {
       const frames = [], events = [], timers = [];
-      let pageLoaded;
-      const splash = { querySelector: () => ({ complete: true }), classList: { add: name => events.push(name) } };
-      const window = { addEventListener: (name, callback) => { assert.equal(name, 'load'); pageLoaded = callback; }, __TAURI__: { core: { invoke: () => {
-        events.push('show');
-        return fails ? Promise.reject(new Error('fallback')) : Promise.resolve();
-      } } } };
-      vm.runInNewContext(script, { window, document: { readyState: 'loading', getElementById: () => splash, fonts: { load: () => Promise.resolve() } },
+      let languageReady;
+      const splash = {
+        querySelector: () => ({ complete: true }),
+        getBoundingClientRect: () => events.push('layout'),
+        classList: { add: name => events.push(name) },
+      };
+      const window = {
+        __bootI18nReady: new Promise(resolve => { languageReady = resolve; }),
+        __TAURI__: { core: { invoke: () => {
+          events.push('show');
+          return fails ? Promise.reject(new Error('fallback')) : Promise.resolve();
+        } } },
+      };
+      vm.runInNewContext(script, { window, document: { getElementById: () => splash, fonts: { load: () => Promise.resolve() } },
         performance: { now: () => 42 }, setTimeout: (callback, delay) => timers.push({ callback, delay }), requestAnimationFrame: callback => frames.push(callback) });
-      // Ni fuentes listas ni el script inicial bastan: esperar la página entera.
+      // Los recursos visuales no bastan: el idioma debe estar preparado.
       for (let turn = 0; turn < 12; turn++) await Promise.resolve();
       assert.deepEqual(events, []);
       assert.equal(frames.length, 0);
-      pageLoaded();
+      languageReady();
       for (let turn = 0; turn < 12; turn++) await Promise.resolve();
-      assert.deepEqual(events, [], 'Preparar el primer pintado antes de mostrar la ventana');
-      assert.equal(frames.length, 1);
-      if (suspended) {
-        // WebView2 puede suspender los fotogramas de una ventana oculta.
-        timers.find(timer => timer.delay === 150).callback();
-        frames.length = 0;
-      } else {
-        frames.shift()();
-        assert.deepEqual(events, []);
-        frames.shift()();
-      }
-      for (let turn = 0; turn < 12; turn++) await Promise.resolve();
-      assert.deepEqual(events, ['show']);
+      assert.deepEqual(events, ['layout', 'show'], 'Preparar la capa antes de mostrar la ventana');
       assert.equal(frames.length, 1);
       frames.shift()();
-      assert.deepEqual(events, ['show']);
+      assert.deepEqual(events, ['layout', 'show']);
+      assert.equal(frames.length, 1);
       frames.shift()();
       await window.__bootSplashShown;
-      assert.deepEqual(events, ['show', 'is-presented']);
+      assert.deepEqual(events, ['layout', 'show', 'is-presented']);
       assert.equal(window.__bootSplashShownAt, 42);
+      assert.equal(timers.some(timer => timer.delay === 150), false);
     }
   }
 }
@@ -459,16 +464,24 @@ function modalPresentationBeforeFocus() {
     querySelector: selector => selector === 'h2' ? null : { focus: options => observed.push({ classes: [...classes], options }) },
   };
   const backdrop = { classList: { contains: () => true, remove: () => observed.push({ classes: [...classes], shown: true }) } };
-  const ctx = vm.createContext({ document: { getElementById: id => id === 'modal' ? modal : backdrop, activeElement: {} }, closeShotViewer() {} });
+  const gear = { expanded: null, setAttribute(name, value) { if (name === 'aria-expanded') this.expanded = value; } };
+  const elements = { modal, 'modal-backdrop': backdrop, 'btn-settings': gear };
+  const ctx = vm.createContext({ document: { getElementById: id => elements[id] || null, activeElement: {} }, closeShotViewer() {} });
   load(ctx, ['openModal']);
   ctx.openModal('about', false, false, 'about');
   assert.ok(observed[0].shown);
   assert.ok(observed[0].classes.includes('modal-about'));
   assert.ok(observed[0].classes.includes('modal-hero'));
   assert.equal(observed[1].options.preventScroll, true);
+  assert.equal(gear.expanded, 'true', 'About opens from the settings, whose button stays active');
+  ctx.openModal('settings', false, false, 'settings');
+  assert.ok(classes.has('modal-settings') && classes.has('modal-hero'));
+  assert.equal(classes.has('modal-about'), false);
   ctx.openModal('plain');
   assert.equal(classes.has('modal-about'), false);
   assert.equal(classes.has('modal-hero'), false);
+  assert.equal(classes.has('modal-settings'), false);
+  assert.equal(gear.expanded, 'false');
 }
 
 async function splashFadeCompletesBeforeRemoval() {
@@ -592,6 +605,61 @@ async function startupConnectionGate() {
   assert.equal(subtitle.textContent, 'Preparando la tienda…');
 }
 
+async function sharedReadRequests() {
+  let calls = 0, complete;
+  const ctx = vm.createContext({
+    Map, JSON, Promise,
+    invoke: () => {
+      calls += 1;
+      if (calls === 1) return new Promise(resolve => { complete = resolve; });
+      return Promise.resolve(`respuesta-${calls}`);
+    },
+  });
+  vm.runInContext('const sharedInvokeRequests = new Map();', ctx);
+  load(ctx, ['invokeShared']);
+  const first = ctx.invokeShared('msstore_search', { query: 'demo' }, 'demo');
+  const duplicate = ctx.invokeShared('msstore_search', { query: 'demo' }, 'demo');
+  assert.equal(first, duplicate, 'Las lecturas idénticas deben compartir la petición en curso');
+  assert.equal(calls, 1);
+  complete({ products: [] });
+  await Promise.all([first, duplicate]);
+  assert.equal(await ctx.invokeShared('msstore_search', { query: 'demo' }, 'demo'), 'respuesta-2');
+  assert.equal(calls, 2, 'Al terminar no debe quedar una caché que oculte cambios posteriores');
+}
+
+function indexedCatalogCards() {
+  let queries = 0;
+  const block = {};
+  const first = { dataset: { appId: 'demo' }, closest: () => block };
+  const repeated = { dataset: { appId: 'demo' }, closest: () => block };
+  const other = { dataset: { appId: 'other' }, closest: () => block };
+  const content = {
+    querySelectorAll(selector) {
+      queries += 1;
+      if (selector === '.section, .hero, .empty-updates-card') return [block];
+      if (selector === '.app-card') return [first, repeated, other];
+      if (selector === 'img[data-icon-candidates]') return [];
+      return [];
+    },
+  };
+  const ctx = vm.createContext({ Map, Set, WeakMap, document: { getElementById: () => content } });
+  vm.runInContext(`
+    const ENTERING_BLOCKS = ".section, .hero, .empty-updates-card";
+    const contentDomIndex = {
+      root: null, blocks: [], cards: [], cardsByBlock: new WeakMap(),
+      cardsByAppId: new Map(), icons: [],
+    };
+  `, ctx);
+  load(ctx, ['rebuildContentDomIndex', 'indexedContent', 'indexedAppCards']);
+  ctx.rebuildContentDomIndex(content);
+  const indexedQueries = queries;
+  const found = ctx.indexedAppCards(new Set(['demo']));
+  assert.equal(found.length, 2, 'El índice conserva las tarjetas repetidas de Inicio');
+  assert.equal(found[0], first);
+  assert.equal(found[1], repeated);
+  assert.equal(queries, indexedQueries, 'Actualizar un id no debe volver a recorrer el DOM');
+}
+
 (async () => {
   await startupConnectionGate();
   externalInstalledSearch();
@@ -615,5 +683,7 @@ async function startupConnectionGate() {
   await queuedInstall();
   queueEligibility();
   await startupVerification();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, web-app browser choice, visible counters and version labels passed.');
+  await sharedReadRequests();
+  indexedCatalogCards();
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

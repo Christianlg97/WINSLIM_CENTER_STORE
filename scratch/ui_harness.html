@@ -46,6 +46,8 @@
         { name: "Mozilla Firefox", path: "C:\\Program Files\\Mozilla Firefox\\firefox.exe", app_mode: false, windows_default: false },
       ];
       let harnessWebBrowser = msStoreTestParams.get("web-browser") || null;
+      // Carpetas elegidas en la configuración (null = la predeterminada).
+      const harnessStorage = { downloads: null, apps: null, data: null, pendingData: null };
       const msStorePublished = {
         "Contoso.Notes_abc": msStoreTestParams.get("ms-published") || "3.14.2",
         "Contoso.Legacy_xyz": "1.0.0",
@@ -139,6 +141,32 @@
               return !msStoreTestParams.has("offline") || window.__harnessOnline === true ||
                 (msStoreTestParams.has("retry-online") && window.__harnessConnectionChecks > 1);
             }
+            // Configuración. ?pick-folder=RUTA es lo que «elige» el selector de
+            // carpetas (sin él, se cancela) y la tienda añade su subcarpeta.
+            if (command === "get_storage_locations" || command === "set_storage_location") {
+              const defaultData = "C:\\Users\\Usuario\\AppData\\Local\\CenterApps";
+              if (command === "set_storage_location") {
+                const folder = args.kind === "downloads" ? "WinSlimCenter" : "CenterApps";
+                const target = args.path ? `${args.path.replace(/\\+$/, "")}\\${folder}` : null;
+                // Los datos no cambian hasta reiniciar: queda pendiente.
+                if (args.kind === "data") harnessStorage.pendingData = (target || defaultData) === defaultData ? null : target;
+                else harnessStorage[args.kind] = target;
+              }
+              const location = (kind, fallback) => ({
+                path: harnessStorage[kind] || fallback,
+                default: fallback,
+                configured: harnessStorage[kind],
+                unavailable: false,
+              });
+              return {
+                downloads: location("downloads", "C:\\Users\\Usuario\\Downloads\\WinSlimCenter"),
+                apps: location("apps", defaultData),
+                data: { ...location("data", defaultData), pending: harnessStorage.pendingData, error: null },
+                backups: "C:\\Users\\Usuario\\AppData\\Local\\WinSlimCenter-Backups",
+              };
+            }
+            if (command === "choose_folder") return msStoreTestParams.get("pick-folder") || null;
+            if (command === "open_storage_location" || command === "set_language" || command === "restart_store") return null;
             if (command === "get_bootstrap") {
               const apps = await catalog();
               const statuses = mockStatuses();
@@ -148,7 +176,7 @@
               const status_pending = msStoreTestParams.has("pending")
                 ? apps.map((app) => app.id).filter((id) => !statuses[id])
                 : [];
-              return { catalog: apps, app_version: "0.1.3", installed: {}, statuses, status_pending, settings: { theme: "plata", accent: "#c7ced6" }, tasks: [] };
+              return { catalog: apps, app_version: "0.1.3", installed: {}, statuses, status_pending, settings: { theme: "plata", accent: "#c7ced6", language: msStoreTestParams.get("lang") || null }, tasks: [] };
             }
             if (command === "reload_catalog") return catalog();
             if (command === "refresh_statuses" || command === "check_updates") {
@@ -440,6 +468,20 @@
         },
       };
     </script>
+    <script>
+      window.__frontendBootStartedAt ??= performance.now();
+      window.__frontendMetrics ||= [];
+      window.__recordFrontendMetric ||= (name, startedAt, detail = {}) => {
+        const finishedAt = performance.now();
+        window.__frontendMetrics.push({
+          name,
+          duration: Math.max(0, finishedAt - startedAt),
+          at: finishedAt,
+          detail,
+        });
+        if (window.__frontendMetrics.length > 180) window.__frontendMetrics.shift();
+      };
+    </script>
   </head>
   <body>
     <div class="boot-splash" id="boot-splash" role="status" aria-label="Iniciando WinSlimCenter">
@@ -464,20 +506,13 @@
         document.fonts?.load("700 28px Ubuntu"),
         document.fonts?.load("400 15px Ubuntu"),
       ]).catch(() => {});
-      const pageLoaded = document.readyState === "complete" ? null : new Promise((resolve) => {
-        window.addEventListener("load", resolve, { once: true });
-      });
+      window.__bootI18nReady ||= Promise.resolve();
       window.__bootSplashShown = Promise.all([
-        pageLoaded,
         Promise.race([ready, new Promise((resolve) => setTimeout(resolve, 400))]),
+        Promise.race([window.__bootI18nReady, new Promise((resolve) => setTimeout(resolve, 300))]),
       ]).then(async () => {
-        // Preparar las capas antes de abrir: el primer cambio de superficie de
-        // WebView2 no debe ocurrir con la ventana ya en pantalla. Una ventana
-        // oculta puede suspender rAF; el plazo evita bloquear su apertura.
-        await Promise.race([
-          new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))),
-          new Promise((resolve) => setTimeout(resolve, 150)),
-        ]);
+        // El arnes reproduce la preparacion inmediata de la capa oculta.
+        splash.getBoundingClientRect();
         if (window.__TAURI__?.core) {
           await window.__TAURI__.core.invoke("show_main_window").catch(() => {});
         }
@@ -494,7 +529,12 @@
         <div class="top-actions">
           <button type="button" class="icon-btn" id="btn-refresh" title="Recargar aplicaciones y buscar actualizaciones"><span>↻</span> Refrescar</button>
           <button type="button" class="icon-btn" id="btn-update"><span>⬆</span> Actualizar tienda</button>
-          <button type="button" class="about-btn" id="btn-about" aria-label="Acerca de WinSlimCenter">i</button>
+          <button type="button" class="settings-btn" id="btn-settings" title="Configuración" aria-label="Configuración" aria-haspopup="dialog">
+            <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path class="settings-cog" d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+              <circle class="settings-hub" cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
         </div>
       </header>
       <div class="shell"><div class="loading-line" id="loading-line" aria-hidden="true"></div><aside class="sidebar" id="sidebar"></aside><main class="main"><div class="scroll" id="content"></div></main></div>

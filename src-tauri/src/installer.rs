@@ -1985,7 +1985,7 @@ where
         }
     }
 
-    let install_path = paths::app_dir().join(app_id);
+    let install_path = paths::managed_install_dir(app_id);
     let download_path = paths::package_download_dir(app_id);
     let preferred_executable = app
         .get("launch_executable")
@@ -2898,7 +2898,7 @@ pub fn cleanup_failed_install(app_id: &str, remove_install_path: bool) -> Result
     );
     let mut targets = vec![paths::package_download_dir(app_id)];
     if remove_install_path {
-        targets.push(paths::app_dir().join(app_id));
+        targets.push(paths::managed_install_dir(app_id));
     }
     let mut failures = Vec::new();
 
@@ -3307,7 +3307,7 @@ fn contains_shared_directory_segment(path: &Path) -> bool {
 
 /// Roots under which an application may legitimately keep its own folder.
 fn allowed_installation_roots() -> Vec<PathBuf> {
-    let mut roots = vec![paths::app_dir()];
+    let mut roots = paths::install_roots();
     for variable in [
         "ProgramFiles",
         "ProgramFiles(x86)",
@@ -3378,6 +3378,7 @@ pub fn is_protected_installation_root(path: &Path) -> bool {
             protected.push(normalized_path_key(Path::new(&value)));
         }
     }
+    protected.extend(paths::install_roots().iter().map(|root| normalized_path_key(root)));
     protected.push(normalized_path_key(&paths::app_dir()));
     protected.iter().any(|root| root == &candidate)
 }
@@ -3765,7 +3766,7 @@ pub fn cleanup_declared_residual_paths(app: &Value, install_path: &Path) -> Resu
     } else {
         install_path
     };
-    let mut allowed_roots = vec![paths::app_dir()];
+    let mut allowed_roots = paths::install_roots();
     for variable in [
         "LOCALAPPDATA",
         "APPDATA",
@@ -4090,35 +4091,61 @@ pub fn prefer_x64_executable(path: &Path) -> Option<PathBuf> {
         .then(|| path.to_path_buf())
 }
 
+/// The most an executable's header can add to its `launcher_score`: an x64
+/// build (`1_000 / 3`) that opens a window (`45`). Everything else in the score
+/// comes from the name and the location, which cost nothing to read.
+const MAX_HEADER_SCORE: i32 = 1_000 / 3 + 45;
+
 pub fn find_executable(install_dir: &Path) -> Option<PathBuf> {
     let mut exes = Vec::new();
     collect_exes(install_dir, &mut exes);
-    let mut ranked = exes
+    // Reading a header means opening the program, and opening one makes the
+    // antivirus scan it: around five milliseconds each, so a game folder with
+    // hundreds of executables took seconds. Candidates are visited best name
+    // first, and once none of the rest could reach the winner even with the
+    // best possible header, their files are never opened. The winner is the
+    // one full ranking would pick: highest score, then the lowest path, which
+    // keeps the answer independent of the order the directory was read in
+    // (Maxima's launcher changed between refreshes before that tie-break).
+    let mut candidates = exes
         .into_iter()
         .filter(|path| !is_installer_artifact(path))
-        .filter_map(|path| {
-            let metadata = executable_metadata(&path);
-            let architecture_score =
-                executable_architecture_score_with(&path, metadata.architecture);
-            // A candidate whose architecture could not be read scores zero,
-            // which is above every real x86 build: that is how four hundred
-            // bytes of AppleDouble named `._Amazon Games.exe` beat the launcher
-            // sitting next to it. Files that are not programs never rank.
-            (metadata.image != ExecutableImage::Foreign && architecture_score >= -1_000).then(|| {
-                (
-                    launcher_score(install_dir, &path, architecture_score, metadata.subsystem),
-                    path,
-                )
-            })
+        .map(|path| {
+            let ceiling =
+                launcher_score(install_dir, &path, 0, ExecutableSubsystem::Unknown) + MAX_HEADER_SCORE;
+            (ceiling, path)
         })
         .collect::<Vec<_>>();
-    // Candidates that score the same are ordered by path rather than by
-    // whatever order the directory happened to be read in: Maxima's launcher
-    // changed from one refresh of the store to the next because of that.
-    ranked.sort_by(|(left_score, left), (right_score, right)| {
-        right_score.cmp(left_score).then_with(|| left.cmp(right))
+    candidates.sort_by(|(left_ceiling, left), (right_ceiling, right)| {
+        right_ceiling.cmp(left_ceiling).then_with(|| left.cmp(right))
     });
-    ranked.into_iter().next().map(|(_, path)| path)
+    let mut best: Option<(i32, PathBuf)> = None;
+    for (ceiling, path) in candidates {
+        if let Some((best_score, best_path)) = &best {
+            // Sorted by ceiling: nothing after this one can do better either.
+            if ceiling < *best_score || (ceiling == *best_score && path > *best_path) {
+                break;
+            }
+        }
+        let metadata = executable_metadata(&path);
+        let architecture_score = executable_architecture_score_with(&path, metadata.architecture);
+        // A candidate whose architecture could not be read scores zero,
+        // which is above every real x86 build: that is how four hundred
+        // bytes of AppleDouble named `._Amazon Games.exe` beat the launcher
+        // sitting next to it. Files that are not programs never rank.
+        if metadata.image == ExecutableImage::Foreign || architecture_score < -1_000 {
+            continue;
+        }
+        let score = launcher_score(install_dir, &path, architecture_score, metadata.subsystem);
+        let better = match &best {
+            None => true,
+            Some((best_score, best_path)) => score > *best_score || (score == *best_score && path < *best_path),
+        };
+        if better {
+            best = Some((score, path));
+        }
+    }
+    best.map(|(_, path)| path)
 }
 
 /// How much an executable looks like the one the user means by "open it".
@@ -4586,7 +4613,7 @@ fn collect_exes_at_depth(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
             continue;
         };
         if file_type.is_dir() {
-            if depth < MAX_EXECUTABLE_DEPTH && !directory_is_reparse_point(&path) {
+            if depth < MAX_EXECUTABLE_DEPTH && !entry_is_reparse_point(&entry) {
                 collect_exes_at_depth(&path, out, depth + 1);
             }
         } else if (!file_type.is_symlink() || path.is_file())
@@ -4601,20 +4628,26 @@ fn collect_exes_at_depth(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
     }
 }
 
+/// Junctions, symlinks and other reparse points are not walked into.
+///
+/// On Windows the directory listing already carries each entry's attributes
+/// (`DirEntry::metadata` makes no system call there), the same ones
+/// `symlink_metadata` returned after opening every folder a second time: in a
+/// game installation with thousands of folders those opens were most of the
+/// cost of the walk.
 #[cfg(windows)]
-fn directory_is_reparse_point(path: &Path) -> bool {
+fn entry_is_reparse_point(entry: &fs::DirEntry) -> bool {
     use std::os::windows::fs::MetadataExt;
     const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    fs::symlink_metadata(path)
+    entry
+        .metadata()
         .map(|metadata| metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
         .unwrap_or(true)
 }
 
 #[cfg(not(windows))]
-fn directory_is_reparse_point(path: &Path) -> bool {
-    fs::symlink_metadata(path)
-        .map(|metadata| metadata.file_type().is_symlink())
-        .unwrap_or(true)
+fn entry_is_reparse_point(entry: &fs::DirEntry) -> bool {
+    entry.file_type().map(|file_type| file_type.is_symlink()).unwrap_or(true)
 }
 
 fn expanded_launch_args(executable: &Path, arguments: &[String]) -> Vec<String> {
@@ -5869,5 +5902,161 @@ mod tests {
         assert!(launch_path_with_preferred(&fork, None).is_err());
 
         fs::remove_dir_all(test_dir).unwrap();
+    }
+
+    /// The ranking as it was before candidates were pruned: every header read,
+    /// highest score first, ties broken by path.
+    fn rank_every_candidate(install_dir: &Path) -> Option<PathBuf> {
+        let mut exes = Vec::new();
+        collect_exes(install_dir, &mut exes);
+        let mut ranked = exes
+            .into_iter()
+            .filter(|path| !is_installer_artifact(path))
+            .filter_map(|path| {
+                let metadata = executable_metadata(&path);
+                let architecture_score = executable_architecture_score_with(&path, metadata.architecture);
+                (metadata.image != ExecutableImage::Foreign && architecture_score >= -1_000).then(|| {
+                    (launcher_score(install_dir, &path, architecture_score, metadata.subsystem), path)
+                })
+            })
+            .collect::<Vec<_>>();
+        ranked.sort_by(|(left_score, left), (right_score, right)| {
+            right_score.cmp(left_score).then_with(|| left.cmp(right))
+        });
+        ranked.into_iter().next().map(|(_, path)| path)
+    }
+
+    #[test]
+    fn pruned_ranking_picks_what_reading_every_header_picked() {
+        let root = std::env::temp_dir().join(format!("winslimcenter-prune-test-{}", std::process::id()));
+        let names = [
+            "Game", "launcher", "main", "app", "start", "helper", "crash_reporter", "updater_service",
+            "tool_x64", "tool_win32", "engine-arm64", "server", "editor", "GameLauncher",
+        ];
+        let folders = ["", "bin", "bin/x64", "tools", "redist/sub"];
+        // (machine, subsystem); machine 0 writes a file that is not a program.
+        let kinds = [(0x8664_u16, 2_u16), (0x8664, 3), (0x014c, 2), (0x014c, 3), (0xaa64, 2), (0x8664, 0), (0, 0)];
+        let mut seed = 0x2545_f491_u64;
+        let mut next = |limit: usize| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((seed >> 33) as usize) % limit
+        };
+        for case in 0..60 {
+            let install_dir = root.join(format!("case{case}")).join("Game");
+            fs::create_dir_all(&install_dir).unwrap();
+            for index in 0..(1 + next(12)) {
+                let folder = install_dir.join(folders[next(folders.len())]);
+                fs::create_dir_all(&folder).unwrap();
+                // Without a number the name can match its folder ("Game.exe"),
+                // which is worth the largest bonus a name can earn.
+                let name = names[next(names.len())];
+                let path = folder.join(if next(4) == 0 { format!("{name}.exe") } else { format!("{name}{index}.exe") });
+                let (machine, subsystem) = kinds[next(kinds.len())];
+                if machine == 0 {
+                    fs::write(&path, [0_u8, 5, 22, 7]).unwrap();
+                    continue;
+                }
+                let mut bytes = vec![0_u8; 224];
+                bytes[0..2].copy_from_slice(b"MZ");
+                bytes[0x3c..0x40].copy_from_slice(&128_u32.to_le_bytes());
+                bytes[128..132].copy_from_slice(b"PE\0\0");
+                bytes[132..134].copy_from_slice(&machine.to_le_bytes());
+                bytes[220..222].copy_from_slice(&subsystem.to_le_bytes());
+                fs::write(&path, bytes).unwrap();
+            }
+            assert_eq!(
+                find_executable(&install_dir),
+                rank_every_candidate(&install_dir),
+                "case {case} in {}",
+                install_dir.display()
+            );
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn no_header_can_add_more_than_the_pruning_ceiling() {
+        let architectures = [
+            ExecutableArchitecture::X64,
+            ExecutableArchitecture::X86,
+            ExecutableArchitecture::Arm,
+            ExecutableArchitecture::Unknown,
+        ];
+        let subsystems = [ExecutableSubsystem::Gui, ExecutableSubsystem::Console, ExecutableSubsystem::Unknown];
+        for name in ["app.exe", "app_x64.exe", "app-win32.exe", "app-arm64.exe"] {
+            for architecture in architectures {
+                for subsystem in subsystems {
+                    let path = Path::new("C:\\Game").join(name);
+                    let header = executable_architecture_score_with(&path, architecture) / 3 + subsystem_score(subsystem);
+                    assert!(header <= MAX_HEADER_SCORE, "{name} {architecture:?} {subsystem:?}");
+                }
+            }
+        }
+    }
+
+    /// Sonda de rendimiento con los programas reales de este equipo, solo
+    /// lectura: la detección completa tal como la hace el primer arranque tras
+    /// una actualización de la tienda, con la caché de rutas vacía.
+    /// `scratch/test_rust.ps1 sonda_deteccion_en_frio --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn sonda_deteccion_en_frio() {
+        use std::time::Instant;
+        let started = Instant::now();
+        let (system, start_apps, winget) = std::thread::scope(|scope| {
+            let system = scope.spawn(crate::detect::scan_installed_programs);
+            let start = scope.spawn(crate::detect::scan_start_apps);
+            let winget = scope.spawn(crate::detect::scan_winget_packages);
+            (system.join().unwrap(), start.join().unwrap(), winget.join().unwrap())
+        });
+        eprintln!("fuentes: {} ms (registro={})", started.elapsed().as_millis(), system.len());
+        let catalog = crate::store::load_catalog(&PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("apps.json"));
+        let installed = crate::store::load_installed();
+
+        // Recorrido de todas las instalaciones registradas, sin la resolución.
+        let roots = system
+            .iter()
+            .map(|app| PathBuf::from(app.install_location.trim()))
+            .filter(|root| root.is_dir())
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        let mut found = Vec::new();
+        for root in &roots {
+            collect_exes(root, &mut found);
+        }
+        eprintln!(
+            "recorrido de {} instalaciones: {} ms, {} ejecutables",
+            roots.len(),
+            started.elapsed().as_millis(),
+            found.len()
+        );
+        // Cada instalación elige igual que leyendo todas las cabeceras; la
+        // diferencia de tiempo es lo que ahorra la poda.
+        let started = Instant::now();
+        let pruned = roots.iter().map(|root| find_executable(root)).collect::<Vec<_>>();
+        let pruned_ms = started.elapsed().as_millis();
+        let started = Instant::now();
+        let full = roots.iter().map(|root| rank_every_candidate(root)).collect::<Vec<_>>();
+        eprintln!(
+            "elección con poda {pruned_ms} ms / leyendo todas las cabeceras {} ms (misma elección: {})",
+            started.elapsed().as_millis(),
+            pruned == full
+        );
+
+        for round in 1..=2 {
+            launch_cache().lock().clear();
+            let started = Instant::now();
+            let single = crate::detect::build_statuses_in_one_pass(&catalog, &installed, &system, &start_apps, &winget);
+            let single_ms = started.elapsed().as_millis();
+            launch_cache().lock().clear();
+            let started = Instant::now();
+            let sliced = crate::detect::build_statuses(&catalog, &installed, &system, &start_apps, &winget);
+            eprintln!(
+                "build_statuses en frío (ronda {round}): una pasada {single_ms} ms / por tramos {} ms, {} estados (mismo resultado: {})",
+                started.elapsed().as_millis(),
+                sliced.len(),
+                serde_json::to_value(&single).unwrap() == serde_json::to_value(&sliced).unwrap()
+            );
+        }
     }
 }

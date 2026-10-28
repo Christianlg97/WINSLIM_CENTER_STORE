@@ -1274,6 +1274,8 @@ struct UwpCandidate {
     package: StorePackage,
     identity_name: Option<String>,
     modified: Option<String>,
+    /// `PackageRank`: el orden en que la tienda prefiere sus publicaciones.
+    rank: Option<u64>,
 }
 
 /// Lee la lista de paquetes de una respuesta de `SyncUpdates`.
@@ -1351,6 +1353,7 @@ pub fn parse_package_list(xml_text: &str, product_id: &str) -> Result<Vec<StoreP
                         },
                         identity_name: identity_name.clone(),
                         modified: file.attr("Modified").map(str::to_string),
+                        rank: None,
                     },
                 );
                 break;
@@ -1400,6 +1403,10 @@ pub fn parse_package_list(xml_text: &str, product_id: &str) -> Result<Vec<StoreP
                 identity.attr("UpdateID").map(str::to_string);
             candidate.package.revision_number =
                 identity.attr("RevisionNumber").map(str::to_string);
+            candidate.rank = payload
+                .child("Properties")
+                .and_then(|node| node.attr("PackageRank"))
+                .and_then(|value| value.trim().parse().ok());
             if let Some(moniker) = moniker.as_deref() {
                 candidate.package.arch = architecture_in(moniker).to_string();
                 candidate.package.file_name = moniker.to_string();
@@ -1446,10 +1453,23 @@ fn latest_of_each(candidates: HashMap<String, UwpCandidate>) -> Vec<StorePackage
 
 /// Cuál de dos publicaciones del mismo paquete es la que hay que instalar.
 ///
-/// Manda la marca de publicación: viene en ISO-8601 y con el mismo formato, así
-/// que el orden alfabético es el cronológico y comparar el texto evita traer un
-/// analizador de fechas para una decisión de desempate.
+/// Manda `PackageRank`, el orden en que la propia tienda prefiere las
+/// publicaciones de un producto. Ni la fecha ni la versión valen por sí solas:
+/// WinAppRuntime.Singleton republica su rama 8000 después de la 8002 (por fecha
+/// ganaba la 8000.994, más antigua que la instalada), y Xbox Identity Provider
+/// conserva bundles de 2018 numerados 2017.523.613.x junto al 12.130 actual
+/// (por versión ganaba el de 2018: Windows lo omitía por tener ya uno superior
+/// y la actualización volvía a aparecer en cada comprobación).
+///
+/// Sin rango, la marca de publicación: viene en ISO-8601 y con el mismo
+/// formato, así que el orden alfabético es el cronológico y comparar el texto
+/// evita traer un analizador de fechas.
 fn is_newer(candidate: &UwpCandidate, existing: &UwpCandidate) -> bool {
+    if let (Some(candidate), Some(existing)) = (candidate.rank, existing.rank) {
+        if candidate != existing {
+            return candidate > existing;
+        }
+    }
     match (candidate.modified.as_deref(), existing.modified.as_deref()) {
         (Some(candidate), Some(existing)) if candidate != existing => candidate > existing,
         (Some(_), None) => true,
@@ -1685,16 +1705,7 @@ pub async fn download_url(package: &StorePackage, ring: &str) -> Result<String, 
         ));
     };
 
-    let body = crate::msstore_soap::DOWNLOAD_URL
-        .replace("{1}", update_id)
-        .replace("{2}", revision)
-        .replace("{3}", normalize_ring(ring));
-    let response = post_soap(
-        fe3_url(true),
-        body,
-        "obtener el enlace de descarga del paquete",
-    )
-    .await?;
+    let response = file_locations(update_id, revision, ring).await?;
     // `FileDigest` no es la huella preferida para comprobar el contenido. Es
     // el SHA-1 histórico con el que el servicio identifica cuál de los enlaces
     // devueltos pertenece a este paquete. Usar aquí el SHA-256 hace que no case
@@ -1703,16 +1714,78 @@ pub async fn download_url(package: &StorePackage, ring: &str) -> Result<String, 
     if link.is_err() {
         // Qué llegó de verdad: sin esto, la próxima vez que ocurra sólo consta
         // la huella que se pedía y no hay con qué compararla.
+        let published = digests_in(&response);
         crate::logger::debug(
             "msstore",
             format!(
                 "El servicio devolvió para {} las huellas [{}]",
                 package.file_name,
-                digests_in(&response).join(", ")
+                published.join(", ")
             ),
         );
+        // Una identidad caducada se contesta con los archivos de otra; sin
+        // ningún archivo, lo que pasa es que el de esta todavía no existe.
+        if published.is_empty() {
+            return Err(unavailable_package(package));
+        }
     }
     link
+}
+
+/// Por qué no se puede descargar un paquete que el canal anuncia.
+///
+/// Pasa mientras Microsoft publica una versión: unas consultas al servicio de
+/// entrega ya la listan y otras no, y el enlace de su archivo aún no existe.
+/// WinAppRuntime.Singleton 8002.6.4.0 llegó a ofrecerse como actualización así,
+/// y el aviso era una huella en base64 que no explicaba nada.
+fn unavailable_package(package: &StorePackage) -> String {
+    let name = package
+        .file_name
+        .split('_')
+        .next()
+        .unwrap_or(&package.file_name);
+    let what = match version_in_moniker(&package.file_name) {
+        Some(version) => format!("la versión {version} de {name}"),
+        None => name.to_string(),
+    };
+    format!(
+        "Microsoft anuncia {what}, pero su servicio de entrega todavía no ofrece el archivo. \
+         Suele pasar mientras la está publicando: no se ha cambiado nada; vuelve a intentarlo más tarde."
+    )
+}
+
+/// La respuesta del servicio de entrega con los archivos de una identidad.
+async fn file_locations(update_id: &str, revision: &str, ring: &str) -> Result<String, String> {
+    let body = crate::msstore_soap::DOWNLOAD_URL
+        .replace("{1}", update_id)
+        .replace("{2}", revision)
+        .replace("{3}", normalize_ring(ring));
+    post_soap(
+        fe3_url(true),
+        body,
+        "obtener el enlace de descarga del paquete",
+    )
+    .await
+}
+
+/// Si el servicio de entrega ofrece ya algún archivo de un paquete.
+///
+/// Ante la duda —sin identidad que preguntar o sin respuesta— se da por
+/// ofrecido: callar una actualización real es peor que anunciar una que luego
+/// diga por qué no se pudo descargar.
+async fn file_offered(package: &StorePackage, ring: &str) -> bool {
+    if !package.uri.trim().is_empty() {
+        return true;
+    }
+    let (Some(update_id), Some(revision)) =
+        (package.update_id.as_deref(), package.revision_number.as_deref())
+    else {
+        return true;
+    };
+    match file_locations(update_id, revision, ring).await {
+        Ok(response) => !digests_in(&response).is_empty(),
+        Err(_) => true,
+    }
 }
 
 /// Las huellas que el servicio sí publicó en una respuesta.
@@ -1770,10 +1843,14 @@ pub fn parse_download_url(xml_text: &str, file_digest: Option<&str>) -> Result<S
 /// Vuelve a preguntar por los paquetes del producto sin usar lo recordado.
 ///
 /// Devuelve el que ocupa el sitio de este —el del mismo nombre completo—, que
-/// es el único que cabe en la ruta que la descarga ya tiene reservada.
-async fn refreshed_package(package: &StorePackage, ring: &str) -> Option<StorePackage> {
+/// es el único que cabe en la ruta que la descarga ya tiene reservada, o
+/// `Ok(None)` si el canal ya no lo publica. `Err` si no se pudo preguntar.
+async fn refreshed_package(
+    package: &StorePackage,
+    ring: &str,
+) -> Result<Option<StorePackage>, String> {
     if ProductKind::from_product_id(&package.product_id) != Some(ProductKind::Uwp) {
-        return None;
+        return Err(format!("{} no es un paquete UWP", package.file_name));
     }
     let ring = normalize_ring(ring);
     let key = packages_key(&package.product_id, ring);
@@ -1781,11 +1858,11 @@ async fn refreshed_package(package: &StorePackage, ring: &str) -> Option<StorePa
         .lock()
         .get_or_insert_with(HashMap::new)
         .remove(&key);
-    let resolved = uwp_packages(&package.product_id, ring).await.ok()?;
+    let resolved = uwp_packages(&package.product_id, ring).await?;
     remember_packages(&key, &resolved);
-    resolved
+    Ok(resolved
         .into_iter()
-        .find(|candidate| candidate.file_name == package.file_name)
+        .find(|candidate| candidate.file_name == package.file_name))
 }
 
 /// El enlace de descarga de un paquete, rehaciendo su identidad si la que se
@@ -1810,8 +1887,12 @@ async fn download_link(
         Ok(url) => return Ok((url, None)),
         Err(error) => error,
     };
-    let Some(fresh) = refreshed_package(package, ring).await else {
-        return Err(stale);
+    let fresh = match refreshed_package(package, ring).await {
+        Ok(Some(fresh)) => fresh,
+        // La versión anunciada ya ni figura: estaba a medio publicar o se ha
+        // retirado. Ninguna de las dos se arregla reintentando ahora.
+        Ok(None) => return Err(unavailable_package(package)),
+        Err(_) => return Err(stale),
     };
     // Si el reintento también falla, lo que se cuenta es el primer error: el
     // segundo describe una identidad que el usuario nunca llegó a pedir.
@@ -2698,6 +2779,10 @@ pub async fn product_for_family(family: &str) -> Result<ProductBrief, String> {
 struct PublishedPackageVersion {
     version: String,
     is_bundle: bool,
+    /// Versión del paquete interior que Windows registra. Algunos productos
+    /// numeran el bundle con otra escala por completo; sirve de respaldo si
+    /// Get-AppxPackage no conserva la identidad exterior instalada.
+    inner_version: Option<String>,
 }
 
 fn is_bundle(package: &StorePackage) -> bool {
@@ -2709,15 +2794,17 @@ fn is_bundle(package: &StorePackage) -> bool {
 
 /// La identidad que el canal elegido publica para esta familia. En un bundle,
 /// su versión externa puede ser deliberadamente distinta de la versión del
-/// paquete de arquitectura que Windows registra y enseña al usuario.
+/// paquete de arquitectura que Windows registra y enseña al usuario. Va con el
+/// paquete que la publica.
 async fn published_package_version(
     family: &str,
     product_id: &str,
     ring: &str,
     arch: &str,
-) -> Result<Option<PublishedPackageVersion>, String> {
+) -> Result<Option<(PublishedPackageVersion, StorePackage)>, String> {
     let packages = packages(product_id, ring, arch).await?;
-    let mut newest: Option<PublishedPackageVersion> = None;
+    let mut newest: Option<(PublishedPackageVersion, StorePackage)> = None;
+    let mut newest_inner: Option<String> = None;
     for package in packages.iter().filter(|package| !package.is_dependency) {
         if family_in_moniker(&package.file_name).as_deref() != Some(family) {
             continue;
@@ -2725,32 +2812,57 @@ async fn published_package_version(
         let Some(version) = version_in_moniker(&package.file_name) else {
             continue;
         };
+        if !is_bundle(package)
+            && newest_inner.as_ref().is_none_or(|current| {
+                crate::detect::is_newer(&version, current).unwrap_or(false)
+            })
+        {
+            newest_inner = Some(version.clone());
+        }
         let replace = match newest.as_ref() {
             None => true,
-            Some(current) => {
+            Some((current, _)) => {
                 crate::detect::is_newer(&version, &current.version).unwrap_or(false)
             }
         };
         if replace {
-            newest = Some(PublishedPackageVersion {
-                version,
-                is_bundle: is_bundle(package),
-            });
+            newest = Some((
+                PublishedPackageVersion {
+                    version,
+                    is_bundle: is_bundle(package),
+                    inner_version: None,
+                },
+                package.clone(),
+            ));
         }
+    }
+    if let Some((published, _)) = newest.as_mut() {
+        published.inner_version = newest_inner;
     }
     Ok(newest)
 }
 
-fn update_available(installed: &InstalledApp, published: &PublishedPackageVersion) -> bool {
-    let comparison_version = if published.is_bundle {
-        installed
-            .bundle_version
-            .as_deref()
-            .unwrap_or(&installed.version)
+fn comparable_versions<'a>(
+    installed: &'a InstalledApp,
+    published: &'a PublishedPackageVersion,
+) -> Option<(&'a str, &'a str)> {
+    if published.is_bundle {
+        match installed.bundle_version.as_deref() {
+            Some(installed_bundle) => Some((published.version.as_str(), installed_bundle)),
+            None => published
+                .inner_version
+                .as_deref()
+                .map(|inner| (inner, installed.version.as_str())),
+        }
     } else {
-        &installed.version
-    };
-    crate::detect::is_newer(&published.version, comparison_version).unwrap_or(false)
+        Some((published.version.as_str(), installed.version.as_str()))
+    }
+}
+
+fn update_available(installed: &InstalledApp, published: &PublishedPackageVersion) -> bool {
+    comparable_versions(installed, published)
+        .and_then(|(remote, local)| crate::detect::is_newer(remote, local))
+        .unwrap_or(false)
 }
 
 /// Lo que se sabe de una aplicación instalada tras preguntar por su producto.
@@ -2843,12 +2955,46 @@ pub async fn scan_updates(
 
             match published_package_version(&family, &product_id, &ring, &arch).await {
                 Ok(published) => {
+                    if let Some((latest, current)) = installed_app
+                        .zip(published.as_ref())
+                        .and_then(|(installed, (published, _))| {
+                            comparable_versions(installed, published)
+                        })
+                    {
+                        // La tarjeta debe enseñar la misma identidad que se ha
+                        // comparado. Mezclar la versión exterior del bundle con
+                        // la interior instalada reproduce un salto inexistente.
+                        report.installed_version = current.to_string();
+                        report.latest_version = Some(latest.to_string());
+                    }
                     report.update_available = installed_app
                         .zip(published.as_ref())
-                        .is_some_and(|(installed, published)| {
+                        .is_some_and(|(installed, (published, _))| {
                             update_available(installed, published)
                         });
-                    report.latest_version = published.map(|published| published.version);
+                    // Mientras Microsoft publica una versión, unas consultas ya
+                    // la listan y su archivo todavía no existe: avisar de ella
+                    // era ofrecer una actualización que siempre fallaba. Con
+                    // el instalador oficial la descarga no pasa por aquí.
+                    if let Some((published, package)) =
+                        published.as_ref().filter(|_| report.update_available)
+                    {
+                        if !uses_official_store_installer(&product_id, &ring)
+                            && !file_offered(package, &ring).await
+                        {
+                            crate::logger::info(
+                                "msstore",
+                                format!(
+                                    "{family}: la Microsoft Store anuncia {} pero todavía no ofrece su archivo; no se avisa hasta que lo haga.",
+                                    published.version
+                                ),
+                            );
+                            report.update_available = false;
+                        }
+                    }
+                    if report.latest_version.is_none() {
+                        report.latest_version = published.map(|(published, _)| published.version);
+                    }
                 }
                 Err(error) => report.error = Some(error),
             }
@@ -3058,6 +3204,7 @@ mod tests {
             // publicación tampoco las distingue: sólo la revisión dice cuál
             // sigue teniendo archivos que descargar.
             modified: Some("2026-08-31T10:00:00Z".into()),
+            rank: None,
         };
         let publicadas: HashMap<String, UwpCandidate> = [
             ("superseded".to_string(), publicacion("superseded", "1")),
@@ -3069,6 +3216,78 @@ mod tests {
         let elegidas = latest_of_each(publicadas);
         assert_eq!(elegidas.len(), 1);
         assert_eq!(elegidas[0].update_id.as_deref(), Some("viva"));
+    }
+
+    /// Rangos, fechas y versiones tal y como los publica la tienda: en cada
+    /// producto, uno de los otros dos criterios elegía mal.
+    #[test]
+    fn entre_publicaciones_del_mismo_paquete_manda_el_rango_de_la_tienda() {
+        let elegida = |identidad: &str, arch: &str, publicadas: &[(&str, &str, u64)]| {
+            let candidatas: HashMap<String, UwpCandidate> = publicadas
+                .iter()
+                .map(|(version, modified, rank)| {
+                    let candidata = UwpCandidate {
+                        package: StorePackage {
+                            file_name: format!("{identidad}_{version}_{arch}__8wekyb3d8bbwe"),
+                            update_id: Some(version.to_string()),
+                            ..package(arch, false)
+                        },
+                        identity_name: Some(identidad.into()),
+                        modified: Some(modified.to_string()),
+                        rank: Some(*rank),
+                    };
+                    (version.to_string(), candidata)
+                })
+                .collect();
+            let elegidas = latest_of_each(candidatas);
+            assert_eq!(elegidas.len(), 1);
+            elegidas[0].update_id.clone().unwrap()
+        };
+
+        // La rama 8000 se republicó después que la 8002: por fecha ganaba la
+        // que ya es más antigua que la instalada.
+        assert_eq!(
+            elegida(
+                "MicrosoftCorporationII.WinAppRuntime.Singleton",
+                "x64",
+                &[
+                    ("8002.5.1.0", "2026-09-16T20:52:26Z", 30092),
+                    ("8000.994.2142.0", "2026-09-24T19:21:20Z", 30062),
+                ],
+            ),
+            "8002.5.1.0"
+        );
+        // Los bundles de 2018 llevan un número mayor que el actual: por
+        // versión ganaba uno que Windows se niega a instalar.
+        assert_eq!(
+            elegida(
+                "Microsoft.XboxIdentityProvider",
+                "neutral",
+                &[
+                    ("12.130.16001.0", "2025-10-16T22:45:12Z", 30025),
+                    ("2017.523.613.1070", "2018-04-07T05:49:58Z", 30013),
+                    ("2017.523.613.1000", "2018-04-07T05:49:58Z", 30003),
+                ],
+            ),
+            "12.130.16001.0"
+        );
+    }
+
+    #[test]
+    fn un_paquete_sin_archivo_publicado_se_explica_sin_huellas() {
+        let anunciado = StorePackage {
+            file_name: "MicrosoftCorporationII.WinAppRuntime.Singleton_8002.6.4.0_x64__8wekyb3d8bbwe"
+                .into(),
+            file_digest: Some("n4X57pQlCQ2VLXndBB2W5sK3qn4=".into()),
+            ..package("x64", false)
+        };
+        let aviso = unavailable_package(&anunciado);
+        assert!(aviso.contains("8002.6.4.0 de MicrosoftCorporationII.WinAppRuntime.Singleton"));
+        assert!(!aviso.contains("n4X57"));
+        // Sin ningún archivo en la respuesta no hay enlace que elegir.
+        let vacia = "<GetExtendedUpdateInfo2Response><FileLocations/></GetExtendedUpdateInfo2Response>";
+        assert!(digests_in(vacia).is_empty());
+        assert!(parse_download_url(vacia, Some("n4X57pQlCQ2VLXndBB2W5sK3qn4=")).is_err());
     }
 
     #[test]
@@ -3397,15 +3616,55 @@ Microsoft.VCLibs.140.00_14.0.33519.0_x64__8wekyb3d8bbwe"
         let same_bundle = PublishedPackageVersion {
             version: "2026.728.1707.0".into(),
             is_bundle: true,
+            inner_version: Some("1.29.290.0".into()),
         };
         let newer_bundle = PublishedPackageVersion {
             version: "2026.729.1.0".into(),
             is_bundle: true,
+            inner_version: Some("1.29.291.0".into()),
         };
 
         assert!(!update_available(&installed, &same_bundle));
         assert!(update_available(&installed, &newer_bundle));
         assert_eq!(installed.version, "1.29.290.0");
+    }
+
+    #[test]
+    fn un_bundle_sin_identidad_instalada_se_compara_con_su_paquete_interior() {
+        let installed = InstalledApp {
+            family: "Microsoft.XboxIdentityProvider_8wekyb3d8bbwe".into(),
+            full_name: "Microsoft.XboxIdentityProvider_12.130.16001.0_x64__8wekyb3d8bbwe".into(),
+            name: "Microsoft.XboxIdentityProvider".into(),
+            display_name: "Xbox Identity Provider".into(),
+            version: "12.130.16001.0".into(),
+            bundle_version: None,
+            install_location: String::new(),
+            can_uninstall: true,
+            launch_target: None,
+        };
+        let same_release = PublishedPackageVersion {
+            version: "2017.523.613.1000".into(),
+            is_bundle: true,
+            inner_version: Some("12.130.16001.0".into()),
+        };
+        let newer_release = PublishedPackageVersion {
+            version: "2018.100.1.0".into(),
+            is_bundle: true,
+            inner_version: Some("12.131.1.0".into()),
+        };
+        let incomparable_release = PublishedPackageVersion {
+            version: "2017.523.613.1000".into(),
+            is_bundle: true,
+            inner_version: None,
+        };
+
+        assert!(!update_available(&installed, &same_release));
+        assert!(update_available(&installed, &newer_release));
+        assert!(!update_available(&installed, &incomparable_release));
+        assert_eq!(
+            comparable_versions(&installed, &same_release),
+            Some(("12.130.16001.0", "12.130.16001.0"))
+        );
     }
 
     #[test]

@@ -80,9 +80,17 @@ Escribir en la barra superior pregunta a la vez al **catálogo de WinSlimCenter*
 
 Antes de actualizar o desinstalar un portable, el diálogo permite **conservar** o **eliminar** los datos de esa instalación. Conservar está seleccionado de forma predeterminada; «Actualizar todo» ofrece la misma elección para los portables de la tanda.
 
-Al conservar, WinSlimCenter guarda una copia completa en `%LOCALAPPDATA%\WinSlimCenter-Backups`, fuera de las carpetas que limpia al instalar o desinstalar. Si la copia falla, la operación se detiene. Los diálogos de finalización permiten abrir las copias. Eliminar los datos actuales no borra copias anteriores.
+Al conservar, WinSlimCenter guarda una copia completa en `WinSlimCenter-Backups`, junto a la carpeta de aplicaciones (por defecto `%LOCALAPPDATA%\WinSlimCenter-Backups`), fuera de las carpetas que limpia al instalar o desinstalar. Si la copia falla, la operación se detiene. Los diálogos de finalización permiten abrir las copias. Eliminar los datos actuales no borra copias anteriores.
 
 En las actualizaciones, las nuevas instalaciones registran los archivos originales para recuperar después los archivos personales añadidos o modificados. Para instalaciones anteriores que todavía no tienen ese registro, se recuperan automáticamente los archivos adicionales; los archivos que coinciden con los de la nueva versión quedan disponibles en la copia completa para recuperarlos manualmente. Los ejecutables y bibliotecas nuevos no se sustituyen por versiones antiguas.
+
+### ⚙️ Configuración
+
+El engranaje de la barra superior abre la configuración:
+
+- **Idioma**: español, inglés, portugués, francés, alemán, italiano, polaco, rumano, ruso, ucraniano, chino, japonés, coreano, hindi o árabe. Por defecto sigue el idioma de Windows (inglés si Windows usa otro) y el cambio se aplica al momento, sin reiniciar. Las descripciones del catálogo y las notas de versión se muestran tal como están publicadas.
+- **Carpetas**: las descargas y las aplicaciones portables o comprimidas que instala la tienda pueden vivir en otro disco. La tienda crea dentro de la carpeta elegida una subcarpeta propia (`WinSlimCenter` o `CenterApps`); lo ya instalado se queda donde está y se sigue actualizando y desinstalando allí. Los datos de la tienda (ajustes, registros, lista de instaladas) también se pueden mover: el traslado se hace al reiniciar la tienda (hay un botón «Reiniciar ahora»). Por defecto viven en `%LOCALAPPDATA%\CenterApps`. Los instaladores clásicos siguen eligiendo su propia carpeta.
+- **Acerca de**: versión, autores, licencia y comprobación manual de actualizaciones.
 
 ### 🎨 Apariencia y Personalización Premium
 - **Diseño Oscuro Minimalista**: Estética profesional basada en tarjetas con efectos de iluminación, bordes suaves y tipografía refinada.
@@ -250,6 +258,8 @@ WINSLIM_CENTER_STORE/
 ├── src/                        # Código fuente del Frontend
 │   ├── assets/                 # Logotipos e imágenes del proyecto
 │   ├── index.html              # Estructura principal de la interfaz
+│   ├── i18n.js                 # Traducción de la interfaz al idioma elegido
+│   ├── locales/                # Un diccionario por idioma (claves en español)
 │   ├── main.js                 # Lógica interactiva del cliente
 │   └── styles.css              # Sistema de diseño CSS y tokens
 ├── src-tauri/                  # Backend en Rust (Tauri 2)

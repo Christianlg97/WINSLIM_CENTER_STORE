@@ -1,6 +1,6 @@
 [package]
 name = "center-app"
-version = "2.4.1"
+version = "2.4.3"
 description = "WinSlimCenter"
 authors = ["you"]
 edition = "2021"
@@ -42,6 +42,9 @@ parking_lot = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 winreg = "0.55"
+# El selector de carpetas del Explorador (IFileOpenDialog) para los ajustes.
+# Es la misma versión que ya trae Tauri: no añade ningún paquete a la compilación.
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell", "Win32_UI_Shell_Common"] }
 
 [profile.release]
 lto = "thin"

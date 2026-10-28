@@ -1,5 +1,43 @@
+import {
+  LANGUAGES,
+  cachedLanguagePreference,
+  currentLanguage,
+  languagePreference,
+  setLanguagePreference,
+  systemLanguage,
+  translate,
+} from "./i18n.js";
+
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
+
+// La última elección se aplica antes del primer dibujo, para que ni la pantalla
+// de arranque salga en otro idioma: el script de index.html espera a esta
+// promesa (con tope) antes de enseñar la ventana. settings.json la confirma al
+// llegar.
+window.__i18nReady ||= setLanguagePreference(cachedLanguagePreference());
+
+/** Fechas y horas con el formato del idioma de la interfaz. */
+function uiLocale() {
+  return currentLanguage();
+}
+
+/**
+ * El idioma guardado en settings.json manda sobre la copia del navegador. Se
+ * llama antes de dibujar con los ajustes recién llegados; si el diccionario
+ * llega después del dibujo, lo ya pintado se traduce solo y lo que se formatea
+ * al dibujar (las fechas) se vuelve a pintar.
+ */
+function syncLanguageWithSettings() {
+  const saved = state.settings?.language || null;
+  if (saved === languagePreference()) return;
+  void setLanguagePreference(saved).then((changed) => {
+    if (changed) {
+      renderSidebar();
+      renderContent();
+    }
+  });
+}
 
 const NAV = [
   { id: "home", label: "Inicio", icon: "🏠", filter: null },
@@ -423,6 +461,49 @@ function clientLog(level, event, details = "") {
   return invoke("write_log", { level, event, details: text }).catch(() => {});
 }
 
+// Las consultas de solo lectura con la misma identidad comparten la promesa
+// mientras están en curso. No se conserva el resultado: al terminar, una
+// petición posterior vuelve a comprobar el origen y mantiene la frescura.
+const sharedInvokeRequests = new Map();
+
+function invokeShared(command, args = {}, identity = null) {
+  const key = `${command}|${identity ?? JSON.stringify(args)}`;
+  const running = sharedInvokeRequests.get(key);
+  if (running) return running;
+  let invoked;
+  try {
+    invoked = invoke(command, args);
+  } catch (error) {
+    return Promise.reject(error);
+  }
+  const request = Promise.resolve(invoked).finally(() => {
+    if (sharedInvokeRequests.get(key) === request) sharedInvokeRequests.delete(key);
+  });
+  sharedInvokeRequests.set(key, request);
+  return request;
+}
+
+// Un solo resumen después del primer pintado deja cifras comparables en el
+// registro sin añadir escrituras a cada render. La muestra completa queda en
+// memoria para inspeccionarla desde las herramientas de WebView2.
+function reportFrontendMetrics() {
+  const names = new Set(["renderContentNow", "replaceContent", "traduccion", "primer-pintado"]);
+  const summary = {};
+  for (const metric of window.__frontendMetrics || []) {
+    if (!names.has(metric.name)) continue;
+    const current = summary[metric.name] || { muestras: 0, ultima_ms: 0, maxima_ms: 0 };
+    current.muestras += 1;
+    current.ultima_ms = Math.round(metric.duration * 10) / 10;
+    current.maxima_ms = Math.max(current.maxima_ms, current.ultima_ms);
+    summary[metric.name] = current;
+  }
+  window.__winslimFrontendMetrics = () => (window.__frontendMetrics || []).map((metric) => ({ ...metric }));
+  void clientLog("debug", "frontend-metrics", {
+    mensaje: "Tiempos internos del frontend; no afectan a la interfaz",
+    ...summary,
+  });
+}
+
 window.addEventListener("error", (event) => {
   clientLog("error", "javascript-error", {
     message: event.message,
@@ -806,7 +887,7 @@ function updateAllButtonHtml() {
 function lastScanLabel() {
   if (state.scanningUpdates) return "Consultando WinGet y la Microsoft Store...";
   if (!state.lastUpdateScan) return "Todas las apps vigentes";
-  const time = state.lastUpdateScan.toLocaleTimeString("es-ES", {
+  const time = state.lastUpdateScan.toLocaleTimeString(uiLocale(), {
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -1176,7 +1257,7 @@ function cardMetaHtml(app) {
           ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
           : "";
   return `
-    <strong>${escapeHtml(app.name)}${origin}</strong>
+    <strong><bdi>${escapeHtml(app.name)}</bdi>${origin}</strong>
     <small>${escapeHtml(app.author || "—")}  ·  ${escapeHtml(versionLabel(version))}</small>
     ${updateVersionBadge(st)}`;
 }
@@ -1198,7 +1279,7 @@ function cardHtml(app, index, prioritizeIcon = false) {
           ${cardMetaHtml(app)}
         </div>
       </div>
-      <p class="card-desc">${escapeHtml(app.description || "")}</p>
+      <p class="card-desc" translate="no">${escapeHtml(app.description || "")}</p>
       <div class="card-actions">${actionButtons(app, "card")}</div>
     </article>`;
 }
@@ -1323,10 +1404,13 @@ function syncCardSelection(card, app) {
 
 function refreshSelectionUi() {
   pruneSelection();
-  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
-    const app = findApp(card.dataset.appId);
-    if (app) syncCardSelection(card, app);
-  });
+  const content = document.getElementById("content");
+  if (content) {
+    for (const [appId, cards] of indexedContent(content).cardsByAppId) {
+      const app = findApp(appId);
+      if (app) for (const card of cards) syncCardSelection(card, app);
+    }
+  }
   renderQueueDock();
 }
 
@@ -1446,7 +1530,7 @@ function queueReviewHtml(items) {
           <span class="queue-review-index">${index + 1}</span>
           <span class="card-avatar queue-review-avatar" style="background:${avatarBackground(item.app, accent)}">${renderAvatar(item.app, (item.name || "?")[0].toUpperCase(), index < 8)}</span>
           <span class="queue-review-copy">
-            <strong>${escapeHtml(item.name)}</strong>
+            <strong><bdi>${escapeHtml(item.name)}</bdi></strong>
             ${meta ? `<small>${escapeHtml(meta)}</small>` : ""}
           </span>
         </li>`;
@@ -1495,7 +1579,11 @@ async function installSelection() {
 
   try {
     await Promise.all(items.map(async (item) => {
-      item.portableInfo = await invoke("portable_data_info", { appId: item.appId, forUpdate: true });
+      item.portableInfo = await invokeShared(
+        "portable_data_info",
+        { appId: item.appId, forUpdate: true },
+        `${item.appId}|actualizacion`,
+      );
     }));
   } catch (error) {
     showAlertModal("No se pudieron comprobar los datos", String(error));
@@ -1741,7 +1829,7 @@ async function ensureMsStoreInstalled({ force = false } = {}) {
   const store = state.msstore;
   if (store.installedLoaded && !force) return store.installed;
   try {
-    store.installed = (await invoke("msstore_installed")) || [];
+    store.installed = (await invokeShared("msstore_installed", {}, "equipo")) || [];
     store.installedLoaded = true;
   } catch (error) {
     void clientLog("warn", "msstore-installed", String(error?.stack || error));
@@ -1839,7 +1927,7 @@ async function ensureMsStoreOptions() {
   const store = state.msstore;
   if (store.options) return store.options;
   try {
-    store.options = await invoke("msstore_options");
+    store.options = await invokeShared("msstore_options", {}, "canales");
     if (!store.ring) store.ring = store.options.default_ring;
   } catch (error) {
     // Sin los canales la sección sigue siendo utilizable: el backend aplica el
@@ -1886,7 +1974,7 @@ function msStoreDate(raw) {
   if (!raw) return "";
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return "";
-  return date.toLocaleDateString("es-ES", { year: "numeric", month: "short", day: "numeric" });
+  return date.toLocaleDateString(uiLocale(), { year: "numeric", month: "short", day: "numeric" });
 }
 
 function msStoreSearchHtml() {
@@ -2056,14 +2144,14 @@ function msStoreCardHtml(product, index) {
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
         <div>
-          <strong>${escapeHtml(product.title || product.product_id)}
+          <strong><bdi>${escapeHtml(product.title || product.product_id)}</bdi>
             ${tags}
           </strong>
           <small>${meta}</small>
           ${installed ? msStoreVersionBadge(installed) : ""}
         </div>
       </div>
-      <p class="card-desc">${escapeHtml(product.description || "")}</p>
+      <p class="card-desc" translate="no">${escapeHtml(product.description || "")}</p>
       <div class="card-actions">${actions}</div>
     </article>`;
 }
@@ -2087,14 +2175,14 @@ function msStoreInstalledCardHtml(app, index) {
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
         <div>
-          <strong>${escapeHtml(shape.name)}
+          <strong><bdi>${escapeHtml(shape.name)}</bdi>
             ${msStoreOriginTag(app)}
           </strong>
           <small>Microsoft Store  ·  ${escapeHtml(versionLabel(app.version, "versión desconocida"))}</small>
           ${msStoreVersionBadge(app)}
         </div>
       </div>
-      <p class="card-desc">${escapeHtml(app.name)}</p>
+      <p class="card-desc" translate="no">${escapeHtml(app.name)}</p>
       <div class="card-actions">${msStoreInstalledActions(app)}</div>
     </article>`;
 }
@@ -2195,7 +2283,7 @@ async function runInlineMsStoreSearch(query) {
   renderContent();
   void clientLog("info", "msstore", `Búsqueda desde la barra: ${query}`);
   try {
-    const response = await invoke("msstore_search", { query });
+    const response = await invokeShared("msstore_search", { query }, query);
     // Mientras se preguntaba se ha seguido escribiendo: esta respuesta ya no
     // es la de lo que hay en la caja, y pintarla sería mentir sobre qué se
     // buscó.
@@ -2393,7 +2481,7 @@ async function runInlineRepoSearch(repoId, query) {
   renderContent();
   void clientLog("info", repoId, `Búsqueda desde la barra: ${query}`);
   try {
-    const results = await invoke(repo.command, { query });
+    const results = await invokeShared(repo.command, { query }, query);
     // Mientras se preguntaba se ha seguido escribiendo: pintar esto ahora sería
     // mentir sobre qué se buscó.
     if (inline.requested !== query) return;
@@ -2540,7 +2628,7 @@ function repoCardHtml(repoId, pkg, index) {
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, false)}</div>
         <div>
           ${installedApp ? cardMetaHtml(installedApp) : `
-            <strong>${escapeHtml(pkg.name)}
+            <strong><bdi>${escapeHtml(pkg.name)}</bdi>
               <span class="origin-tag repo-tag">${escapeHtml(repo.label)}</span>
               ${pkg.warning ? `<span class="origin-tag repo-warning-tag">${escapeHtml(pkg.warning)}</span>` : ""}
             </strong>
@@ -2548,7 +2636,7 @@ function repoCardHtml(repoId, pkg, index) {
           <small class="repo-package-id">${escapeHtml(pkg.key)}</small>
         </div>
       </div>
-      <p class="card-desc">${escapeHtml(pkg.description || "")}</p>
+      <p class="card-desc" translate="no">${escapeHtml(pkg.description || "")}</p>
       <div class="card-actions">${actions}</div>
     </article>`;
 }
@@ -2808,7 +2896,7 @@ async function runMsStoreSearch() {
   void clientLog("info", "msstore", `Búsqueda en la Microsoft Store: ${query}`);
 
   try {
-    const response = await invoke("msstore_search", { query });
+    const response = await invokeShared("msstore_search", { query }, query);
     const products = Array.isArray(response?.products) ? response.products : [];
     store.results = products;
     if (products.length) void ensureMsStoreInstalled().then(() => renderContent());
@@ -3031,9 +3119,11 @@ async function msStoreResolveProduct(productId) {
   const known = msStoreProductById(id);
   if (known) return known;
   try {
-    const response = await invoke("msstore_search", { query: id });
+    const response = await invokeShared("msstore_search", { query: id }, id);
     const product = (response?.products || [])[0];
-    if (product) state.msstore.results = [...state.msstore.results, product];
+    if (product && !msStoreProductById(product.product_id)) {
+      state.msstore.results = [...state.msstore.results, product];
+    }
     return product || null;
   } catch (error) {
     void clientLog("warn", "msstore", `No se pudo abrir la ficha de ${id}: ${error}`);
@@ -3067,7 +3157,7 @@ async function openMsStoreModal(productId) {
           ${renderAvatar(shape, letter, true)}
         </div>
         <div class="app-detail-heading">
-          <h2 class="confirm-dialog-title app-detail-title">${escapeHtml(product.title || id)}</h2>
+          <h2 class="confirm-dialog-title app-detail-title" translate="no"><bdi>${escapeHtml(product.title || id)}</bdi></h2>
           ${appDetailMetaHtml([`Por ${product.publisher || "Microsoft Store"}`, "Gratis", kind])}
           <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
           ${
@@ -3143,7 +3233,7 @@ async function openMsStoreModal(productId) {
   let details = state.msstore.details[id];
   if (!details) {
     try {
-      details = await invoke("msstore_details", { productId: id });
+      details = await invokeShared("msstore_details", { productId: id }, id);
       state.msstore.details[id] = details;
     } catch (error) {
       void clientLog("warn", "msstore", `Ficha no disponible para ${id}: ${error}`);
@@ -3427,6 +3517,52 @@ let lastEntranceScope = null;
 // Lo que entra con `fadeUp` al aparecer en la lista.
 const ENTERING_BLOCKS = ".section, .hero, .empty-updates-card";
 
+// Índice de los nodos que ya están pintados. Inicio contiene una misma
+// aplicación en «Destacados» y en su categoría, por eso cada id apunta a un
+// conjunto y no a una única tarjeta. Se reconstruye una vez cuando cambia la
+// estructura; las actualizaciones de estado consultan sólo los ids afectados.
+const contentDomIndex = {
+  root: null,
+  blocks: [],
+  cards: [],
+  cardsByBlock: new WeakMap(),
+  cardsByAppId: new Map(),
+  icons: [],
+};
+
+function rebuildContentDomIndex(content) {
+  contentDomIndex.root = content;
+  contentDomIndex.blocks = [...content.querySelectorAll(ENTERING_BLOCKS)];
+  contentDomIndex.cards = [...content.querySelectorAll(".app-card")];
+  contentDomIndex.cardsByBlock = new WeakMap();
+  contentDomIndex.cardsByAppId = new Map();
+  contentDomIndex.icons = [...content.querySelectorAll("img[data-icon-candidates]")];
+
+  for (const block of contentDomIndex.blocks) contentDomIndex.cardsByBlock.set(block, []);
+  for (const card of contentDomIndex.cards) {
+    const block = card.closest(ENTERING_BLOCKS);
+    if (block) contentDomIndex.cardsByBlock.get(block)?.push(card);
+    const appId = card.dataset.appId;
+    if (!appId) continue;
+    if (!contentDomIndex.cardsByAppId.has(appId)) contentDomIndex.cardsByAppId.set(appId, new Set());
+    contentDomIndex.cardsByAppId.get(appId).add(card);
+  }
+  return contentDomIndex;
+}
+
+function indexedContent(content) {
+  return contentDomIndex.root === content ? contentDomIndex : rebuildContentDomIndex(content);
+}
+
+function indexedAppCards(appIds) {
+  const content = document.getElementById("content");
+  if (!content) return [];
+  const index = indexedContent(content);
+  const cards = [];
+  for (const id of appIds || []) cards.push(...(index.cardsByAppId.get(id) || []));
+  return cards;
+}
+
 function enteringBlockKey(block) {
   const classes = [...block.classList].filter((name) => name !== "is-settled").join(".");
   return `${classes}|${block.querySelector(".section-head h3")?.textContent.trim() || ""}`;
@@ -3446,6 +3582,7 @@ function paintedIconKey(img) {
 /// que lleva ya de su entrada si aún no ha terminado (null si ya terminó) y los
 /// iconos ya pintados.
 function contentOnScreen(content) {
+  const index = indexedContent(content);
   const entering = new Map();
   for (const animation of content.getAnimations({ subtree: true })) {
     if (animation.animationName === "fadeUp" && animation.playState === "running") {
@@ -3453,15 +3590,16 @@ function contentOnScreen(content) {
     }
   }
   const blocks = new Map();
-  for (const block of content.querySelectorAll(ENTERING_BLOCKS)) {
+  for (const block of index.blocks) {
     const cards = new Map();
-    for (const card of block.querySelectorAll(".app-card")) {
+    for (const card of index.cardsByBlock.get(block) || []) {
       cards.set(enteringCardKey(card), entering.get(card) ?? null);
     }
     blocks.set(enteringBlockKey(block), { elapsed: entering.get(block) ?? null, cards });
   }
   const icons = new Map();
-  for (const img of content.querySelectorAll("img.is-loaded[data-icon-candidates]")) {
+  for (const img of index.icons) {
+    if (!img.classList.contains("is-loaded")) continue;
     const key = paintedIconKey(img);
     if (!icons.has(key)) icons.set(key, []);
     icons.get(key).push(img);
@@ -3480,31 +3618,46 @@ function contentOnScreen(content) {
 /// redibujado sigue desde donde iba, en vez de saltar al final. Al cambiar de
 /// sección todo entra como siempre.
 function replaceContent(content, html, scrollTop) {
+  const metricStartedAt = performance.now();
+  try {
+    return replaceContentNow(content, html, scrollTop);
+  } finally {
+    window.__recordFrontendMetric?.("replaceContent", metricStartedAt, {
+      seccion: state.section,
+      tarjetas: contentDomIndex.root === content ? contentDomIndex.cards.length : 0,
+    });
+  }
+}
+
+function replaceContentNow(content, html, scrollTop) {
   const scope = `${state.section}|${state.consoleFilter}`;
   const before = scope === lastEntranceScope ? contentOnScreen(content) : null;
   lastEntranceScope = scope;
   content.innerHTML = html;
+  const index = rebuildContentDomIndex(content);
   if (before) {
     const resume = (element, elapsed) => {
       element.style.animationDelay = `-${Math.round(elapsed)}ms`;
     };
-    for (const block of content.querySelectorAll(ENTERING_BLOCKS)) {
+    for (const block of index.blocks) {
       const shown = before.blocks.get(enteringBlockKey(block));
       if (!shown) continue;
       if (shown.elapsed === null) block.classList.add("is-settled");
       else resume(block, shown.elapsed);
-      for (const card of block.querySelectorAll(".app-card")) {
+      for (const card of index.cardsByBlock.get(block) || []) {
         const key = enteringCardKey(card);
         if (shown.cards.get(key) === null) continue;
         card.classList.add("is-entering");
         if (shown.cards.has(key)) resume(card, shown.cards.get(key));
       }
     }
-    for (const img of content.querySelectorAll("img[data-icon-candidates]")) {
+    for (let iconIndex = 0; iconIndex < index.icons.length; iconIndex += 1) {
+      const img = index.icons[iconIndex];
       const painted = before.icons.get(paintedIconKey(img))?.pop();
       if (!painted) continue;
       img.replaceWith(painted);
       painted.parentElement?.classList.add("has-loaded-icon");
+      index.icons[iconIndex] = painted;
     }
   }
   content.scrollTop = scrollTop;
@@ -3519,11 +3672,12 @@ function replaceContent(content, html, scrollTop) {
 /// todo a la vez era lo que hacía tosco el final de la entrada al volver a él.
 /// Lo que ya iba entrando (con su retraso negativo) sigue a lo suyo.
 function skipHiddenEntrances(content) {
+  const index = indexedContent(content);
   const candidates = [
-    ...[...content.querySelectorAll(ENTERING_BLOCKS)].filter(
+    ...index.blocks.filter(
       (block) => !block.classList.contains("is-settled"),
     ),
-    ...content.querySelectorAll(".app-card.is-entering"),
+    ...index.cards.filter((card) => card.classList.contains("is-entering")),
   ].filter((element) => !element.style.animationDelay);
   if (!candidates.length) return;
   // Todo se mide antes de tocar nada: una sola maquetación.
@@ -3547,6 +3701,17 @@ function renderContent() {
 }
 
 function renderContentNow() {
+  const metricStartedAt = performance.now();
+  try {
+    return renderContentView();
+  } finally {
+    window.__recordFrontendMetric?.("renderContentNow", metricStartedAt, {
+      seccion: state.section,
+    });
+  }
+}
+
+function renderContentView() {
   // La Microsoft Store no se dibuja a partir del catálogo: no hay lista que
   // filtrar ni recuento de aplicaciones que dar.
   if (state.section === MSSTORE_SECTION) {
@@ -3705,32 +3870,30 @@ function renderContentNow() {
 function updateVisibleAppActions(appIds) {
   const wanted = appIds instanceof Set ? appIds : new Set(appIds || []);
   if (!wanted.size) return;
-  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
+  for (const card of indexedAppCards(wanted)) {
     const id = card.dataset.appId;
-    if (!wanted.has(id)) return;
     const app = findApp(id);
     const actions = card.querySelector(".card-actions");
     if (app && actions) actions.innerHTML = actionButtons(app, "card");
     // Lo que acaba de ponerse en marcha deja de poder elegirse, y al revés.
     if (app) syncCardSelection(card, app);
-  });
+  }
   if (state.selection.size) renderQueueDock();
 }
 
 function updateVisibleAppStatuses(appIds) {
   const wanted = appIds instanceof Set ? appIds : new Set(appIds || []);
   if (!wanted.size) return;
-  document.querySelectorAll("#content .app-card[data-app-id]").forEach((card) => {
+  for (const card of indexedAppCards(wanted)) {
     const id = card.dataset.appId;
-    if (!wanted.has(id)) return;
     const app = findApp(id);
-    if (!app) return;
+    if (!app) continue;
     const meta = card.querySelector(".card-top > div:last-child");
     const actions = card.querySelector(".card-actions");
     if (meta) meta.innerHTML = cardMetaHtml(app);
     if (actions) actions.innerHTML = actionButtons(app, "card");
     syncCardSelection(card, app);
-  });
+  }
   if (state.selection.size) renderQueueDock();
 }
 
@@ -4005,7 +4168,7 @@ function appDescriptionHtml(text) {
   return `
     <section class="app-description">
       <h3 class="app-description-label">Descripción</h3>
-      <div class="app-description-text">
+      <div class="app-description-text" translate="no">
         ${paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("")}
       </div>
     </section>`;
@@ -4082,7 +4245,7 @@ function openAppModal(id) {
           ${avatar}
         </div>
         <div class="app-detail-heading">
-          <h2 class="confirm-dialog-title app-detail-title">${escapeHtml(app.name)}</h2>
+          <h2 class="confirm-dialog-title app-detail-title" translate="no"><bdi>${escapeHtml(app.name)}</bdi></h2>
           ${appDetailMetaHtml([`Por ${app.author || "—"}`, versionLabel(version), app.category])}
           ${installedBanner ? `<div>${installedBanner}</div>` : ""}
         </div>
@@ -4298,7 +4461,11 @@ async function installApp(id, isUpdate = false, { chooseBrowser = false } = {}) 
   // replace a non-empty folder without this choice, whatever the status says.
   let portableInfo = null;
   try {
-    portableInfo = await invoke("portable_data_info", { appId: id, forUpdate: true });
+    portableInfo = await invokeShared(
+      "portable_data_info",
+      { appId: id, forUpdate: true },
+      `${id}|actualizacion`,
+    );
   } catch (error) {
     showAlertModal("No se pudieron comprobar los datos", String(error));
     return;
@@ -4485,7 +4652,7 @@ async function uninstallApp(id) {
   let uninstallBlocker;
   try {
     [uninstallBlocker, portableInfo] = await Promise.all([
-      blockingRunningApp(id), invoke("portable_data_info", { appId: id }),
+      blockingRunningApp(id), invokeShared("portable_data_info", { appId: id }, `${id}|instalada`),
     ]);
   } catch (error) {
     showAlertModal("No se pudieron comprobar los datos", String(error));
@@ -4727,6 +4894,7 @@ function closeModal() {
   closeShotViewer();
   document.getElementById("modal-backdrop").classList.add("hidden");
   document.getElementById("modal").innerHTML = "";
+  document.getElementById("btn-settings")?.setAttribute("aria-expanded", "false");
   modalLocked = false;
   if (modalReturnFocus instanceof HTMLElement) modalReturnFocus.focus();
   modalReturnFocus = null;
@@ -4750,8 +4918,13 @@ function openModal(html, wide = false, locked = false, presentation = "") {
   modal.classList.toggle("wide", wide);
   // El foco fuerza una maquetación: preparar el tamaño y la decoración antes
   // de mostrar evita un fotograma intermedio del diálogo genérico.
-  modal.classList.toggle("modal-hero", presentation === "hero" || presentation === "about");
+  modal.classList.toggle("modal-hero", ["hero", "about", "settings"].includes(presentation));
   modal.classList.toggle("modal-about", presentation === "about");
+  modal.classList.toggle("modal-settings", presentation === "settings");
+  // «Acerca de» se abre desde la configuración: el engranaje sigue activo.
+  document
+    .getElementById("btn-settings")
+    ?.setAttribute("aria-expanded", String(presentation === "settings" || presentation === "about"));
   modal.innerHTML = html;
   const heading = modal.querySelector("h2");
   if (heading) {
@@ -5099,7 +5272,11 @@ async function updateEverything() {
 
   try {
     await Promise.all(items.filter((item) => item.kind === "catalog").map(async (item) => {
-      item.portableInfo = await invoke("portable_data_info", { appId: item.appId, forUpdate: true });
+      item.portableInfo = await invokeShared(
+        "portable_data_info",
+        { appId: item.appId, forUpdate: true },
+        `${item.appId}|actualizacion`,
+      );
     }));
   } catch (error) {
     showAlertModal("No se pudieron comprobar los datos", String(error));
@@ -5385,7 +5562,7 @@ function bulkRowHtml(item, index) {
       </div>
       <div class="bulk-row-body">
         <div class="bulk-row-head">
-          <strong>${escapeHtml(item.name)}</strong>
+          <strong><bdi>${escapeHtml(item.name)}</bdi></strong>
           ${versions}
           <span class="bulk-row-state" data-role="state">${escapeHtml(BULK_STATE_LABELS.pending)}</span>
         </div>
@@ -6103,6 +6280,14 @@ async function finishStartupInBackground() {
     void checkStoreUpdate();
     return;
   }
+  if (state.settings?.check_updates_on_startup === false) {
+    setLoadingLine(false);
+    setTransientStatus("Aplicaciones del equipo comprobadas.", "var(--green)", 4000);
+    // La propia tienda conserva su aviso de seguridad; esta preferencia solo
+    // evita consultar todos los orígenes de las aplicaciones instaladas.
+    void checkStoreUpdate();
+    return;
+  }
   // Las actualizaciones van después, porque dependen de lo instalado, y ya sin
   // ninguna ficha esperando: la sección y su cifra lo dicen mientras tanto.
   state.scanningUpdates = true;
@@ -6177,6 +6362,7 @@ async function reconcileRuntimeFromBootstrap({ includeCatalog = false, includeSe
   replaceTasks(data.tasks || []);
   if (includeSettings) {
     state.settings = data.settings || state.settings;
+    syncLanguageWithSettings();
     applyTheme(state.settings.theme, state.settings.accent);
   }
   renderAppVersion();
@@ -6240,6 +6426,480 @@ async function startStoreUpdate() {
   } finally {
     storeUpdateRunning = false;
     setProgress(0);
+  }
+}
+
+// La configuración: idioma de la interfaz, carpetas de la tienda y, al pie,
+// «Acerca de», que vive aquí desde que el engranaje ocupó su sitio en la barra.
+// Descargas y aplicaciones cambian al momento; los datos propios de la tienda
+// (ajustes, registros) se trasladan al reiniciar, porque mientras corre los
+// tiene abiertos.
+const STORAGE_LOCATIONS = [
+  {
+    kind: "downloads",
+    label: "Descargas",
+    hint: "Paquetes e instaladores que descarga la tienda. Se vacía al iniciar.",
+    picker: "Elige la carpeta de descargas",
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>`,
+  },
+  {
+    kind: "apps",
+    label: "Aplicaciones",
+    hint: "Programas portables y comprimidos que instala la tienda. Los instaladores clásicos eligen su propia carpeta.",
+    picker: "Elige la carpeta de aplicaciones",
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.5"/>
+      <rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/>
+      <rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>`,
+  },
+  {
+    kind: "data",
+    label: "Datos de la tienda",
+    hint: "Ajustes, registros y lista de instaladas. El traslado se aplica al reiniciar la tienda.",
+    picker: "Elige la carpeta de datos de la tienda",
+    icon: `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+      stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/>
+      <path d="M4 5v14c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/><path d="M4 12c0 1.66 3.58 3 8 3s8-1.34 8-3"/></svg>`,
+  },
+];
+
+// Lo último que contestó el backend sobre las carpetas.
+let settingsLocations = null;
+let storageChangeRunning = false;
+
+// El mismo engranaje del botón de la barra, para que la cabecera del diálogo
+// no sea una segunda copia del dibujo.
+function settingsGlyph(size) {
+  const glyph = document.querySelector("#btn-settings svg")?.cloneNode(true);
+  if (!glyph) return "";
+  glyph.setAttribute("width", size);
+  glyph.setAttribute("height", size);
+  return glyph.outerHTML;
+}
+
+/** Cómo se llama un idioma en el de la interfaz («Inglés»); vacío si es el suyo. */
+function localizedLanguageName(code, nativeName) {
+  try {
+    const name = new Intl.DisplayNames([currentLanguage()], { type: "language" }).of(code) || "";
+    const shown = name.charAt(0).toLocaleUpperCase(uiLocale()) + name.slice(1);
+    return shown.toLocaleLowerCase() === nativeName.toLocaleLowerCase() ? "" : shown;
+  } catch {
+    return "";
+  }
+}
+
+// Dibujamos las banderas como SVG en vez de usar emoji: Windows no representa
+// de forma consistente los emoji de banderas y puede volver a mostrar letras.
+function languageFlag(code) {
+  const shapes = {
+    es: '<path fill="#AA151B" d="M0 0h24v16H0z"/><path fill="#F1BF00" d="M0 4h24v8H0z"/>',
+    en: '<path fill="#012169" d="M0 0h24v16H0z"/><path stroke="#fff" stroke-width="3" d="m0 0 24 16M24 0 0 16"/><path stroke="#C8102E" stroke-width="1.4" d="m0 0 24 16M24 0 0 16"/><path fill="#fff" d="M10 0h4v16h-4zM0 6h24v4H0z"/><path fill="#C8102E" d="M11 0h2v16h-2zM0 7h24v2H0z"/>',
+    pt: '<path fill="#046A38" d="M0 0h9v16H0z"/><path fill="#DA291C" d="M9 0h15v16H9z"/><circle cx="9" cy="8" r="3" fill="#FFCD00"/>',
+    fr: '<path fill="#0055A4" d="M0 0h8v16H0z"/><path fill="#fff" d="M8 0h8v16H8z"/><path fill="#EF4135" d="M16 0h8v16h-8z"/>',
+    de: '<path fill="#000" d="M0 0h24v5.34H0z"/><path fill="#DD0000" d="M0 5.33h24v5.34H0z"/><path fill="#FFCE00" d="M0 10.66h24V16H0z"/>',
+    it: '<path fill="#009246" d="M0 0h8v16H0z"/><path fill="#fff" d="M8 0h8v16H8z"/><path fill="#CE2B37" d="M16 0h8v16h-8z"/>',
+    pl: '<path fill="#fff" d="M0 0h24v8H0z"/><path fill="#DC143C" d="M0 8h24v8H0z"/>',
+    ro: '<path fill="#002B7F" d="M0 0h8v16H0z"/><path fill="#FCD116" d="M8 0h8v16H8z"/><path fill="#CE1126" d="M16 0h8v16h-8z"/>',
+    ru: '<path fill="#fff" d="M0 0h24v5.34H0z"/><path fill="#0039A6" d="M0 5.33h24v5.34H0z"/><path fill="#D52B1E" d="M0 10.66h24V16H0z"/>',
+    uk: '<path fill="#0057B7" d="M0 0h24v8H0z"/><path fill="#FFD700" d="M0 8h24v8H0z"/>',
+    zh: '<path fill="#DE2910" d="M0 0h24v16H0z"/><path fill="#FFDE00" d="m4 2 .7 2.1h2.2L5.1 5.4l.7 2.1L4 6.2 2.2 7.5l.7-2.1-1.8-1.3h2.2z"/>',
+    ja: '<path fill="#fff" d="M0 0h24v16H0z"/><circle cx="12" cy="8" r="4" fill="#BC002D"/>',
+    ko: '<path fill="#fff" d="M0 0h24v16H0z"/><path fill="#CD2E3A" d="M8.5 8a3.5 3.5 0 0 1 7 0 1.75 1.75 0 0 0-3.5 0 1.75 1.75 0 0 1-3.5 0z"/><path fill="#0047A0" d="M15.5 8a3.5 3.5 0 0 1-7 0 1.75 1.75 0 0 0 3.5 0 1.75 1.75 0 0 1 3.5 0z"/>',
+    hi: '<path fill="#FF9933" d="M0 0h24v5.34H0z"/><path fill="#fff" d="M0 5.33h24v5.34H0z"/><path fill="#138808" d="M0 10.66h24V16H0z"/><circle cx="12" cy="8" r="1.8" fill="none" stroke="#000080" stroke-width=".6"/>',
+    ar: '<path fill="#006C35" d="M0 0h24v16H0z"/><path fill="#fff" d="M6 7.2h12v1.2H6zM8 10.5h10v.8H8z"/>',
+  };
+  // La bandera es la superficie completa de la insignia: `slice` conserva sus
+  // proporciones y recorta los laterales en vez de dejar un marco vacío.
+  return `<svg class="settings-language-flag" viewBox="0 0 24 16" preserveAspectRatio="xMidYMid slice" aria-hidden="true">${shapes[code] || ""}</svg>`;
+}
+
+function settingsLanguagesHtml() {
+  const selected = languagePreference() || "system";
+  const detected = LANGUAGES.find((language) => language.code === systemLanguage());
+  const tile = ({ value, badge, name, detail, title = "" }) => `
+    <label class="settings-language"${title ? ` title="${escapeHtml(title)}"` : ""}>
+      <input type="radio" name="settings-language" value="${value}"${value === selected ? " checked" : ""} />
+      <span class="settings-language-code" aria-hidden="true">${badge}</span>
+      <span class="settings-language-text">
+        <strong${value === "system" ? "" : ' translate="no"'}>${escapeHtml(name)}</strong>
+        ${detail ? `<small translate="no">${escapeHtml(detail)}</small>` : ""}
+      </span>
+    </label>`;
+  return [
+    tile({
+      value: "system",
+      badge: `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+        stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/>
+        <path d="M8 20h8"/><path d="M12 16v4"/></svg>`,
+      name: "Automático",
+      detail: detected?.name || "",
+      title: "Usa el idioma de Windows",
+    }),
+    ...LANGUAGES.map((language) =>
+      tile({
+        value: language.code,
+        badge: languageFlag(language.code),
+        name: language.name,
+        detail: localizedLanguageName(language.code, language.name),
+      }),
+    ),
+  ].join("");
+}
+
+function settingsLocationHtml({ kind, label, hint, icon }, info = {}) {
+  const custom = Boolean(info.configured);
+  // Solo los datos tienen traslado pendiente o fallido: se mueven al reiniciar.
+  const badge = info.error
+    ? `<span class="settings-path-badge warn" title="${escapeHtml(info.error)}">No se pudo mover</span>`
+    : info.pending
+      ? `<span class="settings-path-badge custom">Al reiniciar</span>`
+      : info.unavailable
+        ? `<span class="settings-path-badge warn"
+            title="La carpeta guardada no está disponible; se usa la predeterminada hasta que vuelva.">No disponible</span>`
+        : `<span class="settings-path-badge${custom ? " custom" : ""}">${custom ? "Personalizada" : "Predeterminada"}</span>`;
+  const reset = custom || info.pending
+    ? `<button type="button" class="btn ghost settings-reset-path" data-storage-reset="${kind}"
+        title="Restablecer la ubicación predeterminada" aria-label="Restablecer la ubicación predeterminada">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"
+          stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>
+        <span>Predeterminada</span>
+      </button>`
+    : "";
+  return `
+    <div class="settings-path" data-storage="${kind}">
+      <span class="settings-path-icon" aria-hidden="true">${icon}</span>
+      <div class="settings-path-text">
+        <span class="settings-path-name">${escapeHtml(label)}${badge}</span>
+        <button type="button" class="settings-path-value" data-storage-open="${kind}" title="Abrir en el Explorador">
+          <span translate="no">${escapeHtml(info.path || "—")}</span>
+        </button>
+        ${
+          // Con un traslado pendiente, su destino ocupa el sitio de la pista:
+          // es lo que importa en ese momento y el diálogo no crece.
+          info.pending
+            ? `<span class="settings-path-pending">Se moverá a ${escapeHtml(info.pending)} al reiniciar</span>`
+            : `<span class="settings-path-hint">${escapeHtml(hint)}</span>`
+        }
+      </div>
+      <div class="settings-path-actions">
+        ${reset}
+        ${
+          info.pending
+            ? `<button type="button" class="btn primary" data-storage-restart
+                title="Los datos de la tienda se moverán a ${escapeHtml(info.pending)} al reiniciar.">Reiniciar ahora</button>`
+            : ""
+        }
+        <button type="button" class="btn ghost" data-storage-change="${kind}">Cambiar…</button>
+      </div>
+    </div>`;
+}
+
+function settingsLocationsHtml() {
+  const locations = settingsLocations || {};
+  return STORAGE_LOCATIONS.map((location) => settingsLocationHtml(location, locations[location.kind])).join("");
+}
+
+function settingsNote(message, tone = "") {
+  const note = document.getElementById("settings-note");
+  if (!note) return;
+  note.textContent = message;
+  note.className = message ? `about-note${tone ? ` ${tone}` : ""}` : "about-note hidden";
+}
+
+const SETTINGS_ACCENTS = ["#c7ced6", "#60a5fa", "#34d399", "#f59e0b", "#f472b6", "#a78bfa"];
+
+function settingsPreferencesHtml() {
+  const accent = `#${normalizeHex(state.settings?.accent)}`;
+  const checksUpdates = state.settings?.check_updates_on_startup !== false;
+  const swatches = SETTINGS_ACCENTS.map(
+    (color) => `<label class="settings-accent" title="${color}">
+      <input type="radio" name="settings-accent" value="${color}"${color === accent ? " checked" : ""} />
+      <span style="--swatch:${color}" aria-hidden="true"></span>
+      <span class="sr-only">Color ${color}</span>
+    </label>`,
+  ).join("");
+  return `
+    <div class="settings-preference settings-appearance">
+      <span class="settings-preference-icon" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+          stroke-linecap="round" stroke-linejoin="round"><circle cx="13.5" cy="6.5" r="2.5"/><circle cx="17.5" cy="10.5" r="2.5"/>
+          <circle cx="8.5" cy="7.5" r="2.5"/><circle cx="6.5" cy="12.5" r="2.5"/><path d="M12 3a9 9 0 1 0 0 18h1.5a2 2 0 0 0 0-4H12a2 2 0 0 1 0-4h3a6 6 0 0 0-3-10Z"/></svg>
+      </span>
+      <span class="settings-preference-copy"><strong>Color de acento</strong><small>Resalta botones y selecciones.</small></span>
+      <span class="settings-accents" id="settings-accents" role="radiogroup" aria-label="Color de acento">${swatches}</span>
+    </div>
+    <label class="settings-preference settings-toggle-row">
+      <span class="settings-preference-icon" aria-hidden="true">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"
+          stroke-linecap="round" stroke-linejoin="round"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/>
+          <path d="M6.1 9a7 7 0 0 1 11.5-2.6L20 11M4 13l2.4 4.6A7 7 0 0 0 17.9 15"/></svg>
+      </span>
+      <span class="settings-preference-copy"><strong>Buscar actualizaciones al iniciar</strong><small>Comprueba tus aplicaciones cuando abre la tienda.</small></span>
+      <span class="settings-switch"><input type="checkbox" id="settings-auto-updates"${checksUpdates ? " checked" : ""} />
+        <span aria-hidden="true"></span></span>
+    </label>`;
+}
+
+function formatStorageSize(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 1) return "0 MB";
+  const mb = bytes / (1024 * 1024);
+  return mb < 10 ? `${mb.toFixed(1)} MB` : `${Math.round(mb)} MB`;
+}
+
+async function showSettingsModal({ focus = null } = {}) {
+  let failure = null;
+  settingsLocations = await invoke("get_storage_locations").catch((error) => {
+    failure = error;
+    return settingsLocations;
+  });
+  const version = state.appVersion ? `Versión ${escapeHtml(state.appVersion)}` : "Tienda de aplicaciones";
+  openModal(`
+    <div class="settings-dialog">
+      <header class="settings-head">
+        <div class="settings-head-icon" aria-hidden="true">${settingsGlyph(26)}</div>
+        <div class="settings-title">
+          <h2>Configuración</h2>
+          <p>Personaliza la tienda y decide cómo se mantiene.</p>
+        </div>
+      </header>
+      <div class="settings-body">
+        <section class="settings-section">
+          <h3 class="settings-section-label">General</h3>
+          <div class="settings-preferences" id="settings-preferences">${settingsPreferencesHtml()}</div>
+        </section>
+        <section class="settings-section">
+          <h3 class="settings-section-label" id="settings-language-label">Idioma</h3>
+          <div class="settings-languages" id="settings-languages" role="radiogroup"
+            aria-labelledby="settings-language-label">${settingsLanguagesHtml()}</div>
+        </section>
+        <section class="settings-section">
+          <h3 class="settings-section-label">Almacenamiento</h3>
+          <p class="settings-section-hint">Al cambiar una ubicación, la tienda usa una subcarpeta propia dentro de la que elijas.</p>
+          <div class="settings-paths" id="settings-paths">${settingsLocationsHtml()}</div>
+        </section>
+        <section class="settings-section">
+          <h3 class="settings-section-label">Descargas temporales</h3>
+          <div class="settings-cleanup">
+            <span class="settings-preference-icon" aria-hidden="true">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1"
+                stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+            </span>
+            <span class="settings-preference-copy"><strong>Archivos de instalación</strong><small>Borra descargas incompletas o que ya no se necesitan.</small></span>
+            <button type="button" class="btn ghost" id="settings-clean-downloads">Limpiar ahora</button>
+          </div>
+        </section>
+      </div>
+      <p class="about-note hidden" id="settings-note" role="status" aria-live="polite"></p>
+      <div class="modal-foot settings-foot">
+        <button type="button" class="settings-about" id="settings-about">
+          <span class="settings-about-logo">
+            <img src="assets/winslim-center-logo.png" width="904" height="904" alt="" />
+          </span>
+          <span class="settings-about-text">
+            <strong>Acerca de WinSlimCenter</strong>
+            <small>${version} · GNU GPL v3</small>
+          </span>
+          <svg class="settings-about-go" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+            stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="9 6 15 12 9 18"/>
+          </svg>
+        </button>
+        <button type="button" class="btn primary" id="settings-close">Cerrar</button>
+      </div>
+    </div>
+  `, false, false, "settings");
+
+  document.getElementById("settings-close").onclick = closeModal;
+  document.getElementById("settings-about").onclick = () => showAboutModal();
+  document.getElementById("settings-languages").addEventListener("change", (event) => {
+    if (event.target.name === "settings-language") void chooseLanguage(event.target.value);
+  });
+  document.getElementById("settings-accents").addEventListener("change", (event) => {
+    if (event.target.name === "settings-accent") void chooseAccent(event.target.value);
+  });
+  document.getElementById("settings-auto-updates").addEventListener("change", (event) => {
+    void chooseAutomaticUpdateChecks(event.target.checked, event.target);
+  });
+  document.getElementById("settings-clean-downloads").onclick = (event) => void cleanTemporaryDownloads(event.currentTarget);
+  document.getElementById("settings-paths").addEventListener("click", (event) => {
+    const open = event.target.closest("[data-storage-open]");
+    const change = event.target.closest("[data-storage-change]");
+    const reset = event.target.closest("[data-storage-reset]");
+    const restart = event.target.closest("[data-storage-restart]");
+    if (open) void openStorageLocation(open.dataset.storageOpen);
+    else if (change) void changeStorageLocation(change.dataset.storageChange);
+    else if (reset) void changeStorageLocation(reset.dataset.storageReset, { reset: true });
+    else if (restart) void restartForDataMove(restart);
+  });
+  if (failure) {
+    settingsNote(String(failure), "bad");
+    void clientLog("warn", "settings", `No se pudieron leer las carpetas: ${failure}`);
+  }
+  if (focus === "about") document.getElementById("settings-about")?.focus({ preventScroll: true });
+}
+
+async function chooseAccent(accent) {
+  const previous = state.settings?.accent || "#c7ced6";
+  applyTheme(state.settings?.theme || "plata", accent);
+  try {
+    await invoke("set_accent", { accent });
+  } catch (error) {
+    applyTheme(state.settings?.theme || "plata", previous);
+    settingsNote("No se pudo guardar el color de acento", "bad");
+    void clientLog("warn", "settings", `No se pudo guardar el color: ${error}`);
+  }
+}
+
+async function chooseAutomaticUpdateChecks(enabled, input) {
+  const previous = state.settings?.check_updates_on_startup !== false;
+  state.settings = { ...state.settings, check_updates_on_startup: enabled };
+  input.disabled = true;
+  try {
+    await invoke("set_check_updates_on_startup", { enabled });
+    settingsNote(enabled ? "Las actualizaciones se comprobarán al iniciar" : "La comprobación automática está desactivada", "ok");
+  } catch (error) {
+    state.settings = { ...state.settings, check_updates_on_startup: previous };
+    input.checked = previous;
+    settingsNote("No se pudo guardar la preferencia de actualizaciones", "bad");
+    void clientLog("warn", "settings", `No se pudo guardar la comprobación automática: ${error}`);
+  } finally {
+    if (input.isConnected) input.disabled = false;
+  }
+}
+
+async function cleanTemporaryDownloads(button) {
+  if (storeOperationsInProgress()) {
+    settingsNote("Espera a que terminen las descargas e instalaciones para limpiar los temporales.", "bad");
+    return;
+  }
+  button.disabled = true;
+  const label = button.textContent;
+  button.textContent = "Limpiando…";
+  try {
+    const result = await invoke("clean_downloads");
+    const removed = Number(result?.removed || 0);
+    const freed = Number(result?.freed || 0);
+    settingsNote(
+      removed ? `Se liberaron ${formatStorageSize(freed)}` : "No había descargas temporales que limpiar",
+      "ok",
+    );
+  } catch (error) {
+    settingsNote(String(error), "bad");
+    void clientLog("warn", "settings", `No se pudieron limpiar las descargas: ${error}`);
+  } finally {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = label;
+    }
+  }
+}
+
+async function chooseLanguage(value) {
+  const language = value === "system" ? null : value;
+  const changed = await setLanguagePreference(language);
+  state.settings = { ...state.settings, language };
+  // Lo que ya está en pantalla lo traduce i18n.js. Volver a dibujar pone al día
+  // lo que se formatea al dibujar —las fechas— y los nombres de los idiomas.
+  if (changed) {
+    renderSidebar();
+    renderContent();
+  }
+  const grid = document.getElementById("settings-languages");
+  if (grid) {
+    grid.innerHTML = settingsLanguagesHtml();
+    grid.querySelector("input:checked")?.focus({ preventScroll: true });
+  }
+  try {
+    await invoke("set_language", { language });
+  } catch (error) {
+    settingsNote("No se pudo guardar el idioma", "bad");
+    void clientLog("warn", "settings", `No se pudo guardar el idioma: ${error}`);
+  }
+}
+
+async function openStorageLocation(kind) {
+  try {
+    await invoke("open_storage_location", { kind });
+  } catch (error) {
+    settingsNote(String(error), "bad");
+    void clientLog("warn", "settings", `No se pudo abrir la carpeta ${kind}: ${error}`);
+  }
+}
+
+// Una operación a medias buscaría sus archivos en la carpeta anterior: el
+// backend lo rechaza igual, pero aquí se dice antes de abrir el selector.
+async function changeStorageLocation(kind, { reset = false } = {}) {
+  const location = STORAGE_LOCATIONS.find((item) => item.kind === kind);
+  if (!location || storageChangeRunning) return;
+  if (storeOperationsInProgress()) {
+    settingsNote("Espera a que terminen las descargas e instalaciones en curso para cambiar las carpetas.", "bad");
+    return;
+  }
+  storageChangeRunning = true;
+  const buttons = [...document.querySelectorAll("#settings-paths button")];
+  try {
+    let path = null;
+    if (!reset) {
+      path = await invoke("choose_folder", {
+        title: translate(location.picker),
+        initial: settingsLocations?.[kind]?.path || null,
+      });
+      if (!path) return;
+    }
+    buttons.forEach((button) => {
+      button.disabled = true;
+    });
+    settingsLocations = await invoke("set_storage_location", { kind, path });
+    const info = settingsLocations?.[kind] || {};
+    void clientLog("info", "settings", `Carpeta de ${kind}: ${info.pending || info.path}`);
+    const list = document.getElementById("settings-paths");
+    if (list) list.innerHTML = settingsLocationsHtml();
+    // Un traslado pendiente ya lo cuenta su fila, con el botón para reiniciar.
+    if (kind === "data" && info.pending) {
+      settingsNote("");
+      document.querySelector("[data-storage-restart]")?.focus({ preventScroll: true });
+      return;
+    }
+    settingsNote(
+      kind === "data"
+        ? "Los datos se quedan donde están."
+        : reset
+          ? "Ubicación predeterminada restablecida"
+          : kind === "downloads"
+            ? `Las descargas irán a ${info.path}`
+            : `Las nuevas aplicaciones se instalarán en ${info.path}. Las ya instaladas se quedan donde están.`,
+      "ok",
+    );
+  } catch (error) {
+    settingsNote(String(error), "bad");
+    void clientLog("warn", "settings", `No se pudo cambiar la carpeta ${kind}: ${error}`);
+  } finally {
+    storageChangeRunning = false;
+    buttons.forEach((button) => {
+      if (button.isConnected) button.disabled = false;
+    });
+  }
+}
+
+// El traslado de los datos espera a un reinicio; este botón lo adelanta. Con
+// algo en marcha no: cerrar la tienda lo cortaría a medias.
+async function restartForDataMove(button) {
+  if (storeOperationsInProgress()) {
+    settingsNote("Espera a que terminen las operaciones en curso para reiniciar la tienda.", "bad");
+    return;
+  }
+  button.disabled = true;
+  button.textContent = "Reiniciando…";
+  try {
+    await invoke("restart_store");
+  } catch (error) {
+    if (button.isConnected) {
+      button.disabled = false;
+      button.textContent = "Reiniciar ahora";
+    }
+    settingsNote(String(error), "bad");
+    void clientLog("warn", "settings", `No se pudo reiniciar la tienda: ${error}`);
   }
 }
 
@@ -6323,12 +6983,22 @@ function showAboutModal() {
       </dl>
       <p class="about-note hidden" id="about-note" role="status" aria-live="polite"></p>
       <div class="modal-foot" style="margin-top: 4px;">
+        <button type="button" class="btn ghost about-back" id="about-back">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"
+            stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <line x1="19" y1="12" x2="5" y2="12"/>
+            <polyline points="12 19 5 12 12 5"/>
+          </svg>
+          Volver
+        </button>
         <button type="button" class="btn ghost" id="about-check">Buscar actualizaciones</button>
         <button type="button" class="btn primary" id="about-close">Cerrar</button>
       </div>
     </div>
   `, false, false, "about");
   document.getElementById("about-close").onclick = closeModal;
+  // «Acerca de» vive dentro de la configuración: se vuelve a ella, no se cierra.
+  document.getElementById("about-back").onclick = () => showSettingsModal({ focus: "about" });
 
   const check = document.getElementById("about-check");
   const note = document.getElementById("about-note");
@@ -6407,7 +7077,7 @@ function releaseNotesShell() {
           </svg>
         </button>
       </header>
-      <div class="release-notes-body">
+      <div class="release-notes-body" translate="no">
         <div class="release-notes-skeleton" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
       </div>
     </section>`;
@@ -6500,7 +7170,7 @@ function fillReleaseNotes(section, notes, pageUrl) {
 function formatReleaseDate(value) {
   const date = new Date(value || "");
   if (Number.isNaN(date.getTime())) return "";
-  return new Intl.DateTimeFormat("es-ES", { day: "numeric", month: "short", year: "numeric" }).format(date);
+  return new Intl.DateTimeFormat(uiLocale(), { day: "numeric", month: "short", year: "numeric" }).format(date);
 }
 
 // Lo que se conserva de las notas tal como GitHub las dibuja. Todo lo demás se
@@ -6766,8 +7436,28 @@ async function checkStoreUpdate() {
   }
 }
 
+// WebView2 no desvanece por si solo las barras personalizadas. Se marca
+// unicamente el contenedor que se esta moviendo y se retira la marca poco
+// despues; el desplazamiento continua siendo nativo y no intercepta la rueda.
+function enableTransientScrollbars() {
+  const timers = new WeakMap();
+  document.addEventListener("scroll", (event) => {
+    const target = event.target === document
+      ? document.scrollingElement
+      : event.target;
+    if (!(target instanceof Element)) return;
+    target.classList.add("is-scrolling");
+    clearTimeout(timers.get(target));
+    timers.set(target, setTimeout(() => {
+      target.classList.remove("is-scrolling");
+      timers.delete(target);
+    }, 850));
+  }, true);
+}
+
 window.addEventListener("DOMContentLoaded", async () => {
   void clientLog("info", "startup", "DOMContentLoaded: iniciando interfaz.");
+  enableTransientScrollbars();
 
   // Register every state-bearing event before asking for the snapshot. Events
   // emitted while get_bootstrap is in flight are queued and replayed in order
@@ -6879,7 +7569,7 @@ window.addEventListener("DOMContentLoaded", async () => {
     // viaje a sus servidores, no un filtro sobre lo que ya está en memoria.
     scheduleInlineSearches();
   });
-  document.getElementById("btn-about").addEventListener("click", showAboutModal);
+  document.getElementById("btn-settings").addEventListener("click", () => showSettingsModal());
   // Called without arguments on purpose: the click event must not leak into the
   // options object, and this is one of the two places allowed to show the modal.
   document.getElementById("btn-refresh").addEventListener("click", () => refreshStore());
@@ -7147,12 +7837,22 @@ window.addEventListener("DOMContentLoaded", async () => {
     state.verifyingStatuses = true;
     state.statusPending = new Set(data.status_pending || []);
     state.settings = data.settings || state.settings;
+    syncLanguageWithSettings();
     replaceTasks(data.tasks || []);
     applyTheme(state.settings.theme, state.settings.accent);
     renderAppVersion();
     renderSidebar();
     renderContent();
     renderDlPanel();
+    void afterFirstPaint().then(() => {
+      const startedAt = window.__frontendBootStartedAt;
+      if (Number.isFinite(startedAt)) {
+        window.__recordFrontendMetric?.("primer-pintado", startedAt, {
+          aplicaciones: state.catalog.length,
+        });
+      }
+      reportFrontendMetrics();
+    });
     dismissBootSplash();
     setStatus(idleStatusSummary(), "var(--green)");
     clientLog("info", "startup", {
