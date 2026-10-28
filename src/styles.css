@@ -3423,6 +3423,21 @@ textarea {
   overflow: auto;
 }
 
+/* La capa se queda montada mientras el diálogo está cerrado para que WebView2
+   no tenga que crear el desenfoque y el velo en el mismo fotograma de apertura.
+   No hay transición: al abrir, el fondo aparece completo como antes; sólo se
+   evita el destello de composición. La ventana sigue en display:none para que
+   su animación dialogIn vuelva a empezar en cada apertura. */
+.modal-backdrop.hidden {
+  display: grid !important;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.modal-backdrop.hidden > .modal {
+  display: none;
+}
+
 .modal-backdrop::before,
 .modal-backdrop::after,
 .sync-modal-overlay::before,
@@ -3434,6 +3449,17 @@ textarea {
   inset: 0;
   pointer-events: none;
   z-index: -1;
+}
+
+.modal-backdrop::before,
+.modal-backdrop::after {
+  opacity: 1;
+  will-change: opacity;
+}
+
+.modal-backdrop.hidden::before,
+.modal-backdrop.hidden::after {
+  opacity: 0;
 }
 
 .modal-backdrop::before,

@@ -484,6 +484,25 @@ function modalPresentationBeforeFocus() {
   assert.equal(gear.expanded, 'false');
 }
 
+function modalBackdropIsStatic() {
+  const css = fs.readFileSync(path.join(__dirname, '../src/styles.css'), 'utf8');
+  assert.match(
+    css,
+    /\.modal-backdrop\.hidden\s*\{[^}]*display:\s*grid\s*!important;[^}]*pointer-events:\s*none;/s,
+    'El fondo oculto debe seguir montado pero no interceptar clics',
+  );
+  assert.match(css, /\.modal-backdrop\.hidden\s*>\s*\.modal\s*\{[^}]*display:\s*none;/s);
+  assert.match(
+    css,
+    /\.modal-backdrop\.hidden::before,\s*\.modal-backdrop\.hidden::after\s*\{[^}]*opacity:\s*0;/s,
+  );
+  assert.doesNotMatch(
+    css,
+    /\.modal-backdrop(?:\.hidden|::before|::after)?[^\{]*\{[^}]*(?:animation|transition)\s*:/s,
+    'El velo y el desenfoque no deben animarse',
+  );
+}
+
 async function splashFadeCompletesBeforeRemoval() {
   for (const duration of ['320ms', '0.32s']) {
     const timers = [], cleared = [], listeners = new Map();
@@ -667,6 +686,7 @@ function indexedCatalogCards() {
   await splashFadeCompletesBeforeRemoval();
   await splashPresentation();
   modalPresentationBeforeFocus();
+  modalBackdropIsStatic();
   versionLabels();
   visibleCounters();
   await msStoreScanReuse();
