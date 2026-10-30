@@ -679,6 +679,30 @@ function indexedCatalogCards() {
   assert.equal(queries, indexedQueries, 'Actualizar un id no debe volver a recorrer el DOM');
 }
 
+function catalogDescriptionsAreLocalized() {
+  const ctx = vm.createContext({
+    Map,
+    state: { catalog: [] },
+    derived: { searchBlobs: new Map() },
+    translate: text => `TR:${text}`,
+    escapeHtml: text => String(text),
+  });
+  load(ctx, ['localizedCatalogDescription', 'rebuildCatalogSearchBlobs', 'appDescriptionHtml']);
+  const app = {
+    id: 'demo', name: 'Demo', description: 'Descripcion original', author: 'Autor',
+    category: 'Utilidad', section: 'Utilidades', console_tags: [],
+  };
+  assert.equal(ctx.localizedCatalogDescription(app), 'TR:Descripcion original');
+  assert.match(ctx.appDescriptionHtml(ctx.localizedCatalogDescription(app)), /TR:Descripcion original/);
+  assert.match(ctx.appDescriptionHtml('Third-party text'), /Third-party text/);
+  ctx.state.catalog = [app];
+  ctx.rebuildCatalogSearchBlobs();
+  const search = ctx.derived.searchBlobs.get('demo');
+  assert.match(search, /descripcion original/);
+  assert.match(search, /tr:descripcion original/);
+  assert.match(source, /localizedCatalogDescription\(app\)/);
+}
+
 (async () => {
   await startupConnectionGate();
   externalInstalledSearch();
@@ -705,5 +729,6 @@ function indexedCatalogCards() {
   await startupVerification();
   await sharedReadRequests();
   indexedCatalogCards();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, web-app browser choice, visible counters and version labels passed.');
+  catalogDescriptionsAreLocalized();
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, localized catalog descriptions, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -7,14 +7,16 @@
     "dev": "npx tauri dev",
     "build": "npm run frontend:build && npx tauri build --config src-tauri/tauri.prod.conf.json",
     "frontend:build": "node scratch/build_frontend.mjs",
-    "frontend:check": "node scratch/build_frontend.mjs --check",
+    "frontend:check": "node scratch/build_frontend.mjs --check && node scratch/audit_catalog_icons.cjs",
     "test:ui": "node scratch/test_repo_detection.cjs && node scratch/test_review_regressions.cjs",
     "test:rust": "powershell -NoProfile -ExecutionPolicy Bypass -File scratch/test_rust.ps1",
     "audit:catalog": "node scratch/audit_catalog_links.cjs",
     "audit:categories": "node scratch/audit_catalog_categories.cjs",
+    "audit:icons": "node scratch/audit_catalog_icons.cjs",
     "tauri": "npx tauri",
     "icons:fetch": "node scratch/fetch_catalog_icons.mjs",
-    "icons:optimize": "node scratch/optimize_catalog_icons.mjs"
+    "icons:optimize": "node scratch/optimize_catalog_icons.mjs",
+    "icons:normalize": "powershell -NoProfile -ExecutionPolicy Bypass -File scratch/normalize_catalog_icons.ps1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",

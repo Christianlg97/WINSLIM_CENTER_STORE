@@ -15,10 +15,32 @@ const LOCALE_FILES = (await readdir(path.join(SOURCE_DIR, "locales")))
   .sort()
   .map((name) => `locales/${name}`);
 const TEXT_FILES = ["index.html", "main.js", "i18n.js", "styles.css", ...LOCALE_FILES];
+const SETTINGS_LOCALIZATION_KEYS = [
+  "Personaliza la tienda y decide cómo se mantiene.",
+  "Color de acento",
+  "Resalta botones y selecciones.",
+  "Buscar actualizaciones al iniciar",
+  "Comprueba tus aplicaciones cuando abre la tienda.",
+  "Descargas temporales",
+  "Archivos de instalación",
+  "Borra descargas incompletas o que ya no se necesitan.",
+  "Limpiar ahora",
+  "Limpiando…",
+  "Las actualizaciones se comprobarán al iniciar",
+  "La comprobación automática está desactivada",
+  "No se pudo guardar la preferencia de actualizaciones",
+  "No se pudo guardar el color de acento",
+  "No había descargas temporales que limpiar",
+  "Se liberaron {0}",
+  "Espera a que terminen las descargas e instalaciones para limpiar los temporales.",
+];
 
 async function validateLocales() {
+  const catalog = JSON.parse(await readFile(path.join(ROOT_DIR, "src-tauri", "apps.json"), "utf8"));
+  const catalogDescriptions = new Set(catalog.map((app) => app.description).filter(Boolean));
   let reference = null;
   let referenceName = "";
+  const dictionaries = new Map();
   for (const name of LOCALE_FILES) {
     const source = await readFile(path.join(SOURCE_DIR, ...name.split("/")), "utf8");
     const match = source.match(/export default\s*\{([\s\S]*)\};?\s*$/);
@@ -27,6 +49,15 @@ async function validateLocales() {
     const duplicates = keys.filter((key, index) => keys.indexOf(key) !== index);
     if (duplicates.length) throw new Error(`${name}: claves repetidas: ${[...new Set(duplicates)].join(", ")}`);
     const current = new Set(keys);
+    const entries = new Map(
+      [...match[1].matchAll(/^\s*("(?:\\.|[^"\\])*")\s*:\s*("(?:\\.|[^"\\])*")\s*,?$/gm)]
+        .map((entry) => [JSON.parse(entry[1]), JSON.parse(entry[2])]),
+    );
+    dictionaries.set(name, entries);
+    const missingDescriptions = [...catalogDescriptions].filter((description) => !current.has(description));
+    if (missingDescriptions.length) {
+      throw new Error(`${name}: faltan ${missingDescriptions.length} descripciones del catálogo`);
+    }
     if (!reference) {
       reference = current;
       referenceName = name;
@@ -40,6 +71,12 @@ async function validateLocales() {
           `${missing.length} ausentes, ${extra.length} adicionales)`,
       );
     }
+  }
+  const english = dictionaries.get("locales/en.js");
+  for (const [name, dictionary] of dictionaries) {
+    if (name === "locales/en.js") continue;
+    const copied = SETTINGS_LOCALIZATION_KEYS.filter((key) => dictionary.get(key) === english?.get(key));
+    if (copied.length) throw new Error(`${name}: Ajustes conserva textos en inglés: ${copied.join(", ")}`);
   }
 }
 // Editable catalog icons remain public, including the historical emulator

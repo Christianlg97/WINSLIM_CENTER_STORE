@@ -2527,14 +2527,20 @@
     "id": "gforth",
     "name": "Gforth",
     "description": "Implementación GNU del lenguaje Forth con consola gforth.",
-    "version": "latest",
+    "version": "0.7.0",
     "author": "GNU Project",
     "category": "Lenguajes y runtimes",
     "section": "Desarrollo",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "GNU.Gforth",
-    "winget_source": "winget",
+    "source_type": "wget",
+    "download_url": "https://www.complang.tuwien.ac.at/forth/gforth/old/gforth-0.7.0.exe",
+    "download_filename": "gforth-0.7.0.exe",
+    "installer_args": [
+      "/VERYSILENT",
+      "/SUPPRESSMSGBOXES",
+      "/NORESTART",
+      "/SP-"
+    ],
     "icon_url": "assets/catalog/gforth.png",
     "icon_fit": "contain",
     "detect_names": [
@@ -3668,27 +3674,28 @@
   },
   {
     "id": "dlss5_swapper",
-    "name": "DLSS 5 Swapper",
-    "description": "Instala, cambia y restaura las versiones de DLSS 5 en tus juegos y emuladores: detecta las partidas instaladas, admite DirectX 9 a 12, Vulkan y OpenGL, y deja volver atrás cuando una versión no sienta bien.",
+    "name": "DLSS Swapper",
+    "description": "Descarga, gestiona y cambia las bibliotecas DLSS, FSR y XeSS de tus juegos para probar versiones más nuevas o restaurar las originales.",
     "version": "latest",
-    "author": "rakanki911",
+    "author": "beeradmoore",
     "category": "Controladores y GPU",
     "section": "Utilidades",
     "source_type": "github_release",
-    "github_repo": "rakanki911/DLSS5-Swapper",
-    "asset_pattern": "DLSS5-Swapper-*-portable.exe",
-    "download_url": "https://github.com/rakanki911/DLSS5-Swapper/releases/download/v2.2.1/DLSS5-Swapper-2.2.1-portable.exe",
-    "portable": true,
-    "download_filename": "DLSS5-Swapper.exe",
-    "launch_executable": "DLSS5-Swapper.exe",
-    "start_menu_shortcut": true,
+    "github_repo": "beeradmoore/dlss-swapper",
+    "asset_pattern": "dlss.swapper-*-installer.exe",
+    "installer_args": [
+      "/S"
+    ],
+    "launch_executable": "DLSS Swapper.exe",
+    "known_launch_paths": [
+      "%PROGRAMFILES%\\DLSS Swapper\\DLSS Swapper.exe"
+    ],
     "icon_url": "assets/catalog/dlss5_swapper.png",
     "accent_color": "#76b900",
     "detect_names": [
-      "DLSS 5 Swapper",
-      "DLSS5-Swapper"
+      "DLSS Swapper"
     ],
-    "web_url": "https://github.com/rakanki911/DLSS5-Swapper",
+    "web_url": "https://github.com/beeradmoore/dlss-swapper/releases",
     "featured": false
   },
   {
@@ -3941,7 +3948,6 @@
     "icon_url": "assets/catalog/cinebench_2026.svg",
     "icon_background": "#111111",
     "icon_padding": 0,
-    "icon_position": "left",
     "accent_color": "#dc2626",
     "featured": false
   },
@@ -4630,9 +4636,10 @@
     "category": "Emuladores",
     "section": "Emuladores",
     "featured": false,
-    "source_type": "winget",
-    "winget_id": "DolphinEmulator.Dolphin",
-    "winget_source": "winget",
+    "source_type": "wget",
+    "download_url": "https://dl.dolphin-emu.org/releases/2609a/dolphin-2609a-x64.7z",
+    "download_filename": "dolphin-x64.7z",
+    "launch_executable": "Dolphin.exe",
     "icon_url": "assets/catalog/dolphin_emulator.png",
     "detect_names": [
       "Dolphin"
@@ -4674,13 +4681,13 @@
     "name": "SameBoy",
     "description": "Emulador de Game Boy y Game Boy Color con alta precisión de ciclos.",
     "version": "latest",
-    "author": "LIARMP",
+    "author": "LIJI32",
     "category": "Emuladores",
     "section": "Emuladores",
     "featured": false,
     "source_type": "github_release",
-    "github_repo": "LIARMP/SameBoy",
-    "asset_pattern": "sameboy_win_*.zip",
+    "github_repo": "LIJI32/SameBoy",
+    "asset_pattern": "sameboy_winsdl_*.zip",
     "winget_id": "LIJI32.SameBoy",
     "icon_url": "assets/catalog/sameboy.svg",
     "detect_names": [
@@ -4704,8 +4711,8 @@
     "section": "Emuladores",
     "featured": false,
     "source_type": "wget",
-    "download_url": "https://bgb.bircd.org/bgb64.zip",
-    "download_filename": "bgb64.zip",
+    "download_url": "https://bgb.bircd.org/bgbw64.zip",
+    "download_filename": "bgbw64.zip",
     "icon_url": "assets/catalog/bgb.svg",
     "detect_names": [
       "BGB"

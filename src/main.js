@@ -26,13 +26,14 @@ function uiLocale() {
  * El idioma guardado en settings.json manda sobre la copia del navegador. Se
  * llama antes de dibujar con los ajustes recién llegados; si el diccionario
  * llega después del dibujo, lo ya pintado se traduce solo y lo que se formatea
- * al dibujar (las fechas) se vuelve a pintar.
+ * al dibujar (fechas y descripciones) se vuelve a pintar.
  */
 function syncLanguageWithSettings() {
   const saved = state.settings?.language || null;
   if (saved === languagePreference()) return;
   void setLanguagePreference(saved).then((changed) => {
     if (changed) {
+      rebuildCatalogSearchBlobs();
       renderSidebar();
       renderContent();
     }
@@ -341,6 +342,33 @@ const derived = {
   catalogPackageKeys: { winget: new Set(), choco: new Set() },
 };
 
+/** La descripción incluida en el catálogo si se conoce en el idioma activo. */
+function localizedCatalogDescription(app) {
+  return translate(String(app?.description || ""));
+}
+
+/** Buscar acepta tanto el texto original como el que el usuario está viendo. */
+function rebuildCatalogSearchBlobs() {
+  derived.searchBlobs = new Map(
+    state.catalog.map((app) => [
+      app.id,
+      [
+        app.name,
+        app.description,
+        localizedCatalogDescription(app),
+        app.author,
+        app.category,
+        app.section,
+        app.id,
+        ...(app.console_tags || []),
+      ]
+        .map((part) => String(part || ""))
+        .join(" ")
+        .toLocaleLowerCase("es-ES"),
+    ]),
+  );
+}
+
 function replaceCatalog(catalog) {
   derived.catalogGeneration += 1;
   state.catalog = Array.isArray(catalog) ? catalog : [];
@@ -368,15 +396,7 @@ function replaceCatalog(catalog) {
       state.catalog.map((app) => String(app.choco_id || "").toLowerCase()).filter(Boolean),
     ),
   };
-  derived.searchBlobs = new Map(
-    state.catalog.map((app) => [
-      app.id,
-      [app.name, app.description, app.author, app.category, app.section, app.id, ...(app.console_tags || [])]
-        .map((part) => String(part || ""))
-        .join(" ")
-        .toLocaleLowerCase("es-ES"),
-    ]),
-  );
+  rebuildCatalogSearchBlobs();
   const consoles = new Set(
     state.catalog
       .filter((app) => app.section === "Emuladores")
@@ -1081,7 +1101,10 @@ function sectionFilter(app) {
 }
 
 function searchFilter(app, query) {
-  return !query || (derived.searchBlobs.get(app.id) || [app.name, app.description, app.id].join(" ").toLocaleLowerCase("es-ES")).includes(query);
+  return !query || (
+    derived.searchBlobs.get(app.id) ||
+    [app.name, app.description, localizedCatalogDescription(app), app.id].join(" ").toLocaleLowerCase("es-ES")
+  ).includes(query);
 }
 
 // Los programas que vienen dentro de otra aplicación solo tienen sentido cuando
@@ -1279,7 +1302,7 @@ function cardHtml(app, index, prioritizeIcon = false) {
           ${cardMetaHtml(app)}
         </div>
       </div>
-      <p class="card-desc" translate="no">${escapeHtml(app.description || "")}</p>
+      <p class="card-desc" translate="no">${escapeHtml(localizedCatalogDescription(app))}</p>
       <div class="card-actions">${actionButtons(app, "card")}</div>
     </article>`;
 }
@@ -4250,7 +4273,7 @@ function openAppModal(id) {
           ${installedBanner ? `<div>${installedBanner}</div>` : ""}
         </div>
       </div>
-      ${appDescriptionHtml(app.description)}
+      ${appDescriptionHtml(localizedCatalogDescription(app))}
       <div class="modal-foot">
         <button type="button" class="btn ghost" id="modal-app-close">Cerrar</button>
         ${actionBtnsHtml}
@@ -6800,8 +6823,10 @@ async function chooseLanguage(value) {
   const changed = await setLanguagePreference(language);
   state.settings = { ...state.settings, language };
   // Lo que ya está en pantalla lo traduce i18n.js. Volver a dibujar pone al día
-  // lo que se formatea al dibujar —las fechas— y los nombres de los idiomas.
+  // lo que se formatea al dibujar —fechas, descripciones— y los nombres de los
+  // idiomas. El índice conserva a la vez el texto español y el traducido.
   if (changed) {
+    rebuildCatalogSearchBlobs();
     renderSidebar();
     renderContent();
   }

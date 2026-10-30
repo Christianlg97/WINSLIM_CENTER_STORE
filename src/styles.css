@@ -265,6 +265,8 @@ textarea {
 .icon-btn {
   height: 36px;
   padding: 0 14px;
+  /* Same silver edge as .settings-btn so both top-bar controls match. */
+  border: 1px solid rgba(255, 255, 255, 0.12);
   background: var(--bg-sb-hover);
   color: var(--text-dark);
   display: inline-flex;
@@ -296,6 +298,16 @@ textarea {
 
 .icon-btn:hover {
   background: var(--bg-sb-active);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+}
+
+/* Refrescar se eleva como Configuración sin interferir con el giro del SVG. */
+#btn-refresh:hover {
+  transform: translateY(-1px);
+}
+
+#btn-refresh:active {
+  transform: translateY(0);
 }
 
 .icon-btn:active {

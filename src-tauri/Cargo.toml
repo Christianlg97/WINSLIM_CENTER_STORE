@@ -1,6 +1,6 @@
 [package]
 name = "center-app"
-version = "2.4.3"
+version = "2.4.4"
 description = "WinSlimCenter"
 authors = ["you"]
 edition = "2021"

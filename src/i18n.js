@@ -17,8 +17,10 @@
  * frases, porque así se componen los mensajes largos. Añadir un texto es
  * añadir su línea en cada archivo; añadir un idioma, su archivo y su fila aquí.
  *
- * Lo que no es de la interfaz —descripciones del catálogo, notas de versión,
- * nombres de producto— va marcado con translate="no" y se deja tal cual.
+ * Las descripciones del catálogo embebido también viven en los diccionarios y
+ * main.js las traduce antes de pintarlas. Lo que llega de terceros —notas de
+ * versión, fichas de Microsoft Store, nombres de producto— conserva
+ * translate="no" porque no se puede asumir que su idioma de origen sea español.
  */
 
 export const LANGUAGES = [
