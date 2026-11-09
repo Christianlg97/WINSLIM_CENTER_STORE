@@ -3,8 +3,8 @@
 //! Open-Shell builds its program list — and therefore its search results — from
 //! the shortcuts under `shell:programs`. A program that never leaves one there
 //! cannot be found by name no matter how it was installed, so the store
-//! publishes itself and the terminal it ships, each under a folder of its own,
-//! exactly the way an ordinary installer would.
+//! publishes itself and the portable programs whose card asks for it, each under
+//! a folder of its own, exactly the way an ordinary installer would.
 
 use std::path::{Path, PathBuf};
 

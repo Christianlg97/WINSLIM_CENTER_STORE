@@ -230,6 +230,40 @@ fn is_a_different_operation(quiet: &str, full: &str) -> bool {
     normalized_command(quiet) != normalized_command(full)
 }
 
+/// The registered uninstall command with the catalog's `uninstall_args` added.
+///
+/// Some setups register no `QuietUninstallString` at all: Tauri's NSIS template
+/// writes only `"…\uninstall.exe"`, which opens the uninstaller's wizard — and
+/// an NSIS uninstaller relaunches itself from %TEMP% at once, so the store saw
+/// it exit before the user had clicked anything. The card states the switches
+/// that make it silent. A switch the command already carries is not added
+/// again, so a future version that registers its own quiet command keeps it.
+fn with_catalog_uninstall_args(command: &str, entry: &Value) -> String {
+    let declared: Vec<String> = match entry.get("uninstall_args") {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect(),
+        Some(Value::String(raw)) => raw.split_whitespace().map(str::to_string).collect(),
+        _ => Vec::new(),
+    };
+    let present: Vec<String> = command
+        .split_whitespace()
+        .map(|token| token.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    let mut result = command.trim().to_string();
+    for argument in declared {
+        let argument = argument.trim();
+        if argument.is_empty() || present.contains(&argument.to_ascii_lowercase()) {
+            continue;
+        }
+        result.push(' ');
+        result.push_str(argument);
+    }
+    result
+}
+
 fn executable_from_display_icon(value: &str) -> Option<PathBuf> {
     let cleaned = value.trim();
     if cleaned.is_empty() {
@@ -1225,7 +1259,10 @@ fn statuses_for(
                     // icono su servicio de actualización, así que "Abrir" no
                     // llevaba a ninguna parte visible.
                     can_launch: !launch_path.is_empty() && launchable,
-                    uninstall_command: sys.uninstall_string.clone(),
+                    uninstall_command: sys
+                        .uninstall_string
+                        .as_deref()
+                        .map(|command| with_catalog_uninstall_args(command, entry)),
                     uninstall_command_full: sys.full_uninstall_string.clone(),
                     install_location: Some(sys.install_location.trim().to_string())
                         .filter(|location| !location.is_empty()),
@@ -1743,11 +1780,11 @@ mod tests {
 
     #[test]
     fn an_unpacked_payload_is_never_a_packaged_application() {
-        // WinSlimTerminal arrives as a zip with an executable in it, so nothing
-        // ever registers it with Windows as a package: a packaged Start Menu
-        // entry cannot be it, whatever the two are called.
+        // WinSlimTerminal is a plain Win32 program with a known executable, so
+        // nothing ever registers it with Windows as a package: a packaged Start
+        // Menu entry cannot be it, whatever the two are called.
         let terminal = serde_json::json!({
-            "launch_executable": "winslim-terminal.exe",
+            "launch_executable": "wterminal.exe",
             "detect_names": ["WinSlimTerminal", "WinSlim Terminal"]
         });
         assert!(is_unpackaged_payload(&terminal));
@@ -1766,14 +1803,45 @@ mod tests {
     #[test]
     fn the_terminal_does_not_match_the_one_windows_ships() {
         let entry = serde_json::json!({
-            "launch_executable": "winslim-terminal.exe",
-            "detect_names": ["WinSlimTerminal", "WinSlim Terminal"]
+            "launch_executable": "wterminal.exe",
+            "detect_names": ["WinSlimTerminal", "WinSlim Terminal", "WTerminal"]
         });
         let apps = vec![StartApp {
             name: "Terminal".into(),
             app_id: "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App".into(),
         }];
         assert!(match_start_app(&entry, "WinSlimTerminal", &apps).is_none());
+        // Its setup registers it as «WTerminal»; neither Microsoft's name for
+        // its own terminal nor the bare word may pass for it.
+        assert!(names_match("WTerminal", "WTerminal"));
+        assert!(!names_match("WTerminal", "Windows Terminal"));
+        assert!(!names_match("WTerminal", "Terminal"));
+    }
+
+    #[test]
+    fn a_tauri_uninstaller_gets_the_silent_switch_its_card_declares() {
+        // Tauri's NSIS template registers only `UninstallString`; run as is, it
+        // opens the uninstaller's wizard.
+        let terminal = serde_json::json!({ "uninstall_args": ["/S"] });
+        let registered = r#""C:\Program Files\WTerminal\uninstall.exe""#;
+        assert_eq!(
+            with_catalog_uninstall_args(registered, &terminal),
+            r#""C:\Program Files\WTerminal\uninstall.exe" /S"#
+        );
+        // A command that already carries the switch is left as Windows has it.
+        let quiet = r#""C:\Program Files\WTerminal\uninstall.exe" /s"#;
+        assert_eq!(with_catalog_uninstall_args(quiet, &terminal), quiet);
+        // Written as text, the same as `installer_args`.
+        let as_text = serde_json::json!({ "uninstall_args": "/S /NORESTART" });
+        assert_eq!(
+            with_catalog_uninstall_args(registered, &as_text),
+            r#""C:\Program Files\WTerminal\uninstall.exe" /S /NORESTART"#
+        );
+        // Cards without the field keep the registered command untouched.
+        assert_eq!(
+            with_catalog_uninstall_args(registered, &serde_json::json!({})),
+            registered
+        );
     }
 
     #[test]

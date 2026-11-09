@@ -480,13 +480,15 @@ const terminal = {
   section: "Destacados",
   featured: true,
   source_type: "wget",
-  download_url: "https://github.com/Darkeiser003/Terminal/releases/download/Latest/WinSlimTerminal-Unpacked-Latest.zip",
-  download_filename: "WinSlimTerminal-Unpacked-Latest.zip",
+  download_url: "https://github.com/Darkeiser003/Terminal/releases/download/Latest/WTerminal-Latest-x64-setup.exe",
+  download_filename: "WTerminal-Latest-x64-setup.exe",
+  installer_args: ["/S"],
+  uninstall_args: ["/S"],
   icon_url: "assets/winslim-terminal.png",
   icon_background: "#ffffff",
-  launch_executable: "winslim-terminal.exe",
+  launch_executable: "wterminal.exe",
   accent_color: "#25262b",
-  detect_names: ["WinSlimTerminal", "WinSlim Terminal"],
+  detect_names: ["WinSlimTerminal", "WinSlim Terminal", "WTerminal"],
 };
 
 updated = updated.filter((app) => app.id !== terminal.id);

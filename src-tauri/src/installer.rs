@@ -5247,7 +5247,7 @@ mod tests {
         assert!(is_installer_artifact(Path::new("OpenCodeSetup.exe")));
         assert!(is_installer_artifact(Path::new("package.msi")));
         assert!(!is_installer_artifact(Path::new("opencode.exe")));
-        assert!(!is_installer_artifact(Path::new("winslim-terminal.exe")));
+        assert!(!is_installer_artifact(Path::new("wterminal.exe")));
     }
 
     #[cfg(windows)]

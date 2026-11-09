@@ -36,11 +36,17 @@ use tauri::{AppHandle, Emitter, Manager, State};
 /// not a loose shortcut, because that is the shape Open-Shell lists.
 const CENTER_START_MENU_FOLDER: &str = "WinSlimCenter";
 
-/// The catalog application the store publishes in the Start Menu by right: it
-/// ships the terminal, so it is the one it is entitled to advertise without
-/// being asked. The rest only get an entry when their card asks for one, which
-/// is what `start_menu_shortcut` is for.
+/// The terminal the store ships. While it came as a zip the store unpacked, the
+/// store published it in the Start Menu itself, under
+/// [`LEGACY_TERMINAL_SHORTCUT`]. It now comes as a setup that publishes its own
+/// entry and whose uninstaller takes it back, so the store's only remaining
+/// job is withdrawing the old one.
 const TERMINAL_APP_ID: &str = "winslim_terminal";
+
+/// Folder and shortcut name of the Start Menu entry the store wrote for the
+/// unpacked terminal. Fixed rather than read from the card: renaming the card
+/// must not leave the old shortcut behind.
+const LEGACY_TERMINAL_SHORTCUT: &str = "WinSlimTerminal";
 
 const VISIBLE_CATALOG_SECTIONS: [&str; 9] = [
     "Juegos",
@@ -4454,27 +4460,23 @@ async fn install_app(
                     );
                 }
 
-                // The terminal the store ships gets the same Start Menu folder
-                // the store gives itself, so Open-Shell indexes it and finds it
-                // by name. Republished on every install because an update can
-                // leave the executable somewhere new. Beside it go the catalog
-                // entries that ask for it with `start_menu_shortcut`: a portable
-                // program brings no installer to publish one, and without this
-                // it sits on the disk with no way to open it other than the
-                // store itself. Nothing else is advertised this way: their own
+                // The terminal's setup publishes its own Start Menu entry. The
+                // one the store wrote for the unpacked copy goes: installing the
+                // setup over that copy has just deleted the folder it pointed
+                // into, and leaving it would list the terminal twice.
+                if app_id_for_task == TERMINAL_APP_ID {
+                    start_menu::withdraw(LEGACY_TERMINAL_SHORTCUT, LEGACY_TERMINAL_SHORTCUT);
+                }
+
+                // The catalog entries that ask for it with `start_menu_shortcut`
+                // get a Start Menu entry, so Open-Shell indexes them and finds
+                // them by name. Republished on every install because an update
+                // can leave the executable somewhere new. A portable program
+                // brings no installer to publish one, and without this it sits
+                // on the disk with no way to open it other than the store
+                // itself. Nothing else is advertised this way: their own
                 // installers own that decision.
-                let start_menu_name = if app_id_for_task == TERMINAL_APP_ID {
-                    Some(
-                        app_entry_for_task
-                            .get("name")
-                            .and_then(|value| value.as_str())
-                            .unwrap_or(TERMINAL_APP_ID)
-                            .to_string(),
-                    )
-                } else {
-                    published_shortcut_name(&app_entry_for_task)
-                };
-                if let Some(name) = start_menu_name {
+                if let Some(name) = published_shortcut_name(&app_entry_for_task) {
                     let published = app_state
                         .installed
                         .lock()
