@@ -14,7 +14,7 @@ const LOCALE_FILES = (await readdir(path.join(SOURCE_DIR, "locales")))
   .filter((name) => name.endsWith(".js"))
   .sort()
   .map((name) => `locales/${name}`);
-const TEXT_FILES = ["index.html", "main.js", "i18n.js", "styles.css", ...LOCALE_FILES];
+const TEXT_FILES = ["index.html", "main.js", "i18n.js", "offline-scenes.js", "styles.css", ...LOCALE_FILES];
 const SETTINGS_LOCALIZATION_KEYS = [
   "Personaliza la tienda y decide cómo se mantiene.",
   "Color de acento",

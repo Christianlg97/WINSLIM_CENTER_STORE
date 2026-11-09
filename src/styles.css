@@ -288,7 +288,7 @@ textarea {
 }
 
 #btn-refresh:hover .btn-svg-icon,
-#boot-retry:not([disabled]):hover .btn-svg-icon {
+.boot-offline-actions .btn:not([disabled]):hover .btn-svg-icon {
   transform: rotate(-180deg);
 }
 
@@ -3276,7 +3276,7 @@ textarea {
   top: calc(50% + 140px);
   left: 50%;
   transform: translateX(-50%);
-  width: min(360px, calc(100vw - 48px));
+  width: min(460px, calc(100vw - 48px));
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -3290,6 +3290,8 @@ textarea {
   line-height: 1.65;
   text-wrap: balance;
 }
+/* Cada frase de la ayuda empieza en su propia línea (`showHelp`). */
+.boot-offline-actions p span { display: block; }
 .boot-offline-actions .btn {
   min-width: 156px;
   min-height: 42px;
@@ -3299,6 +3301,62 @@ textarea {
 .boot-offline-actions .btn:focus-visible {
   outline: 2px solid #d8d8d8;
   outline-offset: 4px;
+}
+
+/* La misma pantalla con la tienda ya abierta (`showOfflineScreen`): debajo hay
+   una interfaz pintada, así que entra y sale la capa entera con un fundido,
+   con su contenido ya visible, en vez de aparecer de golpe sobre el catálogo. */
+.boot-splash.offline-screen {
+  animation: splashContentIn var(--motion-reveal) var(--ease-fade) both;
+}
+.boot-splash.offline-screen > * { opacity: 1; }
+.boot-splash.offline-screen.done {
+  animation: bootSplashOut var(--motion-reveal) var(--ease-fade) both;
+  pointer-events: none;
+}
+/* Aquí no hay logo del arranque cuya posición conservar: ilustración, texto y
+   acciones van en la misma columna centrada. */
+.offline-screen .boot-offline-actions {
+  position: static;
+  transform: none;
+}
+.offline-illustration {
+  width: min(280px, calc(100vw - 48px));
+  color: #d8d8d8;
+}
+/* Recortada a su marco: nada de la escena puede invadir el texto de debajo. */
+.offline-illustration svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: hidden;
+}
+/* Escenas de offline-scenes.js: lo que pierde el enlace se aleja despacio, la
+   chispa del corte titila y la señal que no llega se apaga y vuelve. */
+.offline-drift,
+.offline-spark {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.offline-drift { animation: offlineDrift 7s ease-in-out infinite; }
+.offline-spark { animation: offlineSpark 2.4s ease-in-out infinite; }
+.offline-wave { animation: offlineWave 2.8s ease-in-out infinite; }
+@keyframes offlineDrift {
+  0%, 100% { transform: translate(0, 0) rotate(0deg); }
+  50% { transform: translate(2px, -4px) rotate(-4deg); }
+}
+@keyframes offlineSpark {
+  0%, 100% { opacity: 0.9; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+@keyframes offlineWave {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .offline-drift,
+  .offline-spark,
+  .offline-wave { animation: none; }
 }
 
 @keyframes bootSplashGiveUp {

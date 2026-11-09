@@ -141,6 +141,8 @@
             if (command === "uninstall_app") return "Aplicación desinstalada.";
             if (command === "check_connection") {
               window.__harnessConnectionChecks = (window.__harnessConnectionChecks || 0) + 1;
+              // `__harnessOnline = false` corta la red en plena sesión.
+              if (window.__harnessOnline === false) return false;
               return !msStoreTestParams.has("offline") || window.__harnessOnline === true ||
                 (msStoreTestParams.has("retry-online") && window.__harnessConnectionChecks > 1);
             }

@@ -650,12 +650,17 @@ async function syncFadeCompletesBeforeRemoval() {
   }
 }
 
-async function startupConnectionGate() {
-  const listeners = new Map(), attributes = new Map(), classes = new Set();
+// Una capa con la estructura de #boot-splash y el contexto que necesita
+// holdUntilConnected. Los temporizadores no corren solos: la prueba los dispara.
+function connectionScreenContext({ onLine, role = 'status', label = 'Iniciando WinSlimCenter' }) {
+  const listeners = new Map(), attributes = new Map([['role', role], ['aria-label', label]]), classes = new Set();
+  const timers = [];
   let click, calls = 0, pending, removed = false;
   const subtitle = { textContent: 'Preparando la tienda…' };
-  const label = {}, help = {};
-  const button = { disabled: false, querySelector: () => label, focus() {},
+  const buttonLabel = {};
+  // Cada frase de la ayuda llega como una línea propia.
+  const help = { replaceChildren(...lines) { help.lines = lines.map(line => line.textContent); help.textContent = help.lines.join(' '); } };
+  const button = { disabled: false, querySelector: () => buttonLabel, focus() {},
     addEventListener: (name, fn) => { click = fn; } };
   const panel = { hidden: false, setAttribute() {},
     querySelector: selector => selector === 'button' ? button : help,
@@ -663,34 +668,150 @@ async function startupConnectionGate() {
   const copy = { querySelector: () => subtitle, removeAttribute() {} };
   const splash = { querySelector: () => copy, appendChild() {},
     classList: { add: (...names) => names.forEach(name => classes.add(name)), remove: (...names) => names.forEach(name => classes.delete(name)) },
+    getAttribute: name => attributes.has(name) ? attributes.get(name) : null,
     setAttribute: (name, value) => attributes.set(name, value), removeAttribute: name => attributes.delete(name) };
-  const app = { inert: false }, navigator = { onLine: false };
-  const ctx = vm.createContext({ Promise, String, navigator,
-    document: { getElementById: id => id === 'app' ? app : splash, createElement: () => panel },
+  const app = { inert: false }, dialog = { inert: false }, hidden = { inert: true }, navigator = { onLine };
+  const ctx = vm.createContext({ Promise, String, Boolean, navigator,
+    document: { getElementById: id => id === 'app' ? app : splash, createElement: tag => tag === 'span' ? { textContent: '' } : panel,
+      body: { children: [splash, app, dialog, hidden] } },
     window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: name => listeners.delete(name) },
+    setTimeout: fn => { timers.push(fn); return timers.length; },
+    clearTimeout: id => { if (id) timers[id - 1] = null; },
+    OFFLINE_RECHECK_MS: 8000,
     invoke: name => { assert.equal(name, 'check_connection'); calls++; return new Promise(resolve => { pending = resolve; }); },
     clientLog() {},
   });
-  load(ctx, ['waitForStartupConnection']);
+  load(ctx, ['probeConnection', 'holdUntilConnected', 'waitForStartupConnection']);
+  return {
+    ctx, listeners, attributes, classes, subtitle, help, button, panel, app, dialog, hidden, navigator,
+    click: () => click(), calls: () => calls, resolve: value => pending(value), removed: () => removed,
+    // El último temporizador vivo: la comprobación silenciosa pendiente.
+    fireRecheck: () => { const id = timers.findLastIndex(Boolean); const fn = timers[id]; timers[id] = null; return fn(); },
+    liveTimers: () => timers.filter(Boolean).length,
+  };
+}
+
+const settle = () => new Promise(setImmediate);
+
+async function startupConnectionGate() {
+  const t = connectionScreenContext({ onLine: false });
   let ready = false;
-  const gate = ctx.waitForStartupConnection().then(() => { ready = true; });
-  await Promise.resolve();
-  assert.equal(calls, 0, 'Sin adaptador no hace falta esperar a la red');
-  assert.ok(app.inert); assert.ok(classes.has('is-connection-pending'));
-  assert.ok(classes.has('is-offline')); assert.equal(panel.hidden, false); assert.equal(ready, false);
+  const gate = t.ctx.waitForStartupConnection().then(() => { ready = true; });
+  await settle();
+  assert.equal(t.calls(), 0, 'Sin adaptador no hace falta esperar a la red');
+  assert.ok(t.app.inert); assert.ok(t.dialog.inert, 'Un diálogo abierto tampoco recibe el teclado');
+  assert.ok(t.classes.has('is-connection-pending'));
+  assert.ok(t.classes.has('is-offline')); assert.equal(t.panel.hidden, false); assert.equal(ready, false);
+  assert.match(t.help.textContent, /Conecta tu equipo a una red/);
+  assert.equal(t.subtitle.textContent, 'Sin conexión a Internet');
+  t.navigator.onLine = true;
+  const retry = t.click();
+  t.click(); t.listeners.get('online')();
+  assert.equal(t.calls(), 1, 'No duplicar peticiones al pulsar repetidamente');
+  assert.ok(t.button.disabled); t.resolve(false); await retry;
+  assert.equal(t.button.disabled, false); assert.equal(ready, false);
+  assert.deepEqual(t.help.lines, ['Seguimos sin conexión.', 'Comprueba el Wi-Fi o el cable de red y vuelve a intentarlo.'],
+    'Cada frase en su línea, sin cortes a mitad de frase');
+  const recovery = t.listeners.get('online')();
+  t.resolve(true); await recovery; await gate;
+  assert.equal(t.calls(), 2); assert.ok(ready); assert.ok(t.removed());
+  assert.equal(t.app.inert, false); assert.equal(t.dialog.inert, false);
+  assert.equal(t.hidden.inert, true, 'Lo que ya era inerte sigue siéndolo');
+  assert.equal(t.listeners.size, 0); assert.equal(t.liveTimers(), 0, 'Sin comprobaciones pendientes al terminar');
+  assert.equal(t.classes.has('is-offline'), false); assert.equal(t.classes.has('is-connection-pending'), false);
+  assert.equal(t.subtitle.textContent, 'Preparando la tienda…');
+  assert.equal(t.attributes.get('role'), 'status'); assert.equal(t.attributes.get('aria-label'), 'Iniciando WinSlimCenter');
+  assert.equal(t.attributes.has('aria-modal'), false);
+}
+
+async function sessionOfflineScreen() {
+  // Con la tienda abierta la pantalla sale ya sin red, sin comprobar otra vez,
+  // y se va sola cuando una comprobación silenciosa encuentra la red.
+  const t = connectionScreenContext({ onLine: true, role: 'dialog', label: 'Sin conexión a Internet' });
+  let ready = false;
+  const hold = t.ctx.holdUntilConnected(t.ctx.document.getElementById('boot-splash'), {
+    offline: true, keepLook: true, scope: 'connection-watch', firstHelp: ['Revisa tu configuración de red.', 'La tienda volverá en cuanto se recupere la conexión.'],
+    statusText: 'Se ha perdido la conexión a Internet',
+  }).then(() => { ready = true; });
+  await settle();
+  assert.equal(t.calls(), 0, 'La caída ya estaba confirmada');
+  assert.ok(t.classes.has('is-offline')); assert.deepEqual(t.help.lines, ['Revisa tu configuración de red.', 'La tienda volverá en cuanto se recupere la conexión.']);
+  assert.equal(t.subtitle.textContent, 'Se ha perdido la conexión a Internet', 'Su subtítulo dice qué pasó');
+  assert.ok(t.app.inert); assert.equal(t.liveTimers(), 1, 'Queda programada una comprobación silenciosa');
+  const silent = t.fireRecheck();
+  assert.equal(t.calls(), 1);
+  // Un clic durante la comprobación automática no lanza otra petición.
+  const clicked = t.click();
+  assert.equal(t.calls(), 1, 'El clic espera la misma respuesta');
+  t.resolve(false); await silent; await clicked;
+  assert.equal(ready, false); assert.match(t.help.textContent, /Seguimos sin conexión/);
+  assert.equal(t.liveTimers(), 1, 'Sigue mirando la red mientras no vuelve');
+  const again = t.fireRecheck();
+  t.resolve(true); await again; await hold;
+  assert.ok(ready); assert.equal(t.app.inert, false); assert.equal(t.listeners.size, 0);
+  assert.equal(t.liveTimers(), 0);
+  assert.equal(t.removed(), false, 'La capa sale con su aspecto: la retira quien la abrió');
+  assert.ok(t.classes.has('is-offline'));
+}
+
+async function sessionConnectionWatch() {
+  const timers = [], listeners = new Map(), documentListeners = new Map();
+  const probes = [];
+  let shown = 0, release;
+  const navigator = { onLine: true };
+  const document = { visibilityState: 'visible', addEventListener: (name, fn) => documentListeners.set(name, fn) };
+  const ctx = vm.createContext({ Promise, navigator, document,
+    CONNECTION_POLL_MS: 30000, CONNECTION_GRACE_MS: 2500,
+    setTimeout: (fn, ms) => { timers.push({ fn, ms }); return timers.length; },
+    clearTimeout: id => { if (id) timers[id - 1] = null; },
+    window: { addEventListener: (name, fn) => listeners.set(name, fn) },
+    probeConnection: async () => { assert.ok(probes.length, 'Comprobación inesperada'); return probes.shift(); },
+    showOfflineScreen: () => { shown++; return new Promise(resolve => { release = resolve; }); },
+  });
+  load(ctx, ['watchConnection']);
+  const live = () => timers.map((timer, index) => timer && { ...timer, index }).filter(Boolean);
+  const pending = () => live().map(timer => timer.ms);
+  const fire = async () => {
+    const [timer] = live().slice(-1);
+    timers[timer.index] = null;
+    timer.fn();
+    await settle();
+  };
+  ctx.watchConnection();
+  assert.deepEqual(pending(), [30000], 'Primera comprobación tras el intervalo');
+  probes.push(true); await fire();
+  assert.equal(shown, 0); assert.deepEqual(pending(), [30000]);
+
+  // Cae el adaptador: tras el margen y sin preguntar a nadie más, sale la pantalla.
+  navigator.onLine = false; listeners.get('offline')();
+  assert.deepEqual(pending(), [2500], 'El aviso adelanta la comprobación');
+  probes.push(false); await fire();
+  assert.equal(shown, 1); assert.equal(live().length, 0, 'Con la pantalla a la vista no se vigila aparte');
+  listeners.get('offline')(); documentListeners.get('visibilitychange')();
+  assert.equal(live().length, 0, 'La pantalla abierta no se duplica');
+  release(); await settle();
+  assert.deepEqual(pending(), [30000], 'Al volver la red sigue vigilando');
+
+  // Adaptador activo y un fallo suelto: se confirma antes de bloquear.
   navigator.onLine = true;
-  const retry = click();
-  click(); listeners.get('online')();
-  assert.equal(calls, 1, 'No duplicar peticiones al pulsar repetidamente');
-  assert.ok(button.disabled); pending(false); await retry;
-  assert.equal(button.disabled, false); assert.equal(ready, false);
-  assert.match(help.textContent, /Seguimos sin conexión/);
-  const recovery = listeners.get('online')();
-  pending(true); await recovery; await gate;
-  assert.equal(calls, 2); assert.ok(ready); assert.ok(removed);
-  assert.equal(app.inert, false); assert.equal(listeners.size, 0);
-  assert.equal(classes.has('is-offline'), false); assert.equal(classes.has('is-connection-pending'), false);
-  assert.equal(subtitle.textContent, 'Preparando la tienda…');
+  probes.push(false, true); await fire();
+  assert.deepEqual(pending(), [2500], 'Espera el margen antes de confirmar');
+  await fire();
+  assert.equal(shown, 1, 'Un servidor lento no tapa la tienda');
+  assert.deepEqual(pending(), [30000]);
+
+  // No poder comprobar no es estar sin red.
+  probes.push(null); await fire();
+  assert.equal(shown, 1);
+
+  // Minimizada no pregunta; al volver a verse comprueba enseguida.
+  document.visibilityState = 'hidden'; await fire();
+  assert.equal(live().length, 0);
+  document.visibilityState = 'visible'; documentListeners.get('visibilitychange')();
+  assert.deepEqual(pending(), [0]);
+  probes.push(false, false); await fire(); await fire();
+  assert.equal(shown, 2, 'Dos fallos seguidos con adaptador activo sacan la pantalla');
+  assert.equal(probes.length, 0);
 }
 
 async function sharedReadRequests() {
@@ -774,6 +895,8 @@ function catalogDescriptionsAreLocalized() {
 
 (async () => {
   await startupConnectionGate();
+  await sessionOfflineScreen();
+  await sessionConnectionWatch();
   externalInstalledSearch();
   await syncFadeCompletesBeforeRemoval();
   await splashFadeCompletesBeforeRemoval();

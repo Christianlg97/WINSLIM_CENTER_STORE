@@ -7,6 +7,7 @@ import {
   systemLanguage,
   translate,
 } from "./i18n.js";
+import { OFFLINE_SCENES } from "./offline-scenes.js";
 
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
@@ -6333,22 +6334,52 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
   }
 }
 
-/** Mantener el arranque hasta recuperar la red, sin reiniciar la aplicación. */
-function waitForStartupConnection() {
-  const splash = document.getElementById("boot-splash");
-  if (!splash) return Promise.resolve();
-  const app = document.getElementById("app");
-  const copy = splash.querySelector(".boot-splash-copy");
+/// Mientras se ve la pantalla sin conexión, cada cuánto se vuelve a mirar la
+/// red sin que nadie pulse nada. `online` sólo avisa cuando vuelve el
+/// adaptador, no cuando una red conectada recupera la salida a Internet.
+const OFFLINE_RECHECK_MS = 8000;
+
+/// Acceso real a Internet, no sólo un adaptador conectado. `null` cuando no se
+/// pudo comprobar: quien pregunta decide si eso cuenta como red caída.
+async function probeConnection(scope) {
+  if (navigator.onLine === false) return false;
+  try {
+    return Boolean(await invoke("check_connection"));
+  } catch (error) {
+    void clientLog("warn", scope, String(error));
+    return null;
+  }
+}
+
+/**
+ * Convierte una capa con la estructura de `#boot-splash` en la pantalla sin
+ * conexión y la mantiene, con el resto de la ventana inerte, hasta que vuelve
+ * la red. Resuelve al recuperarla; retirar la capa le toca a quien la llamó.
+ * `offline`: la falta de red ya está confirmada y se muestra sin comprobarla.
+ * `keepLook`: al volver la red la capa no recupera su texto de arranque,
+ * porque quien llama la retira con un fundido y debe salir tal como se veía.
+ * `statusText` va bajo el nombre de la tienda y dice qué pasa; `firstHelp`,
+ * debajo, sólo qué hacer, para no repetirlo (una frase o una lista de frases,
+ * cada una en su línea).
+ */
+function holdUntilConnected(screen, { offline = false, keepLook = false, statusText = "Sin conexión a Internet", firstHelp, scope }) {
+  const copy = screen.querySelector(".boot-splash-copy");
   const subtitle = copy.querySelector("span");
   const originalSubtitle = subtitle.textContent;
-  splash.classList.add("is-connection-pending");
-  app.inert = true;
+  const originalRole = screen.getAttribute("role");
+  const originalLabel = screen.getAttribute("aria-label");
+  const returnFocus = document.activeElement;
+  screen.classList.add("is-connection-pending");
+  // Todo lo que hay junto a la capa, no sólo `#app`: con la tienda abierta
+  // puede haber un diálogo encima y el teclado no debe alcanzarlo por detrás.
+  const blocked = [...document.body.children].filter((element) => element !== screen && !element.inert);
+  for (const element of blocked) element.inert = true;
   const panel = document.createElement("div");
   panel.className = "boot-offline-actions";
   panel.hidden = true;
   panel.innerHTML = `
-    <p id="boot-connection-help" aria-live="polite">Conecta el equipo a Internet para acceder a tus aplicaciones y descubrir otras nuevas.</p>
-    <button type="button" class="btn primary" id="boot-retry">
+    <p aria-live="polite"></p>
+    <button type="button" class="btn primary">
       <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
         <path d="M3 3v5h5"/>
@@ -6357,63 +6388,209 @@ function waitForStartupConnection() {
       </svg>
       <span>Reintentar</span>
     </button>`;
-  splash.appendChild(panel);
+  screen.appendChild(panel);
   const button = panel.querySelector("button");
   const label = button.querySelector("span");
   const help = panel.querySelector("p");
-  let checking = false;
-  let complete = false;
+  // Una línea por frase: el salto cae entre frases y no a mitad de una, en
+  // cualquier idioma, porque cada una se traduce por separado.
+  const showHelp = (sentences) =>
+    help.replaceChildren(
+      ...[sentences].flat().map((sentence) => {
+        const line = document.createElement("span");
+        line.textContent = sentence;
+        return line;
+      }),
+    );
+  const restore = (name, value) =>
+    value === null ? screen.removeAttribute(name) : screen.setAttribute(name, value);
   return new Promise((resolve) => {
-    const retry = async () => {
-      if (checking || complete) return;
-      checking = true;
-      button.disabled = true;
-      label.textContent = "Comprobando…";
-      panel.setAttribute("aria-busy", "true");
-      let connected = false;
-      let failed = false;
-      try {
-        connected = navigator.onLine !== false && await invoke("check_connection");
-      } catch (error) {
-        failed = true;
-        void clientLog("warn", "startup-connection", String(error));
-      }
-      checking = false;
-      if (connected) {
-        complete = true;
-        window.removeEventListener("online", retry);
+    let complete = false;
+    let retrying = false;
+    let pending = null;
+    let timer = null;
+    // Un clic durante la comprobación automática espera a esa misma respuesta
+    // en vez de lanzar otra petición.
+    const check = () => (pending ||= probeConnection(scope).finally(() => { pending = null; }));
+    const finish = () => {
+      complete = true;
+      clearTimeout(timer);
+      window.removeEventListener("online", retry);
+      if (!keepLook) {
         panel.remove();
-        splash.classList.remove("is-offline", "is-connection-pending");
-        splash.setAttribute("role", "status");
-        splash.setAttribute("aria-label", "Iniciando WinSlimCenter");
-        splash.removeAttribute("aria-modal");
+        screen.classList.remove("is-offline", "is-connection-pending");
+        restore("role", originalRole);
+        restore("aria-label", originalLabel);
+        screen.removeAttribute("aria-modal");
         subtitle.textContent = originalSubtitle;
-        app.inert = false;
-        resolve();
-        return;
       }
+      for (const element of blocked) element.inert = false;
+      if (returnFocus?.isConnected && returnFocus !== document.body) {
+        returnFocus.focus?.({ preventScroll: true });
+      }
+      resolve();
+    };
+    // Silenciosa: ni toca el botón ni repite «Seguimos sin conexión» sin que
+    // nadie lo haya pedido; sólo retira la pantalla si la red ha vuelto.
+    const recheckLater = () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        if (complete || pending) return;
+        const connected = await check();
+        if (complete) return;
+        if (connected === true) finish();
+        else recheckLater();
+      }, OFFLINE_RECHECK_MS);
+    };
+    const showOffline = (failed) => {
       const firstAttempt = panel.hidden;
-      splash.classList.add("is-offline");
-      splash.setAttribute("role", "dialog");
-      splash.setAttribute("aria-modal", "true");
-      splash.setAttribute("aria-label", "Sin conexión a Internet");
+      screen.classList.add("is-offline");
+      screen.setAttribute("role", "dialog");
+      screen.setAttribute("aria-modal", "true");
+      screen.setAttribute("aria-label", "Sin conexión a Internet");
       copy.removeAttribute("aria-hidden");
-      subtitle.textContent = "Sin conexión a Internet";
-      help.textContent = failed
-        ? "No hemos podido comprobar la conexión. Vuelve a intentarlo."
-        : firstAttempt
-          ? "Conecta el equipo a Internet para acceder a tus aplicaciones y descubrir otras nuevas."
-          : "Seguimos sin conexión. Comprueba el Wi-Fi o el cable de red y vuelve a intentarlo.";
+      subtitle.textContent = statusText;
+      showHelp(
+        failed
+          ? ["No hemos podido comprobar la conexión.", "Vuelve a intentarlo."]
+          : firstAttempt
+            ? firstHelp
+            : ["Seguimos sin conexión.", "Comprueba el Wi-Fi o el cable de red y vuelve a intentarlo."],
+      );
       panel.hidden = false;
       panel.setAttribute("aria-busy", "false");
       button.disabled = false;
       label.textContent = "Reintentar";
       button.focus({ preventScroll: true });
+      recheckLater();
+    };
+    const retry = async () => {
+      if (retrying || complete) return;
+      retrying = true;
+      button.disabled = true;
+      label.textContent = "Comprobando…";
+      panel.setAttribute("aria-busy", "true");
+      const connected = await check();
+      retrying = false;
+      if (complete) return;
+      if (connected === true) finish();
+      else showOffline(connected === null);
     };
     button.addEventListener("click", retry);
     window.addEventListener("online", retry);
-    void retry();
+    if (offline) showOffline(false);
+    else void retry();
   });
+}
+
+/** Mantener el arranque hasta recuperar la red, sin reiniciar la aplicación. */
+function waitForStartupConnection() {
+  const splash = document.getElementById("boot-splash");
+  if (!splash) return Promise.resolve();
+  return holdUntilConnected(splash, {
+    scope: "startup-connection",
+    firstHelp: "Conecta tu equipo a una red para acceder al catálogo de la tienda.",
+  });
+}
+
+/// La escena de la última vez: la siguiente caída enseña otra distinta.
+let lastOfflineScene = -1;
+
+/**
+ * La misma pantalla del arranque, con la tienda ya abierta: entra con un
+ * fundido sobre lo que hubiera y, al volver la red, sale igual y deja la
+ * tienda como estaba. Lo que corría por detrás (descargas, instalaciones)
+ * sigue en el backend y sus eventos se aplican debajo mientras tanto.
+ */
+async function showOfflineScreen() {
+  let scene = Math.floor(Math.random() * OFFLINE_SCENES.length);
+  if (OFFLINE_SCENES.length > 1 && scene === lastOfflineScene) {
+    scene = (scene + 1) % OFFLINE_SCENES.length;
+  }
+  lastOfflineScene = scene;
+  const statusText = "Se ha perdido la conexión a Internet";
+  const screen = document.createElement("div");
+  screen.className = "boot-splash offline-screen";
+  screen.innerHTML = `
+    <div class="offline-illustration" aria-hidden="true">${OFFLINE_SCENES[scene]}</div>
+    <div class="boot-splash-copy">
+      <strong>WinSlimCenter</strong>
+      <span>${statusText}</span>
+    </div>`;
+  document.body.appendChild(screen);
+  void clientLog("warn", "connection", "Se perdió la conexión a Internet: la tienda queda en espera.");
+  await holdUntilConnected(screen, {
+    offline: true,
+    keepLook: true,
+    scope: "connection-watch",
+    statusText,
+    firstHelp: ["Revisa tu configuración de red.", "La tienda volverá en cuanto se recupere la conexión."],
+  });
+  void clientLog("info", "connection", "Conexión a Internet recuperada.");
+  await new Promise((resolve) => {
+    let timer;
+    const remove = () => {
+      clearTimeout(timer);
+      screen.removeEventListener("animationend", onEnd);
+      screen.remove();
+      resolve();
+    };
+    const onEnd = (event) => {
+      if (event.target === screen && event.animationName === "bootSplashOut") remove();
+    };
+    screen.addEventListener("animationend", onEnd);
+    screen.classList.add("done");
+    const duration = getComputedStyle(screen).animationDuration;
+    const milliseconds = parseFloat(duration) * (duration.trim().endsWith("ms") ? 1 : 1000);
+    timer = setTimeout(remove, (Number.isFinite(milliseconds) ? milliseconds : 320) + 100);
+  });
+}
+
+/// Cada cuánto se comprueba la red con la tienda abierta y a la vista. El
+/// evento `offline` avisa al momento si cae el adaptador; esto cubre la red
+/// que sigue conectada pero se queda sin salida a Internet.
+const CONNECTION_POLL_MS = 30000;
+/// Margen antes de dar la red por perdida: un corte de un par de segundos
+/// (cambio de punto de acceso, router que se reinicia) no merece tapar la tienda.
+const CONNECTION_GRACE_MS = 2500;
+
+/**
+ * Vigila la conexión durante toda la sesión, no sólo en el arranque, y saca la
+ * pantalla sin conexión cada vez que se pierde. Minimizada no pregunta a nadie:
+ * al volver a verse comprueba enseguida.
+ */
+function watchConnection() {
+  let timer = null;
+  let busy = false;
+  const schedule = (delay) => {
+    clearTimeout(timer);
+    timer = setTimeout(verify, delay);
+  };
+  const verify = async () => {
+    if (busy || document.visibilityState === "hidden") return;
+    busy = true;
+    try {
+      let connected = await probeConnection("connection-watch");
+      // Con el adaptador activo, un fallo suelto puede ser un servidor lento:
+      // se confirma una vez más antes de bloquear la tienda.
+      if (connected === false && navigator.onLine !== false) {
+        await new Promise((resolve) => setTimeout(resolve, CONNECTION_GRACE_MS));
+        connected = await probeConnection("connection-watch");
+      }
+      // `null` (no se pudo comprobar) no es una red caída: no se bloquea nada.
+      if (connected === false) await showOfflineScreen();
+    } finally {
+      busy = false;
+      schedule(CONNECTION_POLL_MS);
+    }
+  };
+  window.addEventListener("offline", () => {
+    if (!busy) schedule(CONNECTION_GRACE_MS);
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && !busy) schedule(0);
+  });
+  schedule(CONNECTION_POLL_MS);
 }
 
 /// Retira la pantalla de arranque de `index.html`. Dos fotogramas: en el
@@ -7743,6 +7920,8 @@ window.addEventListener("DOMContentLoaded", async () => {
   try {
     await Promise.all(listenerRegistrations);
     await waitForStartupConnection();
+    // Desde aquí, perder la red en plena sesión vuelve a sacar la misma pantalla.
+    watchConnection();
     // The snapshot begins only after all listeners are confirmed active.
     bootstrapPromise = invoke("get_bootstrap");
   } catch (error) {

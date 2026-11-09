@@ -261,6 +261,7 @@ WINSLIM_CENTER_STORE/
 │   ├── i18n.js                 # Traducción de la interfaz al idioma elegido
 │   ├── locales/                # Un diccionario por idioma (claves en español)
 │   ├── main.js                 # Lógica interactiva del cliente
+│   ├── offline-scenes.js       # Ilustraciones de la pantalla sin conexión
 │   └── styles.css              # Sistema de diseño CSS y tokens
 ├── src-tauri/                  # Backend en Rust (Tauri 2)
 │   ├── src/                    # Módulos de Rust (lib, detect, installer, etc.)
