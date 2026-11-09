@@ -893,6 +893,29 @@
     "featured": false
   },
   {
+    "id": "gpu_z",
+    "name": "GPU-Z",
+    "description": "Información detallada de tu tarjeta gráfica: GPU, memoria, frecuencias y BIOS, con sensores en tiempo real de temperatura, carga y consumo.",
+    "version": "latest",
+    "author": "TechPowerUp",
+    "category": "Hardware y monitorización",
+    "section": "Utilidades",
+    "source_type": "techpowerup",
+    "techpowerup_slug": "techpowerup-gpu-z",
+    "installer_args": [
+      "-installSilent"
+    ],
+    "winget_id": "TechPowerUp.GPU-Z",
+    "icon_url": "assets/catalog/gpu_z.png",
+    "accent_color": "#4caf50",
+    "launch_executable": "GPU-Z.exe",
+    "detect_names": [
+      "TechPowerUp GPU-Z"
+    ],
+    "web_url": "https://www.techpowerup.com/gpuz/",
+    "featured": false
+  },
+  {
     "id": "crystaldiskinfo",
     "name": "CrystalDiskInfo",
     "description": "Monitoriza la salud de tus discos duros SSD/HDD con S.M.A.R.T. en tiempo real.",
@@ -1621,7 +1644,10 @@
     "github_repo": "Alex313031/Thorium-Win",
     "asset_release_from_notes": true,
     "installer_args": [
-      "--silent"
+      "--do-not-launch-chrome"
+    ],
+    "installer_system_args": [
+      "--system-level"
     ],
     "icon_url": "assets/catalog/thorium.png",
     "accent_color": "#2563eb",
@@ -1789,6 +1815,32 @@
     "winget_id": "Microsoft.Edge",
     "winget_source": "winget",
     "featured": false
+  },
+  {
+    "id": "tor_browser",
+    "name": "Tor Browser",
+    "description": "Navegador del Tor Project que enruta tu tráfico por la red Tor para navegar de forma anónima, sin rastreo y esquivando la censura.",
+    "version": "latest",
+    "author": "The Tor Project",
+    "category": "Navegadores",
+    "section": "Navegadores",
+    "featured": false,
+    "source_type": "wget",
+    "download_page": "https://aus1.torproject.org/torbrowser/update_3/release/download-windows-x86_64.json",
+    "download_link_pattern": "https://dist.torproject.org/torbrowser/*/tor-browser-windows-x86_64-portable-*.exe",
+    "download_url": "https://archive.torproject.org/tor-package-archive/torbrowser/16.0/tor-browser-windows-x86_64-portable-16.0.exe",
+    "version_from_download_link": true,
+    "setup_into_install_dir": true,
+    "installer_args": [
+      "/S"
+    ],
+    "version_file": "Browser\\tbb_version.json",
+    "launch_executable": "firefox.exe",
+    "start_menu_shortcut": true,
+    "desktop_shortcut": true,
+    "icon_url": "assets/catalog/tor_browser.svg",
+    "accent_color": "#7d4698",
+    "web_url": "https://www.torproject.org/"
   },
   {
     "id": "msi_afterburner",

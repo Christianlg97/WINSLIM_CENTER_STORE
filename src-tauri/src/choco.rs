@@ -10,7 +10,7 @@
 //! toca el equipo, y por eso va aparte y se anuncia como un paso propio.
 
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -76,6 +76,97 @@ pub fn executable() -> Option<PathBuf> {
             .join("choco.exe"),
     );
     candidates.into_iter().find(|path| path.is_file())
+}
+
+/// Los portables pueden no aparecer ni en Uninstall ni en Get-StartApps.
+/// La ficha local por si sola no prueba nada: también debe quedar el programa.
+pub fn portable_status(entry: &serde_json::Value) -> Option<crate::detect::AppStatus> {
+    if entry.get("source_type")?.as_str()? != "choco" {
+        return None;
+    }
+    let choco = executable()?;
+    portable_status_at(choco.parent()?.parent()?, entry)
+}
+
+fn portable_status_at(root: &Path, entry: &serde_json::Value) -> Option<crate::detect::AppStatus> {
+    let package_id = entry.get("choco_id")?.as_str()?.trim();
+    // El id acaba en una ruta y en un argumento: solo admite la sintaxis NuGet.
+    if package_id.is_empty()
+        || package_id.eq_ignore_ascii_case("all")
+        || !package_id.starts_with(|c: char| c.is_ascii_alphanumeric())
+        || !package_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c))
+    {
+        return None;
+    }
+    let lib = root.join("lib");
+    let directory = lib.join(package_id);
+    if lib.join(format!("{package_id}.chocolateyPending")).exists()
+        || directory.join(".chocolateyPending").exists()
+    {
+        return None;
+    }
+    let raw = std::fs::read_to_string(directory.join(format!("{package_id}.nuspec"))).ok()?;
+    let document = crate::msstore::xml::parse(raw.trim_start_matches('\u{feff}')).ok()?;
+    let metadata = document.child("package")?.child("metadata")?;
+    if !metadata
+        .child("id")?
+        .inner_text()
+        .trim()
+        .eq_ignore_ascii_case(package_id)
+    {
+        return None;
+    }
+    let version = metadata.child("version")?.inner_text().trim().to_string();
+    if version.is_empty() {
+        return None;
+    }
+    let title = metadata
+        .child("title")
+        .map(|node| node.inner_text())
+        .unwrap_or_default();
+    let tags = metadata
+        .child("tags")
+        .map(|node| node.inner_text())
+        .unwrap_or_default();
+    let declared_portable = title.to_ascii_lowercase().contains("(portable)")
+        || package_id.to_ascii_lowercase().ends_with(".portable")
+        || tags
+            .split_whitespace()
+            .any(|tag| tag.eq_ignore_ascii_case("portable"));
+    let launch = crate::installer::resolve_launchable_path(
+        &directory.join("tools"),
+        entry
+            .get("launch_executable")
+            .and_then(serde_json::Value::as_str),
+    )?;
+    // Un paquete nativo puede conservar su setup en tools. Solo un portable
+    // declarado o un ejecutable expuesto por Chocolatey cuenta como programa.
+    // GPU-Z usa .ignore para suprimir el shim y publica accesos directos.
+    let shim = root.join("bin").join(launch.file_name()?);
+    let ignored = launch.with_extension("exe.ignore").exists();
+    if !declared_portable && (ignored || !shim.is_file()) {
+        return None;
+    }
+    let command = format!(
+        "\"{}\" uninstall {package_id} --yes --no-progress",
+        root.join("bin").join("choco.exe").display()
+    );
+    Some(crate::detect::AppStatus {
+        installed: true,
+        version,
+        origin: "system".into(),
+        install_path: launch.to_string_lossy().to_string(),
+        update_available: false,
+        latest_version: None,
+        pending_restart: false,
+        can_uninstall: true,
+        can_launch: true,
+        uninstall_command: Some(command),
+        uninstall_command_full: None,
+        install_location: Some(directory.to_string_lossy().to_string()),
+    })
 }
 
 /// La versión que dice tener, cuando lo hay. Sirve para el aviso de la sección,
@@ -469,6 +560,82 @@ pub async fn install(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn portable_status_requires_a_local_package_and_its_program() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-choco-portable-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let tools = root.join("lib/gpu-z/tools");
+        std::fs::create_dir_all(&tools).unwrap();
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        let entry = serde_json::json!({
+            "id": "choco-gpu-z", "source_type": "choco", "choco_id": "gpu-z",
+            "name": "GPU-Z (Portable)", "version": "2.70.0"
+        });
+        let manifest = root.join("lib/gpu-z/gpu-z.nuspec");
+        let portable = r#"<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd"><metadata><id>gpu-z</id><version>2.71.0</version><title>GPU-Z (Portable)</title><tags>gpu hardware</tags></metadata></package>"#;
+        std::fs::write(&manifest, portable).unwrap();
+        // El registro del paquete sin programa no confirma una instalación.
+        assert!(portable_status_at(&root, &entry).is_none());
+        let executable = tools.join("GPU-Z.2.71.0.exe");
+        // Cabecera PE sintética: nunca se ejecuta ningún instalador ni programa.
+        let mut pe = vec![0_u8; 134];
+        pe[..2].copy_from_slice(b"MZ");
+        pe[0x3c..0x40].copy_from_slice(&128_u32.to_le_bytes());
+        pe[128..132].copy_from_slice(b"PE\0\0");
+        pe[132..134].copy_from_slice(&0x014c_u16.to_le_bytes());
+        std::fs::write(&executable, pe).unwrap();
+        std::fs::write(executable.with_extension("exe.ignore"), "").unwrap();
+        let status = portable_status_at(&root, &entry).unwrap();
+        assert!(status.installed && status.can_launch && status.can_uninstall);
+        assert_eq!(status.version, "2.71.0");
+        assert_eq!(Path::new(&status.install_path), executable);
+        let (program, arguments) = crate::installer::split_registered_command(
+            status.uninstall_command.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert_eq!(program, root.join("bin/choco.exe"));
+        assert_eq!(arguments, "uninstall gpu-z --yes --no-progress");
+
+        // No dar por instalado un paquete a medio instalar o con otro id.
+        let pending = root.join("lib/gpu-z.chocolateyPending");
+        std::fs::write(&pending, "").unwrap();
+        assert!(portable_status_at(&root, &entry).is_none());
+        std::fs::remove_file(pending).unwrap();
+        std::fs::write(
+            &manifest,
+            portable.replace("<id>gpu-z</id>", "<id>otro</id>"),
+        )
+        .unwrap();
+        assert!(portable_status_at(&root, &entry).is_none());
+        let mut invalid = entry.clone();
+        for id in ["../gpu-z", "gpu-z --force", "all", ""] {
+            invalid["choco_id"] = serde_json::json!(id);
+            assert!(portable_status_at(&root, &invalid).is_none());
+        }
+
+        // Un setup ignorado en tools no es el programa que instaló; un shim
+        // sin .ignore sí sirve para otros paquetes que no dicen Portable.
+        std::fs::write(&manifest, portable.replace(" (Portable)", "")).unwrap();
+        assert!(portable_status_at(&root, &entry).is_none());
+        std::fs::write(root.join("bin/GPU-Z.2.71.0.exe"), "shim").unwrap();
+        assert!(portable_status_at(&root, &entry).is_none());
+        std::fs::remove_file(executable.with_extension("exe.ignore")).unwrap();
+        assert!(portable_status_at(&root, &entry).is_some());
+        std::fs::remove_file(&executable).unwrap();
+        assert!(portable_status_at(&root, &entry).is_none());
+        assert!(portable_status(&serde_json::json!({ "source_type": "winget" })).is_none());
+
+        let checked = root.canonicalize().unwrap();
+        assert!(checked.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        std::fs::remove_dir_all(checked).unwrap();
+    }
 
     #[test]
     fn no_op_is_specific_to_the_requested_package() {

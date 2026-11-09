@@ -77,9 +77,14 @@
       }
       // ?installed-update=steam da por instalada esa aplicación del catálogo con
       // una versión vieja, que es lo que hace falta para que aparezca en
-      // «Actualizaciones» y se pueda pulsar su botón.
+      // «Actualizaciones» y se pueda pulsar su botón. Admite varias separadas por
+      // comas (?installed-update=steam,thorium) para probar la selección.
       // ?installed=id1,id2 las da por instaladas y al día, con versión «latest»
       // como las deja la tienda, que es el caso del distintivo «Ya instalado».
+      const updateIds = (msStoreTestParams.get("installed-update") || "").split(",").filter(Boolean);
+      // ?update-versions=156.0.8078.28,M156.0.8078.80 cambia la versión instalada
+      // y la publicada, para ver cómo caben las largas en la tarjeta.
+      const [updateFrom = "1.0.0", updateTo = "2.0.0"] = (msStoreTestParams.get("update-versions") || "").split(",").filter(Boolean);
       function mockStatuses() {
         const statuses = {};
         for (const id of (msStoreTestParams.get("installed") || "").split(",").filter(Boolean)) {
@@ -90,23 +95,21 @@
             can_uninstall: true, can_launch: true,
           };
         }
-        const appId = msStoreTestParams.get("installed-update");
-        if (!appId) return statuses;
-        return {
-          ...statuses,
-          [appId]: {
+        for (const appId of updateIds) {
+          statuses[appId] = {
             installed: true,
-            version: "1.0.0",
+            version: updateFrom,
             origin: "center",
             install_path: "C:\\Apps\\" + appId + "\\app.exe",
             install_location: "C:\\Apps\\" + appId,
             update_available: true,
-            latest_version: "2.0.0",
+            latest_version: updateTo,
             pending_restart: false,
             can_uninstall: true,
             can_launch: true,
-          },
-        };
+          };
+        }
+        return statuses;
       }
       // Cuántas veces ha pedido cada cosa la interfaz. La tienda guarda la
       // referencia a `invoke` al cargar, así que envolverla desde fuera no
@@ -121,7 +124,7 @@
             window.__harnessCalls[command] = (window.__harnessCalls[command] || 0) + 1;
             window.__harnessRequests.push({ command, args });
             if (command === "portable_data_info") {
-              return msStoreTestParams.has("portable") && args.appId === msStoreTestParams.get("installed-update")
+              return msStoreTestParams.has("portable") && updateIds.includes(args.appId)
                 ? { directory: "C:\\Apps\\" + args.appId, backup_root: "C:\\Users\\Usuario\\AppData\\Local\\WinSlimCenter-Backups" }
                 : null;
             }

@@ -2015,6 +2015,25 @@ async fn uninstall_app(
         return Ok(format!("{app_name} se ha desinstalado correctamente"));
     }
 
+    if let Some(portable) = choco::portable_status(&catalog_entry) {
+        // Chocolatey debe retirar también sus shims, accesos y metadatos. Si
+        // falla, no se borra su carpeta por el fallback de portables genéricos.
+        let command = portable.uninstall_command.ok_or("Falta el desinstalador de Chocolatey")?;
+        async_runtime::spawn_blocking(move || installer::uninstall_system_app(&command))
+            .await
+            .map_err(|error| format!("Falló la desinstalación de Chocolatey: {error}"))??;
+        return finish_uninstall(
+            &app,
+            &state,
+            &app_id,
+            &app_name,
+            catalog_entry,
+            PathBuf::from(portable.install_path),
+            Vec::new(),
+        )
+        .await;
+    }
+
     if st.origin == "system" {
         logger::info(
             "uninstall",
@@ -3473,10 +3492,57 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
         .buffer_unordered(6)
         .collect::<Vec<(String, Result<String, String>)>>();
 
+    // A download a page publishes (Tor Browser) has no release feed and nothing
+    // WinGet can see: the latest version is the one in the name of the link the
+    // page offers now, the same file an update would download.
+    let link_targets: Vec<(String, String, String)> = catalog
+        .iter()
+        .filter_map(|entry| {
+            let id = entry.get("id").and_then(|v| v.as_str())?;
+            if !matches!(
+                entry.get("source_type").and_then(|v| v.as_str()),
+                Some("wget" | "direct")
+            ) || !entry
+                .get("version_from_download_link")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
+            {
+                return None;
+            }
+            if !statuses.get(id).map(|st| st.installed).unwrap_or(false) {
+                return None;
+            }
+            let page = entry.get("download_page").and_then(|v| v.as_str())?;
+            let pattern = entry.get("download_link_pattern").and_then(|v| v.as_str())?;
+            Some((id.to_string(), page.to_string(), pattern.to_string()))
+        })
+        .collect();
+    let link_lookup = futures_util::stream::iter(link_targets)
+        .map(|(id, page, pattern)| async move {
+            let version = match download::link_on_page(&page, &pattern).await {
+                Ok(link) => download::version_in_link(&link),
+                Err(error) => {
+                    logger::warn(
+                        "updates",
+                        format!("No se pudo leer la última versión de {id}: {error}"),
+                    );
+                    None
+                }
+            };
+            (id, version)
+        })
+        .buffer_unordered(6)
+        .collect::<Vec<(String, Option<String>)>>();
+
     // WinGet is a local child process and GitHub is remote I/O. They are fully
     // independent, so waiting for both concurrently removes one whole serial
     // leg from every update check.
-    let (winget_upgrades, github_lookups) = tokio::join!(winget_lookup, github_lookup);
+    let (winget_upgrades, github_lookups, link_lookups) =
+        tokio::join!(winget_lookup, github_lookup, link_lookup);
+    let link_versions: HashMap<String, String> = link_lookups
+        .into_iter()
+        .filter_map(|(id, version)| version.map(|version| (id, version)))
+        .collect();
 
     // A single, explicit note beats one opaque failure per repository.
     if github_lookups.iter().any(|(_, result)| {
@@ -3513,6 +3579,13 @@ async fn check_updates_once(state: &AppState) -> Result<HashMap<String, AppStatu
         if let Some(tag) = github_results.get(id) {
             st.update_available = github_release_is_update(tag, &st.version);
             st.latest_version = Some(tag.clone());
+            continue;
+        }
+        // Same rule as a release tag: with no version on either side there is
+        // nothing to compare, and no update is invented.
+        if let Some(version) = link_versions.get(id) {
+            st.update_available = github_release_is_update(version, &st.version);
+            st.latest_version = Some(version.clone());
             continue;
         }
 

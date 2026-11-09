@@ -216,6 +216,72 @@ function queueEligibility() {
   assert.equal(ctx.isQueueable(catalog[0]), false, 'nothing is queued before the machine has answered for it');
 }
 
+// En «Actualizaciones» se elige lo mismo que pediría «Actualizar todo», y la
+// selección de esa vista no se mezcla con la cola de instalación.
+function updateSelectionEligibility() {
+  const apps = new Map(['notepad', 'quickcpu', 'thorium', 'steam'].map(id => [id, { id, name: id }]));
+  const codex = { family: 'OpenAI.Codex_2p2', version: '26.1103.3517.0' };
+  const ctx = vm.createContext({
+    Map, Set, String,
+    state: {
+      section: 'updates',
+      busy: { quickcpu: 'updating' },
+      statuses: {
+        notepad: { installed: true, update_available: true },
+        quickcpu: { installed: true, update_available: true },
+        thorium: { installed: true, update_available: true },
+        steam: { installed: true },
+      },
+      bulkUpdate: { finished: false, byKey: new Map([['thorium', {}]]) },
+      msstore: {
+        installed: [codex], installing: {},
+        updates: { 'openai.codex_2p2': { update_available: true, product_id: '9plm9xgg6vks' } },
+      },
+      selection: new Set(['epic']),
+      updateSelection: new Set(['notepad', 'quickcpu', 'msstore:9PLM9XGG6VKS', 'gone']),
+    },
+    derived: { taskByAppId: new Map() },
+    findApp: id => apps.get(id),
+  });
+  load(ctx, ['isUpdateSelectable', 'pruneUpdateSelection', 'isBulkUpdateRunning', 'appStatus',
+    'msStoreUpdatesList', 'msStoreUpdateOf', 'activeSelectionMode', 'activeSelection']);
+  assert.equal(ctx.isUpdateSelectable('notepad'), true);
+  assert.equal(ctx.isUpdateSelectable('quickcpu'), false, 'an update already running cannot be picked');
+  assert.equal(ctx.isUpdateSelectable('thorium'), false, 'a row waiting in the running batch is already asked for');
+  assert.equal(ctx.isUpdateSelectable('steam'), false, 'nothing to update');
+  assert.equal(ctx.isUpdateSelectable('msstore:9PLM9XGG6VKS'), true, 'Microsoft Store rows use their batch key');
+  ctx.state.msstore.installing['9PLM9XGG6VKS'] = 'update';
+  assert.equal(ctx.isUpdateSelectable('msstore:9PLM9XGG6VKS'), false);
+  ctx.pruneUpdateSelection();
+  assert.deepEqual([...ctx.state.updateSelection], ['notepad']);
+  assert.equal(ctx.activeSelection(), ctx.state.updateSelection);
+  ctx.state.section = 'home';
+  assert.equal(ctx.activeSelectionMode(), 'install');
+  assert.equal(ctx.activeSelection(), ctx.state.selection, 'the install queue is untouched outside Updates');
+}
+
+// La tarjeta con versión nueva lleva la píldora azul junto al nombre y la
+// versión de destino en la línea del autor, sin la caja que repetía lo mismo.
+function updateCardMeta() {
+  const statuses = {
+    thorium: { installed: true, update_available: true, version: '156.0.8078.28', latest_version: 'M156.0.8078.80' },
+    claude: { installed: true, pending_restart: true, version: '1.0', latest_version: '1.1' },
+    steam: { installed: true, version: '2.0' },
+  };
+  const ctx = vm.createContext({ escapeHtml: String, appStatus: id => statuses[id] || {} });
+  load(ctx, ['cardMetaHtml', 'updateVersionBadge', 'updateTagHtml', 'updateTargetHtml', 'versionLabel']);
+  const html = ctx.cardMetaHtml({ id: 'thorium', name: 'Thorium Browser', author: 'Alex313031' });
+  assert.match(html, /class="installed-tag update-tag"><span class="badge-dot blue"><\/span>Actualización disponible/);
+  assert.match(html, /v156\.0\.8078\.28 <span class="update-target"[^>]*>→ v156\.0\.8078\.80<\/span><\/small>/);
+  assert.doesNotMatch(html, /update-version-badge/, 'the version box would repeat the pill');
+  assert.doesNotMatch(html, /Ya instalado/);
+  const restart = ctx.cardMetaHtml({ id: 'claude', name: 'Claude' });
+  assert.match(restart, /reinicia para aplicar/);
+  assert.match(restart, /update-version-badge/, 'a pending restart keeps explaining itself');
+  assert.doesNotMatch(restart, /update-target/);
+  assert.match(ctx.cardMetaHtml({ id: 'steam', name: 'Steam' }), /badge-dot green/);
+}
+
 // Arranque sin pantalla de carga: lo que nadie sabía espera con una silueta, y
 // lo que se pulsa durante el escaneo se decide con su respuesta.
 async function startupVerification() {
@@ -404,6 +470,8 @@ function versionLabels() {
   assert.equal(ctx.versionLabel('LTS'), 'LTS');
   assert.equal(ctx.versionLabel('Unknown', ''), '', 'WinGet without a version says nothing');
   assert.equal(ctx.versionLabel('latest', 'versión desconocida'), 'versión desconocida');
+  assert.equal(ctx.versionLabel('M156.0.8078.80'), 'v156.0.8078.80', 'Chromium milestone tags read like the installed version');
+  assert.equal(ctx.versionLabel('M1'), 'M1', 'only a full dotted version loses its M');
 }
 
 async function splashPresentation() {
@@ -543,7 +611,8 @@ function externalInstalledSearch() {
     MSSTORE_KIND_LABELS: { appx: 'Paquete de Windows' }, versionLabel: value => value,
   });
   load(ctx, ['msStoreInstalledByFamily', 'msStoreInstalledRecord', 'msStoreUpdateOf',
-    'msStoreOriginTag', 'msStoreVersionBadge', 'msStoreInstalledActions', 'msStoreCardHtml']);
+    'msStoreOriginTag', 'msStoreVersionBadge', 'msStoreInstalledActions', 'msStoreCardHtml',
+    'updateTagHtml', 'updateTargetHtml', 'msStoreUpdateTargetHtml']);
   const product = { product_id: '9CANDY', title: 'Candy Crush Soda Saga', kind: 'appx',
     installed: false, package_families: ['KING.COM.CANDYCRUSHSODASAGA_ABC'] };
   assert.equal(ctx.msStoreInstalledRecord(product), app, 'Cruzar la familia aunque la marca de búsqueda sea anterior');
@@ -726,9 +795,11 @@ function catalogDescriptionsAreLocalized() {
   restoredRepositories();
   await queuedInstall();
   queueEligibility();
+  updateSelectionEligibility();
+  updateCardMeta();
   await startupVerification();
   await sharedReadRequests();
   indexedCatalogCards();
   catalogDescriptionsAreLocalized();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, localized catalog descriptions, web-app browser choice, visible counters and version labels passed.');
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, update selection, update card badges, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, localized catalog descriptions, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });

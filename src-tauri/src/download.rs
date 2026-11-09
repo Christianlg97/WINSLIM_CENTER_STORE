@@ -432,6 +432,34 @@ mod tests {
         assert_eq!(links_in(html), vec!["https://example.com/setup.exe"]);
     }
 
+    /// El JSON con el que la web de Tor anuncia su descarga para Windows: la
+    /// firma `.asc` va al lado y no puede pasar por el instalador.
+    const TOR_DOWNLOAD_JSON: &str = concat!(
+        r#"{"binary" : "https://dist.torproject.org/torbrowser/16.0.1/tor-browser-windows-x86_64-portable-16.0.1.exe","#,
+        r#""git_tag" : "tbb-16.0.1-build1","#,
+        r#""sig" : "https://dist.torproject.org/torbrowser/16.0.1/tor-browser-windows-x86_64-portable-16.0.1.exe.asc","#,
+        r#""version" : "16.0.1"}"#,
+    );
+
+    #[test]
+    fn the_version_of_a_published_download_comes_from_its_file_name() {
+        let matcher = WildMatch::new(
+            "https://dist.torproject.org/torbrowser/*/tor-browser-windows-x86_64-portable-*.exe",
+        );
+        let link = links_in(TOR_DOWNLOAD_JSON)
+            .into_iter()
+            .find(|link| matcher.matches(&link.to_ascii_lowercase()))
+            .expect("el JSON publica el instalador");
+        assert!(link.ends_with("-16.0.1.exe"));
+        assert_eq!(version_in_link(&link).as_deref(), Some("16.0.1"));
+        // "x86_64" no es una versión, y una ruta con números no manda sobre el nombre.
+        assert_eq!(
+            version_in_link("https://example.com/v9.9/setup-x86_64-2.4.exe?build=1.2").as_deref(),
+            Some("2.4")
+        );
+        assert_eq!(version_in_link("https://example.com/1.0/setup.exe"), None);
+    }
+
     #[test]
     fn completed_tasks_enter_cleanup_window() {
         let mut manager = DownloadManager::new();
@@ -2266,4 +2294,17 @@ pub async fn link_on_page(page_url: &str, pattern: &str) -> Result<String, Strin
         .into_iter()
         .find(|link| matcher.matches(&link.to_ascii_lowercase()))
         .ok_or_else(|| format!("{page_url} ya no publica ningún enlace como «{pattern}»"))
+}
+
+/// La versión que una descarga lleva en el nombre de su archivo: "16.0" en
+/// `.../torbrowser/16.0/tor-browser-windows-x86_64-portable-16.0.exe`.
+///
+/// Solo cuenta el nombre, no la ruta: el servidor de la carpeta o un parámetro
+/// de la dirección pueden traer otros números con puntos. Es lo que tienen las
+/// fichas `version_from_download_link`, cuyo proveedor no ofrece otro sitio del
+/// que leer la última versión que la página que publica la descarga.
+pub fn version_in_link(url: &str) -> Option<String> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let name = path.rsplit('/').next().unwrap_or(path);
+    dotted_version(name)
 }

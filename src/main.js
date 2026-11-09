@@ -263,6 +263,10 @@ const state = {
   // conserva el orden en que se eligieron, que es el orden en que entran en la
   // cola. Dura lo que la sesión: elegir es preparar una tanda, no un ajuste.
   selection: new Set(),
+  // Lo marcado en «Actualizaciones» para actualizar, por la clave de su fila en
+  // la tanda (id del catálogo o `msstore:PRODUCTO`). Aparte de `selection`: una
+  // cosa es lo que falta por instalar y otra lo que se quiere poner al día.
+  updateSelection: new Set(),
   // La Microsoft Store vive aparte del catálogo: su búsqueda, sus filtros y
   // sus resultados no sobreviven a un reinicio y no tienen por qué.
   msstore: {
@@ -1258,7 +1262,27 @@ function updateVersionBadge(st, modal = false) {
   const current = versionLabel(st.version, "versión desconocida");
   const latest = versionLabel(st.latest_version, "la más reciente");
   const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
-  return `<span class="${cls}" title="Versión instalada y versión disponible">Actualización · ${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
+  // Sin «Actualización ·» delante: la píldora azul de al lado ya lo dice.
+  return `<span class="${cls}" title="Versión instalada y versión disponible">${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
+}
+
+/// La pareja azul de «Ya instalado»: mismo hueco junto al nombre, misma forma,
+/// para que una actualización pendiente se lea de un vistazo en la cuadrícula.
+function updateTagHtml() {
+  return `<span class="installed-tag update-tag"><span class="badge-dot blue"></span>Actualización disponible</span>`;
+}
+
+/// La misma píldora en grande, junto a la verde de la ficha.
+function updateBannerHtml() {
+  return `<div class="installed-badge-banner update-banner"><span class="badge-dot blue"></span>Actualización disponible</div>`;
+}
+
+/// La versión a la que se va, al final de la línea del autor. Con la píldora
+/// diciendo ya que hay actualización, una caja más con lo mismo saturaba la
+/// tarjeta; así ocupa las mismas tres líneas que una instalada al día.
+function updateTargetHtml(latestVersion) {
+  const latest = versionLabel(latestVersion, "la más reciente");
+  return ` <span class="update-target" title="Versión disponible">→ ${escapeHtml(latest)}</span>`;
 }
 
 function cardMetaHtml(app) {
@@ -1275,27 +1299,31 @@ function cardMetaHtml(app) {
     st.pending_restart
       ? `<span class="origin-tag update-origin">reinicia para aplicar</span>`
       : st.update_available
-        ? `<span class="origin-tag update-origin">actualización disponible</span>`
+        ? updateTagHtml()
         : st.installed
           ? `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`
           : "";
+  const target = !st.pending_restart && st.update_available ? updateTargetHtml(st.latest_version) : "";
   return `
     <strong><bdi>${escapeHtml(app.name)}</bdi>${origin}</strong>
-    <small>${escapeHtml(app.author || "—")}  ·  ${escapeHtml(versionLabel(version))}</small>
-    ${updateVersionBadge(st)}`;
+    <small>${escapeHtml(app.author || "—")}  ·  ${escapeHtml(versionLabel(version))}${target}</small>
+    ${st.pending_restart ? updateVersionBadge(st) : ""}`;
 }
 
 function cardHtml(app, index, prioritizeIcon = false) {
   const accent = pickAccent(app, index);
   const avatarBg = avatarBackground(app, accent);
   const letter = (app.name || app.id || "A")[0].toUpperCase();
-  const selectable = isQueueable(app);
-  const selected = selectable && state.selection.has(app.id);
+  // En «Actualizaciones» el círculo elige qué actualizar; en el resto, qué
+  // instalar. Nunca los dos: allí todo está instalado.
+  const mode = activeSelectionMode();
+  const selectable = mode === "update" ? isUpdateSelectable(app.id) : isQueueable(app);
+  const selected = selectable && activeSelection().has(app.id);
   return `
     <article class="app-card${selected ? " is-selected" : ""}" data-app-id="${escapeHtml(app.id)}" tabindex="0"
       ${selectable ? "data-selectable" : ""}
       aria-label="Ver detalles de ${escapeHtml(app.name)}" style="--card-accent:${accent}">
-      ${selectable ? cardSelectHtml(app, selected) : ""}
+      ${selectable ? cardSelectHtml(app, selected, mode) : ""}
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(app, letter, prioritizeIcon && index < 8)}</div>
         <div>
@@ -1377,10 +1405,52 @@ function pruneSelection() {
   }
 }
 
-function cardSelectHtml(app, selected) {
+// En «Actualizaciones» el mismo gesto elige qué actualizar: el círculo, el
+// Ctrl+clic, Escape y la barra de abajo son los mismos, y su botón manda lo
+// elegido a la tanda de «Actualizar todo», en el orden en que se eligió. Las
+// dos selecciones se guardan por separado y la barra enseña la de la vista.
+
+/// Qué elige el círculo en la vista actual: «update» en «Actualizaciones»,
+/// «install» en el resto.
+function activeSelectionMode() {
+  return state.section === "updates" ? "update" : "install";
+}
+
+function activeSelection() {
+  return activeSelectionMode() === "update" ? state.updateSelection : state.selection;
+}
+
+/**
+ * Si la fila `key` puede elegirse para actualizarla: lo mismo que pediría
+ * «Actualizar todo» —versión nueva y nada en marcha— y fuera de la tanda en
+ * curso. `key` es la clave de la tanda: el id del catálogo o `msstore:PRODUCTO`.
+ */
+function isUpdateSelectable(key) {
+  if (!key) return false;
+  if (state.busy[key] || derived.taskByAppId.has(key)) return false;
+  if (isBulkUpdateRunning() && state.bulkUpdate.byKey.has(key)) return false;
+  if (key.startsWith("msstore:")) {
+    const productId = key.slice("msstore:".length);
+    if (state.msstore.installing[productId]) return false;
+    return msStoreUpdatesList().some(
+      (app) => String(msStoreUpdateOf(app.family)?.product_id || "").toUpperCase() === productId,
+    );
+  }
+  return !!findApp(key) && !!appStatus(key).update_available;
+}
+
+/// Saca lo que ya no tiene actualización pendiente o ya está en marcha.
+function pruneUpdateSelection() {
+  for (const key of state.updateSelection) {
+    if (!isUpdateSelectable(key)) state.updateSelection.delete(key);
+  }
+}
+
+function cardSelectHtml(app, selected, mode = "install", key = app.id) {
+  const attribute = mode === "update" ? "data-update-select" : "data-select";
   return `
-    <button type="button" class="card-select" data-select="${escapeHtml(app.id)}"
-      ${cardSelectAttributes(app, selected)}>
+    <button type="button" class="card-select" ${attribute}="${escapeHtml(key)}"
+      ${cardSelectAttributes(app, selected, mode)}>
       <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor"
         stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
         <path d="M5 12.5l4.5 4.5L19 7.5" />
@@ -1388,22 +1458,29 @@ function cardSelectHtml(app, selected) {
     </button>`;
 }
 
-function cardSelectAttributes(app, selected) {
-  const name = escapeHtml(app.name);
+function cardSelectLabels(name, selected, mode = "install") {
+  if (mode === "update") {
+    return selected
+      ? { label: `Quitar ${name} de la cola de actualización`, title: "Quitar de la cola" }
+      : { label: `Añadir ${name} a la cola de actualización`, title: "Añadir a la cola" };
+  }
   return selected
-    ? `aria-pressed="true" aria-label="Quitar ${name} de la cola de instalación" title="Quitar de la cola"`
-    : `aria-pressed="false" aria-label="Añadir ${name} a la cola de instalación" title="Añadir a la cola de instalación"`;
+    ? { label: `Quitar ${name} de la cola de instalación`, title: "Quitar de la cola" }
+    : { label: `Añadir ${name} a la cola de instalación`, title: "Añadir a la cola de instalación" };
+}
+
+function cardSelectAttributes(app, selected, mode = "install") {
+  const { label, title } = cardSelectLabels(app.name || app.id, selected, mode);
+  return `aria-pressed="${selected}" aria-label="${escapeHtml(label)}" title="${escapeHtml(title)}"`;
 }
 
 /**
- * Pone una tarjeta ya dibujada al día con la selección.
+ * Pone el círculo de una tarjeta ya dibujada al día con su selección.
  *
  * El botón se retoca en su sitio en vez de rehacerse: quien lo acaba de pulsar
  * con el teclado tiene el foco en él y no tiene por qué perderlo.
  */
-function syncCardSelection(card, app) {
-  const selectable = isQueueable(app);
-  const selected = selectable && state.selection.has(app.id);
+function syncSelectToggle(card, app, { selectable, selected, mode, key }) {
   card.toggleAttribute("data-selectable", selectable);
   card.classList.toggle("is-selected", selected);
   const toggle = card.querySelector(":scope > .card-select");
@@ -1412,26 +1489,53 @@ function syncCardSelection(card, app) {
     return;
   }
   if (!toggle) {
-    card.insertAdjacentHTML("afterbegin", cardSelectHtml(app, selected));
+    card.insertAdjacentHTML("afterbegin", cardSelectHtml(app, selected, mode, key));
     return;
   }
   if (toggle.getAttribute("aria-pressed") === String(selected)) return;
-  const name = app.name || app.id;
+  const { label, title } = cardSelectLabels(app.name || app.id, selected, mode);
   toggle.setAttribute("aria-pressed", String(selected));
-  toggle.setAttribute(
-    "aria-label",
-    selected ? `Quitar ${name} de la cola de instalación` : `Añadir ${name} a la cola de instalación`,
-  );
-  toggle.title = selected ? "Quitar de la cola" : "Añadir a la cola de instalación";
+  toggle.setAttribute("aria-label", label);
+  toggle.title = title;
+}
+
+/// Una tarjeta del catálogo, con la selección que toque en la vista.
+function syncCardSelection(card, app) {
+  const mode = activeSelectionMode();
+  const selectable = mode === "update" ? isUpdateSelectable(app.id) : isQueueable(app);
+  syncSelectToggle(card, app, {
+    selectable,
+    selected: selectable && activeSelection().has(app.id),
+    mode,
+    key: app.id,
+  });
+}
+
+/// Una tarjeta de la Microsoft Store en «Actualizaciones».
+function syncMsStoreCardSelection(card) {
+  const key = card.dataset.updateKey;
+  const installed = state.msstore.installed.find((app) => app.family === card.dataset.msFamily);
+  if (!key || !installed) return;
+  const selectable = activeSelectionMode() === "update" && isUpdateSelectable(key);
+  syncSelectToggle(card, msStoreInstalledShape(installed), {
+    selectable,
+    selected: selectable && state.updateSelection.has(key),
+    mode: "update",
+    key,
+  });
 }
 
 function refreshSelectionUi() {
   pruneSelection();
+  pruneUpdateSelection();
   const content = document.getElementById("content");
   if (content) {
     for (const [appId, cards] of indexedContent(content).cardsByAppId) {
       const app = findApp(appId);
       if (app) for (const card of cards) syncCardSelection(card, app);
+    }
+    if (activeSelectionMode() === "update") {
+      for (const card of content.querySelectorAll(".ms-card[data-update-key]")) syncMsStoreCardSelection(card);
     }
   }
   renderQueueDock();
@@ -1445,9 +1549,18 @@ function toggleSelection(id) {
   refreshSelectionUi();
 }
 
+function toggleUpdateSelection(key) {
+  if (activeSelectionMode() !== "update" || !isUpdateSelectable(key)) return;
+  if (state.updateSelection.has(key)) state.updateSelection.delete(key);
+  else state.updateSelection.add(key);
+  refreshSelectionUi();
+}
+
+/// Vacía la selección de la vista: Escape o «Vaciar» no tocan la otra.
 function clearSelection() {
-  if (!state.selection.size) return;
-  state.selection.clear();
+  const selection = activeSelection();
+  if (!selection.size) return;
+  selection.clear();
   refreshSelectionUi();
 }
 
@@ -1468,13 +1581,24 @@ function ensureQueueDock() {
     const button = event.target.closest("[data-queue]");
     if (button?.dataset.queue === "clear") clearSelection();
     else if (button?.dataset.queue === "install") void installSelection();
+    else if (button?.dataset.queue === "update") void updateSelected();
   });
   main.appendChild(dock);
   return dock;
 }
 
+/// Lo elegido para actualizar, en el orden en que se eligió, con la fila que
+/// le correspondería en la tanda (versiones, origen, aspecto de la tarjeta).
+function selectedUpdateItems() {
+  pruneUpdateSelection();
+  const pending = new Map(pendingUpdateItems().map((item) => [item.key, item]));
+  return [...state.updateSelection].map((key) => pending.get(key)).filter(Boolean);
+}
+
 /**
- * La barra de la cola: lo elegido, cuántas son y qué hacer con ellas.
+ * La barra de la cola: lo elegido, cuántas son y qué hacer con ellas. En
+ * «Actualizaciones» cuenta lo elegido para actualizar; en el resto, la cola de
+ * instalación.
  *
  * Al vaciarse se queda con su último contenido mientras se va, para que la
  * salida no sea un recuadro en blanco deslizándose hacia abajo.
@@ -1482,9 +1606,15 @@ function ensureQueueDock() {
 function renderQueueDock() {
   const dock = ensureQueueDock();
   if (!dock) return;
-  pruneSelection();
-  const apps = [...state.selection].map(findApp).filter(Boolean);
-  const count = apps.length;
+  const updating = activeSelectionMode() === "update";
+  let entries;
+  if (updating) {
+    entries = selectedUpdateItems().map((item) => ({ key: item.key, app: item.app }));
+  } else {
+    pruneSelection();
+    entries = [...state.selection].map(findApp).filter(Boolean).map((app) => ({ key: app.id, app }));
+  }
+  const count = entries.length;
   document.getElementById("content")?.classList.toggle("selection-active", count > 0);
   dock.classList.toggle("is-visible", count > 0);
   dock.inert = !count;
@@ -1496,38 +1626,43 @@ function renderQueueDock() {
   }
 
   const running = isBulkUpdateRunning();
-  const signature = `${apps.map((app) => app.id).join(",")}|${running}`;
+  const mode = updating ? "update" : "install";
+  const signature = `${mode}|${entries.map((entry) => entry.key).join(",")}|${running}`;
   if (dock.dataset.signature === signature) return;
   dock.dataset.signature = signature;
+  dock.setAttribute("aria-label", updating ? "Cola de actualización" : "Cola de instalación");
 
   // Las cuatro últimas elegidas, la más reciente a la derecha y por encima: la
   // que se acaba de marcar se ve llegar. Lo que no cabe se cuenta delante.
   const previousIds = new Set((dock.dataset.appIds || "").split(",").filter(Boolean));
-  dock.dataset.appIds = apps.map((app) => app.id).join(",");
-  const shown = apps.slice(-4);
+  dock.dataset.appIds = entries.map((entry) => entry.key).join(",");
+  const shown = entries.slice(-4);
+  const note = updating
+    ? running
+      ? "Hay una tanda en marcha: podrás actualizar éstas cuando termine."
+      : "Se actualizarán en cola, en el orden en que las elegiste."
+    : running
+      ? "Hay una tanda en marcha: podrás instalar éstas cuando termine."
+      : "Se instalarán en cola, en el orden en que las elegiste.";
   dock.innerHTML = `
     <div class="queue-dock-stack" aria-hidden="true">
       ${count > shown.length ? `<span class="queue-dock-more">+${count - shown.length}</span>` : ""}
       ${shown
-        .map((app, index) => {
+        .map(({ key, app }, index) => {
           const accent = pickAccent(app, index);
           // A la vista desde el primer momento y como mucho cuatro: sin espera
           // perezosa, que dejaría la letra en lugar del icono al aparecer.
-          return `<span class="card-avatar queue-dock-avatar${previousIds.has(app.id) ? "" : " is-new"}" style="background:${avatarBackground(app, accent)}">${renderAvatar(app, (app.name || "?")[0].toUpperCase(), true)}</span>`;
+          return `<span class="card-avatar queue-dock-avatar${previousIds.has(key) ? "" : " is-new"}" style="background:${avatarBackground(app, accent)}">${renderAvatar(app, (app.name || "?")[0].toUpperCase(), true)}</span>`;
         })
         .join("")}
     </div>
     <div class="queue-dock-copy">
       <strong>${count} ${count === 1 ? "aplicación seleccionada" : "aplicaciones seleccionadas"}</strong>
-      <small>${
-        running
-          ? "Hay una tanda en marcha: podrás instalar éstas cuando termine."
-          : "Se instalarán en cola, en el orden en que las elegiste."
-      }</small>
+      <small>${note}</small>
     </div>
     <div class="queue-dock-actions">
       <button type="button" class="btn ghost" data-queue="clear" title="Quitar todas de la selección (Esc)">Vaciar</button>
-      <button type="button" class="btn primary queue-dock-install" data-queue="install"
+      <button type="button" class="btn primary queue-dock-install" data-queue="${mode}"
         ${running ? 'aria-busy="true" title="Ver la tanda en marcha"' : ""}>
         <svg class="btn-svg-icon" width="14" height="14" viewBox="0 0 24 24" fill="none"
           stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -1535,19 +1670,22 @@ function renderQueueDock() {
           <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
           <path d="M4 20h16" />
         </svg>
-        <span>${running ? "Tanda en marcha…" : `Instalar (${count})`}</span>
+        <span>${running ? "Tanda en marcha…" : updating ? `Actualizar (${count})` : `Instalar (${count})`}</span>
       </button>
     </div>`;
 }
 
 /// La lista que se repasa antes de confirmar, numerada en el orden de la cola.
-function queueReviewHtml(items) {
+/// Una actualización dice de qué versión a cuál va; una instalación, de quién es.
+function queueReviewHtml(items, label = "Orden de instalación") {
   return `
-    <ol class="queue-review" aria-label="Orden de instalación">
+    <ol class="queue-review" aria-label="${escapeHtml(label)}">
       ${items
         .map((item, index) => {
           const accent = pickAccent(item.app, index);
-          const meta = [item.app.author, item.app.category].filter(Boolean).join(" · ");
+          const meta = item.to
+            ? `${versionLabel(item.from, "versión desconocida")} → ${versionLabel(item.to, "la más reciente")}`
+            : [item.app.author, item.app.category].filter(Boolean).join(" · ");
           return `
         <li class="queue-review-item">
           <span class="queue-review-index">${index + 1}</span>
@@ -2082,13 +2220,19 @@ function msStoreVersionBadge(app, { modal = false } = {}) {
   const cls = modal ? "update-version-badge modal-version" : "update-version-badge";
   return `<span class="${cls}" title="Versión instalada y versión publicada en el canal ${escapeHtml(
     msStoreRingLabel()
-  )}">Actualización · ${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
+  )}">${escapeHtml(current)} → ${escapeHtml(latest)}</span>`;
 }
 
 function msStoreOriginTag(app) {
   return msStoreUpdateOf(app.family)?.update_available
-    ? `<span class="origin-tag update-origin">actualización disponible</span>`
+    ? updateTagHtml()
     : `<span class="installed-tag"><span class="badge-dot green"></span>Ya instalado</span>`;
+}
+
+/// La versión publicada al final de la línea del autor, como en el catálogo.
+function msStoreUpdateTargetHtml(app) {
+  const report = msStoreUpdateOf(app.family);
+  return report?.update_available ? updateTargetHtml(report.latest_version) : "";
 }
 
 /**
@@ -2146,7 +2290,7 @@ function msStoreCardHtml(product, index) {
       ? `<span class="origin-tag ms-kind-tag">${escapeHtml(kind)}</span>`
       : "";
   const meta = installed
-    ? `${escapeHtml(product.publisher || "Microsoft Store")}  ·  ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}`
+    ? `${escapeHtml(product.publisher || "Microsoft Store")}  ·  ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}${msStoreUpdateTargetHtml(installed)}`
     : `${escapeHtml(product.publisher || "Microsoft Store")}  ·  Gratis`;
 
   let actions;
@@ -2171,7 +2315,6 @@ function msStoreCardHtml(product, index) {
             ${tags}
           </strong>
           <small>${meta}</small>
-          ${installed ? msStoreVersionBadge(installed) : ""}
         </div>
       </div>
       <p class="card-desc" translate="no">${escapeHtml(product.description || "")}</p>
@@ -2192,17 +2335,23 @@ function msStoreInstalledCardHtml(app, index) {
   const productAttribute = report?.product_id
     ? ` data-ms-id="${escapeHtml(report.product_id)}" tabindex="0" aria-label="Ver detalles de ${escapeHtml(shape.name)}"`
     : "";
+  // En «Actualizaciones» se elige qué actualizar igual que en el catálogo; la
+  // clave es la de su fila en la tanda.
+  const updateKey = report?.product_id ? msStoreTaskId(report.product_id) : "";
+  const pickable = activeSelectionMode() === "update" && isUpdateSelectable(updateKey);
+  const picked = pickable && state.updateSelection.has(updateKey);
   return `
-    <article class="app-card ms-card ms-installed-card" data-ms-family="${escapeHtml(app.family)}"${productAttribute}
+    <article class="app-card ms-card ms-installed-card${picked ? " is-selected" : ""}" data-ms-family="${escapeHtml(app.family)}"${productAttribute}
+      ${updateKey ? `data-update-key="${escapeHtml(updateKey)}"` : ""} ${pickable ? "data-selectable" : ""}
       style="--card-accent:${accent}">
+      ${pickable ? cardSelectHtml(shape, picked, "update", updateKey) : ""}
       <div class="card-top">
         <div class="card-avatar" style="background:${avatarBg}">${renderAvatar(shape, letter, index < 8)}</div>
         <div>
           <strong><bdi>${escapeHtml(shape.name)}</bdi>
             ${msStoreOriginTag(app)}
           </strong>
-          <small>Microsoft Store  ·  ${escapeHtml(versionLabel(app.version, "versión desconocida"))}</small>
-          ${msStoreVersionBadge(app)}
+          <small>Microsoft Store  ·  ${escapeHtml(versionLabel(app.version, "versión desconocida"))}${msStoreUpdateTargetHtml(app)}</small>
         </div>
       </div>
       <p class="card-desc" translate="no">${escapeHtml(app.name)}</p>
@@ -3185,7 +3334,9 @@ async function openMsStoreModal(productId) {
           <div><span class="origin-tag ms-kind-tag">Microsoft Store · ${escapeHtml(id)}</span></div>
           ${
             installed
-              ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Instalada · ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}</div>
+              ? `<div class="detail-badges"><div class="installed-badge-banner"><span class="badge-dot green"></span>Instalada · ${escapeHtml(versionLabel(installed.version, "versión desconocida"))}</div>${
+                   report?.update_available ? updateBannerHtml() : ""
+                 }</div>
                  ${report?.update_available ? `<div>${msStoreVersionBadge(installed, { modal: true })}</div>` : ""}`
               : ""
           }
@@ -3901,7 +4052,7 @@ function updateVisibleAppActions(appIds) {
     // Lo que acaba de ponerse en marcha deja de poder elegirse, y al revés.
     if (app) syncCardSelection(card, app);
   }
-  if (state.selection.size) renderQueueDock();
+  if (activeSelection().size) renderQueueDock();
 }
 
 function updateVisibleAppStatuses(appIds) {
@@ -3917,7 +4068,7 @@ function updateVisibleAppStatuses(appIds) {
     if (actions) actions.innerHTML = actionButtons(app, "card");
     syncCardSelection(card, app);
   }
-  if (state.selection.size) renderQueueDock();
+  if (activeSelection().size) renderQueueDock();
 }
 
 const APP_ACTION_KINDS = ["install", "update", "uninstall", "launch"];
@@ -4077,6 +4228,13 @@ function bindShellDelegation() {
       return;
     }
 
+    // Antes que la tarjeta de la Microsoft Store, que abriría su ficha.
+    const updatePick = event.target.closest("[data-update-select]");
+    if (updatePick) {
+      toggleUpdateSelection(updatePick.dataset.updateSelect);
+      return;
+    }
+
     const msUpdate = event.target.closest("[data-ms-update]");
     if (msUpdate) {
       updateMsStoreApp(msUpdate.dataset.msUpdate, msUpdate.dataset.msFamily);
@@ -4097,7 +4255,12 @@ function bindShellDelegation() {
 
     const msCard = event.target.closest(".ms-card[data-ms-id]");
     if (msCard) {
-      if (!event.target.closest("button")) void openMsStoreModal(msCard.dataset.msId);
+      if (event.target.closest("button")) return;
+      if ((event.ctrlKey || event.metaKey) && msCard.hasAttribute("data-selectable") && msCard.dataset.updateKey) {
+        toggleUpdateSelection(msCard.dataset.updateKey);
+      } else {
+        void openMsStoreModal(msCard.dataset.msId);
+      }
       return;
     }
 
@@ -4149,7 +4312,8 @@ function bindShellDelegation() {
       // Ctrl+clic marca sin abrir la ficha: el gesto de siempre para elegir
       // varias cosas de una lista sin perderla de vista.
       if ((event.ctrlKey || event.metaKey) && card.hasAttribute("data-selectable")) {
-        toggleSelection(card.dataset.appId);
+        if (activeSelectionMode() === "update") toggleUpdateSelection(card.dataset.appId);
+        else toggleSelection(card.dataset.appId);
       } else {
         openAppModal(card.dataset.appId);
       }
@@ -4217,6 +4381,10 @@ function versionLabel(version, unknown = "Última versión") {
   const text = String(version ?? "").trim();
   if (!text || /^(latest|lastest|unknown|desconocida)$/i.test(text)) return unknown;
   if (/^v\d/i.test(text)) return `v${text.slice(1)}`;
+  // Las ramas de Chromium llevan una M delante («M156.0.8078.80», la etiqueta
+  // de Thorium): es la misma versión que Windows registra sin ella, y al lado
+  // de «v156.0.8078.28» parecía otro producto.
+  if (/^m\d+(\.\d+){2,}$/i.test(text)) return `v${text.slice(1)}`;
   if (/^\d/.test(text)) return `v${text}`;
   return text[0].toUpperCase() + text.slice(1);
 }
@@ -4236,7 +4404,9 @@ function openAppModal(id) {
   // showed nothing saying it was already on the machine. They say different
   // things and both are worth saying.
   const installedBanner = st.installed
-    ? `<div class="installed-badge-banner"><span class="badge-dot green"></span>Ya instalado</div>
+    ? `<div class="detail-badges"><div class="installed-badge-banner"><span class="badge-dot green"></span>Ya instalado</div>${
+        st.update_available && !st.pending_restart ? updateBannerHtml() : ""
+      }</div>
        ${st.update_available || st.pending_restart ? `<div>${updateVersionBadge(st, true)}</div>` : ""}`
     : "";
 
@@ -4982,7 +5152,7 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     closeModal();
   } else if (
-    event.key === "Escape" && !modalOpen && state.selection.size &&
+    event.key === "Escape" && !modalOpen && activeSelection().size &&
     !event.target.closest?.("input, textarea")
   ) {
     // Sin diálogo abierto, Escape deshace la selección: es lo que se espera de
@@ -5293,18 +5463,7 @@ async function updateEverything() {
     return;
   }
 
-  try {
-    await Promise.all(items.filter((item) => item.kind === "catalog").map(async (item) => {
-      item.portableInfo = await invokeShared(
-        "portable_data_info",
-        { appId: item.appId, forUpdate: true },
-        `${item.appId}|actualizacion`,
-      );
-    }));
-  } catch (error) {
-    showAlertModal("No se pudieron comprobar los datos", String(error));
-    return;
-  }
+  if (!(await loadPortableUpdateInfo(items))) return;
   const portables = items.filter((item) => item.portableInfo);
   const fromStore = items.filter((item) => item.kind === "catalog").length;
   const fromMsStore = items.length - fromStore;
@@ -5328,6 +5487,70 @@ async function updateEverything() {
     onConfirm: (picked) => {
       for (const item of portables) item.portableData = picked;
       return startBulkUpdate(items);
+    },
+  });
+}
+
+/// Las portables de la tanda dicen antes qué datos tienen, para preguntar una
+/// sola vez qué hacer con ellos. `false` si no se pudo, ya avisado.
+async function loadPortableUpdateInfo(items) {
+  try {
+    await Promise.all(items.filter((item) => item.kind === "catalog").map(async (item) => {
+      item.portableInfo = await invokeShared(
+        "portable_data_info",
+        { appId: item.appId, forUpdate: true },
+        `${item.appId}|actualizacion`,
+      );
+    }));
+    return true;
+  } catch (error) {
+    showAlertModal("No se pudieron comprobar los datos", String(error));
+    return false;
+  }
+}
+
+/**
+ * «Actualizar» en la barra de la cola de «Actualizaciones»: lo mismo que
+ * «Actualizar todo», pero sólo con lo elegido y en el orden en que se eligió.
+ */
+async function updateSelected() {
+  if (isBulkUpdateRunning()) {
+    showBulkUpdateModal();
+    return;
+  }
+  await untilStatusesVerified();
+  const items = selectedUpdateItems();
+  if (!items.length) {
+    renderQueueDock();
+    return;
+  }
+  if (!(await loadPortableUpdateInfo(items))) return;
+  const portables = items.filter((item) => item.portableInfo);
+  const count = items.length;
+
+  showConfirmModal({
+    title: `Actualizar ${count} ${count === 1 ? "aplicación" : "aplicaciones"}`,
+    subtitle: "Cola de actualización",
+    message:
+      "Se actualizarán en este orden. Las descargas corren en paralelo y las instalaciones " +
+      "se aplican una detrás de otra.\n\n" +
+      "Las aplicaciones que estén abiertas se cerrarán para poder aplicar su actualización: " +
+      "guarda antes lo que tengas sin guardar." +
+      (portables.length
+        ? `\n\nPortables: ${portables.map((item) => item.name).join(", ")}.` +
+          portableDataMessage(portables[0].portableInfo)
+        : ""),
+    details: queueReviewHtml(items, "Orden de actualización"),
+    choices: portables.length ? portableDataChoices(portables[0].portableInfo) : null,
+    confirmText: `Actualizar (${count})`,
+    confirmVariant: "primary",
+    onConfirm: (picked) => {
+      for (const item of portables) item.portableData = picked;
+      // Como en la cola de instalación: lo elegido pasa a ser la tanda.
+      state.updateSelection.clear();
+      const started = startBulkUpdate(items);
+      refreshSelectionUi();
+      return started;
     },
   });
 }

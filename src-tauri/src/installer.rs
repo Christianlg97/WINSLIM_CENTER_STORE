@@ -422,6 +422,44 @@ fn installer_runs_hidden(app: &Value, installer_path: &Path) -> bool {
     ext != "exe" || !app_installer_args(app, installer_path).is_empty()
 }
 
+/// The catalog entry with `installer_system_args` added to its switches, when
+/// the copy being replaced is installed for every user (under Program Files).
+///
+/// Chromium-based setups such as Thorium's install for the current user unless
+/// told `--system-level`, and with a copy for all users already in place they
+/// refuse the per-user one: exit code 3 (EXISTING_VERSION_LAUNCHED), after
+/// opening the old browser. A first install keeps the catalog's default scope.
+fn with_system_scope_args(app: &Value, installer_path: &Path, installed_dir: &Path) -> Option<Value> {
+    let extra: Vec<String> = match app.get("installer_system_args")? {
+        Value::Array(items) => items
+            .iter()
+            .filter_map(|item| item.as_str().map(str::to_string))
+            .collect(),
+        Value::String(raw) => raw.split_whitespace().map(str::to_string).collect(),
+        _ => return None,
+    };
+    if extra.is_empty() || !lives_under_program_files(installed_dir) {
+        return None;
+    }
+    let mut args = app_installer_args(app, installer_path);
+    args.extend(extra);
+    let mut scoped = app.clone();
+    scoped
+        .as_object_mut()?
+        .insert("installer_args".into(), Value::from(args));
+    Some(scoped)
+}
+
+fn lives_under_program_files(path: &Path) -> bool {
+    let candidate = normalized_path_key(path);
+    ["ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"]
+        .iter()
+        .filter_map(|variable| std::env::var(variable).ok())
+        .map(|root| normalized_path_key(Path::new(&root)))
+        .filter(|root| !root.is_empty())
+        .any(|root| candidate.starts_with(&format!("{root}\\")))
+}
+
 /// What the progress line says while the setup runs.
 ///
 /// A setup launched with its silent switches, or through Windows Installer,
@@ -1411,6 +1449,10 @@ fn run_installer_over(
         return run_installer_in_background(app, installer_path, flags, cancelability_events);
     };
 
+    // The update has to land in the same scope as the copy it replaces.
+    let scoped = with_system_scope_args(app, installer_path, &folder);
+    let app = scoped.as_ref().unwrap_or(app);
+
     let stopped = crate::process::stop_application_at(&folder);
     let outcome = run_installer_in_background(app, installer_path, flags, cancelability_events);
     // Put the services back whether or not the installation worked: leaving a
@@ -1492,12 +1534,23 @@ fn run_installer_in_background(
         _ => return Ok(()),
     };
 
+    // NSIS only honours `/D=` as the very last argument and unquoted, spaces
+    // included. `Command::args` quotes a path with a space in it, and the setup
+    // then ignores it and unpacks onto the Desktop, so it travels raw.
+    let target_argument = (ext == "exe")
+        .then(|| setup_target_dir(app))
+        .flatten()
+        .map(|dir| format!("/D={dir}"));
     let family = detect_installer_family(installer_path);
     crate::logger::info(
         "installer",
         format!(
-            "Ejecutando instalador: ruta={}, tipo={ext}, tecnología={family:?}, argumentos={args:?}",
-            installer_path.display()
+            "Ejecutando instalador: ruta={}, tipo={ext}, tecnología={family:?}, argumentos={args:?}{}",
+            installer_path.display(),
+            target_argument
+                .as_deref()
+                .map(|argument| format!(" {argument}"))
+                .unwrap_or_default()
         ),
     );
 
@@ -1508,6 +1561,15 @@ fn run_installer_in_background(
         crate::process::background(&mut command);
     }
     command.args(&args);
+    if let Some(argument) = target_argument.as_deref() {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            command.raw_arg(argument);
+        }
+        #[cfg(not(windows))]
+        command.arg(argument);
+    }
     if let Some(parent) = installer_path.parent() {
         command.current_dir(parent);
     }
@@ -1531,9 +1593,15 @@ fn run_installer_in_background(
                 // Waiting for the elevated process keeps its exit code, so a
                 // wizard cancelled after the UAC prompt is reported as a
                 // cancellation instead of an unexplained "not installed".
+                let mut elevated_arguments = quote_arguments(&args);
+                if let Some(argument) = target_argument.as_deref() {
+                    elevated_arguments = format!("{elevated_arguments} {argument}")
+                        .trim()
+                        .to_string();
+                }
                 let elevated_code = run_elevated_installer_and_wait(
                     installer_path,
-                    &quote_arguments(&args),
+                    &elevated_arguments,
                     installer_path.parent(),
                     flags,
                     cancelability_events,
@@ -2175,6 +2243,17 @@ where
         }
         other => return Err(format!("Tipo de origen desconocido: {other}")),
     };
+    // Sin esto quedaba registrada como "latest" y la comprobación de
+    // actualizaciones, que compara con la versión del enlace, nunca podía decir
+    // que ya estaba al día.
+    if resolved_version.is_none()
+        && app
+            .get("version_from_download_link")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    {
+        resolved_version = download::version_in_link(&url);
+    }
 
     if flags.cancel.load(std::sync::atomic::Ordering::SeqCst) {
         return Err(CANCELLED_MARKER.into());
@@ -2287,7 +2366,41 @@ where
                 ),
             );
         }
-        if should_run_as_installer(app, ext) {
+        if unpacks_into_install_dir(app, ext) {
+            // The setup is only a self-extracting package: it copies a folder
+            // and tells Windows nothing, so the store would wait for a
+            // registration that never comes. It unpacks into a staging folder
+            // and the result is installed like any portable, data policy and
+            // all — Tor Browser keeps its profile inside that same folder.
+            let stage_dir = download_path.join("stage");
+            let _ = remove_path_robust_async(&stage_dir).await;
+            let mut setup = app.clone();
+            if let Some(fields) = setup.as_object_mut() {
+                fields.insert(
+                    SETUP_TARGET_DIR.into(),
+                    Value::String(stage_dir.to_string_lossy().to_string()),
+                );
+            }
+            on_progress(90, installer_stage_message(app, &dest_file), false);
+            run_installer_over_async(
+                &setup,
+                &dest_file,
+                flags,
+                installed_at.as_deref(),
+                &mut on_cancelability,
+            )
+            .await?;
+            let staged = stage_dir.clone();
+            let unpacked = tokio::task::spawn_blocking(move || discard_staged_shortcuts(&staged))
+                .await
+                .map_err(|error| error.to_string())?;
+            if !unpacked {
+                return Err(format!(
+                    "El instalador de {name} terminó sin dejar ningún archivo en la carpeta indicada."
+                ));
+            }
+            swap_into_install_path_async(&stage_dir, &install_path, app).await?;
+        } else if should_run_as_installer(app, ext) {
             protect_portable_before_setup(&install_path, app).await?;
             on_progress(90, installer_stage_message(app, &dest_file), false);
             // Keep setup files in Downloads/WinSlimCenter/<package> for their whole
@@ -2520,6 +2633,56 @@ fn is_portable_payload(app: &Value) -> bool {
 fn should_run_as_installer(app: &Value, extension: &str) -> bool {
     !is_portable_payload(app)
         && (extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("msi"))
+}
+
+/// Operation-only key with the folder an NSIS setup is told to unpack into.
+/// Never read from the catalog: `do_install` sets it on its own copy.
+const SETUP_TARGET_DIR: &str = "_setup_target_dir";
+
+/// `true` when the catalog says the `.exe` is an NSIS package that only copies
+/// a folder (`setup_into_install_dir`): Tor Browser's "portable" setup, which
+/// writes no uninstall entry and, run silently, no shortcut either.
+fn unpacks_into_install_dir(app: &Value, extension: &str) -> bool {
+    !is_portable_payload(app)
+        && extension.eq_ignore_ascii_case("exe")
+        && app
+            .get("setup_into_install_dir")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
+fn setup_target_dir(app: &Value) -> Option<&str> {
+    app.get(SETUP_TARGET_DIR)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
+/// Drops the shortcuts the setup left at the top of the staging folder, and
+/// says whether anything else is there.
+///
+/// They point at the staging folder, which is gone once the program moves to
+/// its real place: Tor Browser's own `Tor Browser.lnk` would be left broken.
+/// The store publishes its own with `start_menu_shortcut`/`desktop_shortcut`.
+fn discard_staged_shortcuts(stage_dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(stage_dir) else {
+        return false;
+    };
+    let mut payload = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let shortcut = path.is_file()
+            && path
+                .extension()
+                .and_then(|value| value.to_str())
+                .is_some_and(|value| value.eq_ignore_ascii_case("lnk"));
+        if shortcut {
+            let _ = fs::remove_file(&path);
+        } else {
+            payload = true;
+        }
+    }
+    payload
 }
 
 /// Moves a directory, falling back to a recursive copy when source and
@@ -4919,6 +5082,44 @@ mod tests {
     }
 
     #[test]
+    fn only_entries_that_ask_for_it_unpack_their_setup_into_the_store_folder() {
+        let tor = json!({ "setup_into_install_dir": true, "installer_args": ["/S"] });
+        assert!(unpacks_into_install_dir(&tor, "exe"));
+        assert!(!unpacks_into_install_dir(&tor, "msi"));
+        assert!(!unpacks_into_install_dir(&json!({ "installer_args": ["/S"] }), "exe"));
+        // Lo que se guarda tal cual no se ejecuta, lo pida o no.
+        let portable = json!({ "setup_into_install_dir": true, "portable": true });
+        assert!(!unpacks_into_install_dir(&portable, "exe"));
+        // La carpeta solo llega por la clave interna de la operación.
+        assert_eq!(setup_target_dir(&tor), None);
+        let mut staged = tor.clone();
+        staged[SETUP_TARGET_DIR] = json!(r"C:\Users\Alejandro Donate\stage");
+        assert_eq!(setup_target_dir(&staged), Some(r"C:\Users\Alejandro Donate\stage"));
+    }
+
+    #[test]
+    fn staged_shortcuts_are_dropped_and_an_empty_stage_is_reported() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-stage-test-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("Browser")).unwrap();
+        fs::write(root.join("Tor Browser.lnk"), "lnk").unwrap();
+        fs::write(root.join("Browser").join("firefox.exe"), "exe").unwrap();
+        assert!(discard_staged_shortcuts(&root));
+        assert!(!root.join("Tor Browser.lnk").exists());
+        assert!(root.join("Browser").join("firefox.exe").exists());
+
+        let only_shortcut = root.join("vacio");
+        fs::create_dir_all(&only_shortcut).unwrap();
+        fs::write(only_shortcut.join("Tor Browser.lnk"), "lnk").unwrap();
+        assert!(!discard_staged_shortcuts(&only_shortcut));
+        assert!(!discard_staged_shortcuts(&root.join("no-existe")));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn custom_installer_args_override_defaults() {
         let app = json!({ "installer_args": ["/S", "/NORESTART"] });
         let args = app_installer_args(&app, Path::new("setup.exe"));
@@ -4956,6 +5157,36 @@ mod tests {
         assert!(should_run_as_installer(app, "exe"));
         assert_eq!(app_installer_args(app, setup), vec!["--silent"]);
         assert!(installer_runs_hidden(app, setup));
+    }
+
+    #[test]
+    fn chromium_updates_keep_the_scope_of_the_installed_copy() {
+        // Thorium's mini_installer installs per user unless told
+        // `--system-level`; over a copy in Program Files it refused with exit
+        // code 3 and opened the old browser instead of updating it. The window
+        // is the consequence, not the cause: the setup gives up first and then
+        // launches the existing copy with `--force-first-run`.
+        let catalog = crate::store::load_catalog(Path::new("/definitely/does/not/exist/apps.json"));
+        let app = catalog
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some("thorium"))
+            .expect("Thorium debe estar en el catálogo");
+        let setup = Path::new("thorium_AVX2_mini_installer.exe");
+        let program_files =
+            std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+        let machine_copy = PathBuf::from(program_files).join(r"Thorium\Application");
+        let scoped = with_system_scope_args(app, setup, &machine_copy)
+            .expect("una copia para todos los usuarios se actualiza con --system-level");
+        assert_eq!(
+            app_installer_args(&scoped, setup),
+            vec!["--do-not-launch-chrome", "--system-level"]
+        );
+
+        let user_copy = PathBuf::from(r"C:\Users\Ana\AppData\Local\Thorium\Application");
+        assert!(with_system_scope_args(app, setup, &user_copy).is_none());
+        // Without the field nothing changes, wherever the copy lives.
+        let plain = json!({ "installer_args": ["/S"] });
+        assert!(with_system_scope_args(&plain, Path::new("setup.exe"), &machine_copy).is_none());
     }
 
     #[test]

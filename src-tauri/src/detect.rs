@@ -568,6 +568,26 @@ fn catalog_version_is_comparable(catalog_version: &str) -> bool {
     catalog_version.contains('.') && numbers >= 2
 }
 
+/// The version an application installed by the store writes in its own folder
+/// (`version_file`, relative to it): JSON with a `version` key or plain text.
+///
+/// Tor Browser updates itself in place. What the store recorded on installing
+/// it goes stale with the first of those updates, and comparing it with the
+/// published version would announce an update already applied.
+fn version_in_file(install_dir: &Path, entry: &Value) -> Option<String> {
+    let relative = entry.get("version_file")?.as_str()?.trim();
+    if relative.is_empty() || !Path::new(relative).is_relative() || relative.contains("..") {
+        return None;
+    }
+    let raw = std::fs::read_to_string(install_dir.join(relative)).ok()?;
+    let raw = raw.trim_start_matches('\u{feff}');
+    let version = match serde_json::from_str::<Value>(raw) {
+        Ok(Value::Object(fields)) => fields.get("version")?.as_str()?.trim().to_string(),
+        _ => raw.trim().to_string(),
+    };
+    (!version.is_empty() && version.len() <= 64).then_some(version)
+}
+
 /// Update flag derived purely from the catalog, used while the authoritative
 /// WinGet / GitHub check has not run yet. It stays silent unless the catalog
 /// really pins a release number newer than the installed one.
@@ -1083,12 +1103,14 @@ fn statuses_for(
                     .filter(|path| path.is_file())
                     .and_then(|path| crate::installer::prefer_x64_executable(&path))
                     .or_else(|| crate::installer::resolve_launchable_path(&install_path, None));
-                let update = catalog_update_available(catalog_version, &info.version);
+                let version = version_in_file(&install_path, entry)
+                    .unwrap_or_else(|| info.version.clone());
+                let update = catalog_update_available(catalog_version, &version);
                 map.insert(
                     id.to_string(),
                     AppStatus {
                         installed: true,
-                        version: info.version.clone(),
+                        version,
                         origin: "center".into(),
                         install_path: info.install_path.clone(),
                         update_available: update,
@@ -1209,6 +1231,10 @@ fn statuses_for(
                         .filter(|location| !location.is_empty()),
                 },
             );
+        } else if let Some(status) = crate::choco::portable_status(entry) {
+            // Chocolatey conoce la versión y el ejecutable de sus portables,
+            // aunque Windows no publique ninguna entrada para ellos.
+            map.insert(id.to_string(), status);
         } else if let Some(matched_index) = start_app_index.matching_index(entry, name) {
             let start_app = &start_apps[matched_index];
             let launch_target = start_app_index
@@ -1583,6 +1609,33 @@ fn match_start_app<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_self_updating_app_reports_the_version_its_own_folder_states() {
+        let root = std::env::temp_dir().join(format!(
+            "winslimcenter-version-file-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("Browser")).unwrap();
+        std::fs::write(
+            root.join("Browser").join("tbb_version.json"),
+            r#"{"version":"16.0.1","architecture":"windows-x86_64","channel":"release"}"#,
+        )
+        .unwrap();
+        std::fs::write(root.join("VERSION"), "\u{feff}2.4.0\r\n").unwrap();
+        let tor = serde_json::json!({ "version_file": r"Browser\tbb_version.json" });
+        assert_eq!(version_in_file(&root, &tor).as_deref(), Some("16.0.1"));
+        let plain = serde_json::json!({ "version_file": "VERSION" });
+        assert_eq!(version_in_file(&root, &plain).as_deref(), Some("2.4.0"));
+        // Sin campo, sin archivo o fuera de la carpeta: manda lo registrado.
+        assert_eq!(version_in_file(&root, &serde_json::json!({})), None);
+        let missing = serde_json::json!({ "version_file": "nada.json" });
+        assert_eq!(version_in_file(&root, &missing), None);
+        let outside = serde_json::json!({ "version_file": r"..\VERSION" });
+        assert_eq!(version_in_file(&root.join("Browser"), &outside), None);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn version_compare() {
