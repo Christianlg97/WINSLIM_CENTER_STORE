@@ -808,6 +808,7 @@ export default {
   "Plataforma agéntica de Google DeepMind: dirige agentes que trabajan por su cuenta sobre el editor, la terminal y el navegador.": "Google DeepMind Agentic Platform - 편집기, 터미널 및 브라우저 위에서 자체적으로 작동하는 에이전트를 실행합니다.",
   "El editor de código de Google DeepMind: la experiencia clásica de IDE, con la IA de Antigravity integrada dentro.": "Google DeepMind 코드 편집기: Antigravity의 AI가 내장된 클래식 IDE 환경입니다.",
   "La herramienta de Anthropic para programar y automatizar tareas desde la terminal: se abre como consola, no como ventana de escritorio.": "터미널에서 작업을 예약하고 자동화하기 위한 Anthropic의 도구: 데스크톱 창이 아닌 콘솔로 열립니다.",
+  "El agente de programación de xAI para la terminal: Grok lee tu proyecto, edita código y ejecuta comandos. Se abre como consola, no como ventana de escritorio.": "터미널용 xAI 코딩 에이전트: Grok이 프로젝트를 읽고 코드를 편집하며 명령을 실행합니다. 데스크톱 창이 아닌 콘솔로 열립니다.",
   "La aplicación de escritorio de Anthropic: chat, proyectos y Claude Code con interfaz gráfica en lugar de terminal.": "Anthropic 데스크탑 애플리케이션: 터미널 대신 그래픽 인터페이스를 갖춘 채팅, 프로젝트 및 Claude Code.",
   "IDE adaptativo con IA integrada de ByteDance que acelera la creación y refactorización de código.": "코드 생성 및 리팩토링을 가속화하는 ByteDance의 AI가 내장된 적응형 IDE입니다.",
   "El editor de código potencado por IA diseñado para escribir, editar y depurar software velozmente.": "소프트웨어를 빠르게 작성, 편집 및 디버그하도록 설계된 AI 기반 코드 편집기입니다.",

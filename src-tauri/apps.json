@@ -289,7 +289,7 @@
     "section": "IA",
     "featured": false,
     "source_type": "winget",
-    "winget_id": "SST.OpenCodeDesktop",
+    "winget_id": "Anomaly.OpenCode.Desktop",
     "winget_source": "winget",
     "icon_url": "assets/opencode.png",
     "accent_color": "#25262b",
@@ -573,7 +573,7 @@
     "section": "Multimedia",
     "source_type": "github_release",
     "github_repo": "audacity/audacity",
-    "asset_pattern": "audacity-win-*-64bit.exe",
+    "asset_pattern": "audacity-win-*-x86_64.msi",
     "winget_id": "Audacity.Audacity",
     "accent_color": "#0079c1",
     "icon_url": "assets/catalog/audacity.svg",
@@ -659,7 +659,6 @@
     "section": "Utilidades",
     "source_type": "winget",
     "winget_id": "qBittorrent.qBittorrent",
-    "download_url": "https://github.com/qbittorrent/qBittorrent/releases",
     "installer_args": [
       "/S"
     ],
@@ -1469,6 +1468,24 @@
     "featured": false
   },
   {
+    "id": "grok_build",
+    "name": "Grok Build (CLI)",
+    "description": "El agente de programación de xAI para la terminal: Grok lee tu proyecto, edita código y ejecuta comandos. Se abre como consola, no como ventana de escritorio.",
+    "version": "latest",
+    "author": "xAI",
+    "category": "Desarrollo con IA",
+    "section": "IA",
+    "source_type": "winget",
+    "icon_url": "assets/catalog/grok.svg",
+    "accent_color": "#0f0f0f",
+    "winget_id": "xAI.GrokBuild",
+    "winget_source": "winget",
+    "detect_names": [
+      "Grok Build"
+    ],
+    "featured": false
+  },
+  {
     "id": "claude_desktop",
     "name": "Claude",
     "description": "La aplicación de escritorio de Anthropic: chat, proyectos y Claude Code con interfaz gráfica en lugar de terminal.",
@@ -1890,8 +1907,9 @@
     "category": "Sistema",
     "section": "Utilidades",
     "source_type": "winget",
-    "icon_url": "assets/catalog/wintoys.svg",
-    "accent_color": "#2563eb",
+    "icon_url": "assets/catalog/wintoys.png",
+    "icon_padding": 4,
+    "accent_color": "#3b82f6",
     "winget_id": "9P8LTPGCBZXD",
     "winget_source": "msstore",
     "featured": false
@@ -1904,11 +1922,12 @@
     "author": "REALiX",
     "category": "Hardware y monitorización",
     "section": "Utilidades",
-    "source_type": "winget",
+    "source_type": "wget",
+    "download_page": "https://www.hwinfo.com/download/",
+    "download_link_pattern": "https://www.hwinfo.com/files/hwi64_*.exe",
     "icon_url": "assets/catalog/hwinfo.png",
     "accent_color": "#1e3a8a",
     "winget_id": "REALiX.HWiNFO",
-    "winget_source": "winget",
     "featured": false
   },
   {
@@ -2872,23 +2891,6 @@
     ]
   },
   {
-    "id": "humble_app",
-    "name": "Humble App",
-    "description": "Cliente oficial de Humble Games Collection para Windows.",
-    "version": "latest",
-    "author": "Humble Bundle",
-    "category": "Plataformas de juegos",
-    "section": "Juegos",
-    "featured": false,
-    "source_type": "winget",
-    "winget_id": "HumbleBundle.HumbleApp",
-    "winget_source": "winget",
-    "icon_url": "assets/catalog/humble_app.svg",
-    "detect_names": [
-      "Humble App"
-    ]
-  },
-  {
     "id": "rockstar_games_launcher",
     "name": "Rockstar Games Launcher",
     "description": "Plataforma oficial de Rockstar Games para descargar, actualizar y jugar a sus títulos en Windows.",
@@ -3330,7 +3332,7 @@
     "featured": false,
     "source_type": "github_release",
     "github_repo": "root-project/root",
-    "asset_pattern": "root_*win64.python311.vc17.exe",
+    "asset_pattern": "root_v*.win64.python*.vc??.exe",
     "icon_url": "assets/catalog/root_cling.png",
     "detect_names": [
       "ROOT"
@@ -4575,7 +4577,7 @@
     "featured": false,
     "source_type": "wget",
     "download_page": "https://www.cheatengine.org/downloads.php",
-    "download_link_pattern": "https://d3gpt2g9zwv61d.cloudfront.net/*.exe",
+    "download_link_pattern": "https://*.cloudfront.net/*.exe",
     "download_filename": "CheatEngine_Setup.exe",
     "icon_url": "assets/catalog/cheat_engine.png",
     "icon_background": "#dfe6ec",

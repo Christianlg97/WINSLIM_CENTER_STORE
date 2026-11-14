@@ -480,6 +480,10 @@ let statusResetTimer = null;
 let pendingStatusLog = "";
 let lastLoggedStatus = "";
 let statusLogTimer = null;
+// Si lo que enseña la barra es el recuento de actualizaciones. La Microsoft
+// Store contesta segundos después que el catálogo, así que el recuento cambia
+// ya escrito y hay que rehacerlo; cualquier otro mensaje manda sobre él.
+let statusShowsUpdateSummary = false;
 
 function clientLog(level, event, details = "") {
   const text = typeof details === "string" ? details : JSON.stringify(details);
@@ -760,6 +764,7 @@ function avatarBackground(app, fallback) {
 }
 
 function setStatus(text, color) {
+  statusShowsUpdateSummary = false;
   if (statusResetTimer !== null) {
     clearTimeout(statusResetTimer);
     statusResetTimer = null;
@@ -788,11 +793,22 @@ function idleStatusSummary() {
     : `Todo al día · ${visibleCatalogCount()} aplicaciones`;
 }
 
+/** El recuento de actualizaciones (o «todo al día») como estado en reposo. */
+function showUpdateSummaryStatus(color = updatesCount() ? "var(--accent)" : "var(--green)") {
+  setStatus(idleStatusSummary(), color);
+  statusShowsUpdateSummary = true;
+}
+
+/** Rehace el recuento si es lo que la barra enseña; si enseña otra cosa, nada. */
+function refreshUpdateSummaryStatus() {
+  if (statusShowsUpdateSummary) showUpdateSummaryStatus();
+}
+
 function setTransientStatus(text, color, durationMs = 5000) {
   setStatus(text, color);
   statusResetTimer = setTimeout(() => {
     statusResetTimer = null;
-    setStatus(idleStatusSummary(), "var(--green)");
+    showUpdateSummaryStatus("var(--green)");
   }, durationMs);
 }
 
@@ -1040,10 +1056,7 @@ async function scanForUpdates() {
     const updates = updatesCount();
     clientLog("info", "updates-scan", { updates });
     if (updates) {
-      setStatus(
-        `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
-        "var(--accent)",
-      );
+      showUpdateSummaryStatus();
     } else {
       setTransientStatus("No hay actualizaciones pendientes.", "var(--green)", 5000);
     }
@@ -2052,6 +2065,9 @@ async function scanMsStoreUpdates(options = {}) {
     }
     renderSidebar();
     renderContent();
+    // Lo que la Store acaba de contestar entra en el recuento que la barra ya
+    // enseñaba con lo del catálogo («1 actualización» con tres pendientes).
+    refreshUpdateSummaryStatus();
   }
 }
 
@@ -6313,10 +6329,7 @@ async function refreshStore({ reportErrors = true, silent = false } = {}) {
     }
 
     if (updates) {
-      setStatus(
-        `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
-        "var(--accent)",
-      );
+      showUpdateSummaryStatus();
     } else {
       setTransientStatus("Comprobación del sistema completada.", "var(--green)", 4000);
     }
@@ -6723,10 +6736,7 @@ async function finishStartupInBackground() {
     reconcileStatusChanges(updateChanges);
     const updates = updatesCount();
     if (updates) {
-      setStatus(
-        `${updates} ${updates === 1 ? "actualización encontrada" : "actualizaciones encontradas"}`,
-        "var(--accent)",
-      );
+      showUpdateSummaryStatus();
     } else {
       setTransientStatus("Comprobación del sistema completada.", "var(--green)", 4000);
     }

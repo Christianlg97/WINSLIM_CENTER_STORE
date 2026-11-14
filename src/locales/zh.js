@@ -808,6 +808,7 @@ export default {
   "Plataforma agéntica de Google DeepMind: dirige agentes que trabajan por su cuenta sobre el editor, la terminal y el navegador.": "Google DeepMind的代理平台：管理在编辑器、终端和浏览器上独立工作的代理。",
   "El editor de código de Google DeepMind: la experiencia clásica de IDE, con la IA de Antigravity integrada dentro.": "Google DeepMind的代码编辑器：经典IDE体验，集成了Antigravity的AI。",
   "La herramienta de Anthropic para programar y automatizar tareas desde la terminal: se abre como consola, no como ventana de escritorio.": "Anthropic的工具，用于从终端编程和自动化任务：以控制台形式打开，而非桌面窗口。",
+  "El agente de programación de xAI para la terminal: Grok lee tu proyecto, edita código y ejecuta comandos. Se abre como consola, no como ventana de escritorio.": "xAI 的终端编程智能体：Grok 会读取你的项目、编辑代码并执行命令。以控制台形式打开，而不是桌面窗口。",
   "La aplicación de escritorio de Anthropic: chat, proyectos y Claude Code con interfaz gráfica en lugar de terminal.": "Anthropic 桌面应用：聊天、项目和 Claude Code，使用图形界面而非终端。",
   "IDE adaptativo con IA integrada de ByteDance que acelera la creación y refactorización de código.": "字节跳动集成 AI 的自适应 IDE，加快代码创建和重构。",
   "El editor de código potencado por IA diseñado para escribir, editar y depurar software velozmente.": "由 AI 强化的代码编辑器，旨在快速编写、编辑和调试软件。",

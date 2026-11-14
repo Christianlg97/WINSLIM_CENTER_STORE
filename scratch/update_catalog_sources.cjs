@@ -6,7 +6,7 @@ const apps = JSON.parse(fs.readFileSync(catalogPath, "utf8"));
 const winget = {
   itch_io: ["ItchIo.Itch", "winget"],
   vscode: ["Microsoft.VisualStudioCode", "winget"],
-  opencode: ["SST.OpenCodeDesktop", "winget"],
+  opencode: ["Anomaly.OpenCode.Desktop", "winget"],
   seven_zip: ["7zip.7zip", "winget"],
   winrar: ["RARLab.WinRAR", "winget"],
   battle_net: ["Blizzard.BattleNet", "winget"],
@@ -86,7 +86,7 @@ const opencode = {
   section: "Desarrollo",
   featured: false,
   source_type: "winget",
-  winget_id: "SST.OpenCodeDesktop",
+  winget_id: "Anomaly.OpenCode.Desktop",
   winget_source: "winget",
   icon_url: "assets/opencode.png",
   accent_color: "#25262b",

@@ -2046,6 +2046,8 @@ where
                 );
                 on_progress(5, "Buscando la descarga del proveedor...".into(), false);
                 let direct_url = winget_installer_url(app).await.map_err(|fallback_error| {
+                    // winget messages usually end with "." already; avoid "..".
+                    let winget_error = winget_error.trim_end().trim_end_matches('.');
                     format!("{winget_error}. El fallback cURL tampoco está disponible: {fallback_error}")
                 })?;
                 winget_fallback_url = Some(direct_url);

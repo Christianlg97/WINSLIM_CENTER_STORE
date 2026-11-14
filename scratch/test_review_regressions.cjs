@@ -347,9 +347,11 @@ function restoredRepositories() {
 // de repetir las mismas consultas a la Microsoft Store después.
 async function msStoreScanReuse() {
   const runs = [];
+  let summaryRefreshes = 0;
   const ctx = vm.createContext({
     state: { msstore: { ring: 'Retail', arch: 'auto', scanning: false } },
     renderContent() {}, renderSidebar() {},
+    refreshUpdateSummaryStatus: () => { summaryRefreshes++; },
     runMsStoreUpdatesScan: options => new Promise(resolve => runs.push({ options, resolve })),
   });
   vm.runInContext('let msStoreScanInFlight = null; let msStoreFullScanInFlight = null;', ctx);
@@ -363,6 +365,7 @@ async function msStoreScanReuse() {
   await Promise.all([startup, button]);
   assert.equal(runs.length, 1);
   assert.equal(ctx.state.msstore.scanning, false);
+  assert.ok(summaryRefreshes > 0, 'what the Store answered must reach the status bar count');
 
   // A different channel is a different question: it waits its turn and runs.
   const first = ctx.scanMsStoreUpdates({ quiet: true });
@@ -380,6 +383,37 @@ async function msStoreScanReuse() {
   assert.deepEqual(runs[3].options.families, ['Demo_abc']);
   runs[3].resolve();
   await subset;
+}
+
+// Al arrancar, la barra decía «1 actualización encontrada» con la del catálogo
+// y lo seguía diciendo cuando la Microsoft Store añadía otras dos segundos
+// después. El recuento se rehace al contestar la Store, pero sólo si sigue a la
+// vista: una descarga o un error en la barra no se pisan.
+function updateSummaryFollowsMsStore() {
+  let pending = 1;
+  const statusText = { textContent: '' };
+  const statusDot = { style: { color: '' } };
+  const ctx = vm.createContext({
+    document: { getElementById: id => (id === 'status-text' ? statusText : statusDot) },
+    updatesCount: () => pending, visibleCatalogCount: () => 283,
+    clientLog() {}, setTimeout: () => 1, clearTimeout() {},
+  });
+  vm.runInContext(
+    'let statusResetTimer = null; let pendingStatusLog = ""; let lastLoggedStatus = ""; let statusLogTimer = null; let statusShowsUpdateSummary = false;',
+    ctx,
+  );
+  load(ctx, ['setStatus', 'idleStatusSummary', 'showUpdateSummaryStatus', 'refreshUpdateSummaryStatus']);
+  ctx.showUpdateSummaryStatus();
+  assert.equal(statusText.textContent, '1 actualización encontrada');
+  pending = 3;
+  ctx.refreshUpdateSummaryStatus();
+  assert.equal(statusText.textContent, '3 actualizaciones encontradas');
+  assert.equal(statusDot.style.color, 'var(--accent)');
+
+  ctx.setStatus('Descargando Demo…', 'var(--accent)');
+  pending = 4;
+  ctx.refreshUpdateSummaryStatus();
+  assert.equal(statusText.textContent, 'Descargando Demo…', 'another message is not overwritten');
 }
 
 // Las aplicaciones web preguntan una vez con qué navegador abrirse, lo recuerdan
@@ -906,6 +940,7 @@ function catalogDescriptionsAreLocalized() {
   versionLabels();
   visibleCounters();
   await msStoreScanReuse();
+  updateSummaryFollowsMsStore();
   await webBrowserChoice();
   await cancellation('catalog');
   await cancellation('msstore');
@@ -924,5 +959,5 @@ function catalogDescriptionsAreLocalized() {
   await sharedReadRequests();
   indexedCatalogCards();
   catalogDescriptionsAreLocalized();
-  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, update selection, update card badges, start-up verification, Microsoft Store scan reuse, shared reads, indexed cards, localized catalog descriptions, web-app browser choice, visible counters and version labels passed.');
+  console.log('Review regressions: cancellation, portable choices, repository restore, self-update errors and waits, install queue, update selection, update card badges, start-up verification, Microsoft Store scan reuse, status bar update count, shared reads, indexed cards, localized catalog descriptions, web-app browser choice, visible counters and version labels passed.');
 })().catch(error => { console.error(error); process.exitCode = 1; });
